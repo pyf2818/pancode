@@ -10,6 +10,12 @@
    - 多模态附件（图片）+ @file/@folder 提及注入
    - 人格设定（preset / custom）+ .pancode/rules 规则层 + auto memory
    - 上下文预算条 + 接近上限自动压缩
+
+   Phase 2 增强：
+   - 结构化长期记忆（MemoryStore）— 按类型/主题存储 + 关键词检索
+   - 智能上下文检索（ContextRetriever）— 按相关性注入文件摘要/记忆
+   - 自我进化（EvolutionEngine）— 任务完成后自动提取经验教训
+   - Skill 系统（SkillStore）— 一类问题的解决方案沉淀为可复用模板
    ============================================================ */
 "use strict";
 const fs = require("fs");
@@ -18,6 +24,11 @@ const crypto = require("crypto");
 const { AgentBase } = require("./agent-base");
 const { chatStream } = require("./llm");
 const repoMap = require("./repo-map");
+const { MemoryStore } = require("./memory-store");
+const { ContextRetriever } = require("./context-retriever");
+const { EvolutionEngine } = require("./evolution");
+const { SkillStore } = require("./skill-store");
+const { PlanStore } = require("./plan-store");
 
 /* OpenAI 兼容工具定义：供 LLM 做 function calling（ReAct 工具调用循环） */
 const TOOLS = [
@@ -112,6 +123,69 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "search_memory",
+      description: "搜索项目长期记忆，获取过去任务中积累的经验教训、用户偏好、决策约定等。用于参考历史经验指导当前任务。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "搜索关键词，如 '排序 bug'、'用户偏好'" },
+          type: { type: "string", description: "过滤类型：preference/lesson/pattern/decision/error/skill（可选）" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_skill",
+      description: "将当前任务的解决方案沉淀为可复用的 Skill 模板，供未来类似问题自动匹配参考。",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Skill 名称，如 'React 组件性能优化'" },
+          description: { type: "string", description: "一句话描述" },
+          trigger: { type: "string", description: "触发关键词（逗号分隔）" },
+          body: { type: "string", description: "Skill 内容（Markdown 格式，包含解决方案和验证方法）" },
+        },
+        required: ["name", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_plan",
+      description: "面对复杂任务时创建执行计划，拆解为多个子任务并逐步推进。用户会实时看到进度。",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "计划标题，如 '实现用户认证模块'" },
+          tasks: { type: "array", items: { type: "string" }, description: "任务步骤列表，如 ['设计数据模型', '实现注册接口', '添加测试']" },
+        },
+        required: ["title", "tasks"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_plan",
+      description: "更新计划中某个任务的状态。每个任务完成/跳过时调用，用户会实时看到进度更新。",
+      parameters: {
+        type: "object",
+        properties: {
+          taskIndex: { type: "number", description: "任务序号（从0开始）" },
+          status: { type: "string", description: "in_progress=开始执行, done=已完成, skipped=跳过" },
+          note: { type: "string", description: "备注（可选），如 '已创建3个文件'" },
+        },
+        required: ["taskIndex", "status"],
+      },
+    },
+  },
 ];
 
 const SYSTEM_PROMPT = `你是 pancode Agent，一个在真实项目工作区中自主编程的 AI。
@@ -122,7 +196,18 @@ const SYSTEM_PROMPT = `你是 pancode Agent，一个在真实项目工作区中�
 3. 每次有意义的修改之后，必须用 run_command 运行测试或程序验证，失败就继续修复，直到通过或确认无法解决。
 4. 写文件 / 删除文件 / 执行命令等操作会由系统代为向用户请求确认（取决于当前权限模式），你正常调用工具即可，无需自行询问用户；若被拒绝，换更安全的方案或停止。
 5. 全程用简体中文回复。最终答复请总结：做了什么改动、如何验证的、结果如何。
-6. run_command 的命令在工作区根目录执行；运行 JS 用 node，禁止执行危险命令（rm -rf /、格式化磁盘等）。`;
+6. run_command 的命令在工作区根目录执行；运行 JS 用 node，禁止执行危险命令（rm -rf /、格式化磁盘等）。
+7. 面对复杂任务（涉及 3 个以上步骤），先用 create_plan 拆解为子任务计划，然后用 update_plan 逐个标记进度，用户会在侧边栏实时看到进展。
+8. 上下文中如果出现【相关 Skill】，说明系统已匹配到可参考的解决方案模板，请参考其中的步骤和验证方法来指导你的工作。
+
+安全准则（必须严格遵守）：
+- 禁止修改或删除 .env、.git、node_modules、package-lock.json 等关键文件。
+- 禁止执行 rm -rf、format、del /f /s /q 等批量删除命令。
+- 禁止向外部发送数据（curl POST 到外部地址、wget 上传等）。
+- 禁止修改文件权限或创建可执行脚本到系统目录。
+- 涉及密钥/密码/token 的代码，只使用环境变量引用，不硬编码。
+- 执行命令前评估风险，高危操作（删除、覆盖、安装）必须通过权限确认。
+- 每次写入文件前确认路径在工作区内，防止路径穿越攻击。`;
 
 /* 人格预设：role + 风格/价值观/侧重。default 不额外追加（SYSTEM_PROMPT 已是通用全栈口吻）。 */
 const PERSONAS = {
@@ -141,6 +226,20 @@ class LlmAgent extends AgentBase {
     this._memPath = null;
     this._repoDirty = false;        // 仓库索引失效标记（文件变更后置位）
     this._repoCache = null;         // 缓存的仓库符号索引
+
+    /* Phase 2：4 大子系统初始化 */
+    const wsHash = crypto.createHash("md5")
+      .update(path.resolve(require("./config").ROOT, ctx.cfg.workspace || "workspace"))
+      .digest("hex");
+    const memDir = path.join(require("./config").ROOT, ".pancode", "memory");
+    const skillDir = path.join(require("./config").ROOT, ".pancode", "skills");
+    this.memory = new MemoryStore(path.join(memDir, wsHash + ".json"));
+    const marketDir = path.join(require("./config").ROOT, ".pancode", "skills", "market");
+    this.skills = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"));
+    const planDir = path.join(require("./config").ROOT, ".pancode", "plans");
+    this.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
+    this.contextRetriever = new ContextRetriever(this.memory, this.files);
+    this.evolution = new EvolutionEngine(this.memory);
   }
 
   /* 仓库索引：按需构建 + 文件变更时失效缓存 */
@@ -236,15 +335,6 @@ class LlmAgent extends AgentBase {
     return args;
   }
 
-  /* ---------------- 上下文增强：人格 / 规则 / 记忆 ---------------- */
-  _memoryPath() {
-    if (this._memPath) return this._memPath;
-    const wsAbs = path.resolve(require("./config").ROOT, this.cfg.workspace || "workspace");
-    const key = crypto.createHash("md5").update(wsAbs).digest("hex");
-    this._memPath = path.join(require("./config").ROOT, ".pancode", "memory", key + ".md");
-    return this._memPath;
-  }
-
   personaText() {
     const active = this.cfg.persona && this.cfg.persona.active;
     if (active === "custom") {
@@ -269,11 +359,7 @@ class LlmAgent extends AgentBase {
     } catch (e) { return ""; }
   }
 
-  loadMemory() {
-    try { return fs.readFileSync(this._memoryPath(), "utf8").trim(); } catch (e) { return ""; }
-  }
-
-  buildSystemAugment() {
+  buildSystemAugment(userText) {
     const parts = [];
     const persona = this.personaText();
     if (persona) parts.push(persona);
@@ -281,9 +367,21 @@ class LlmAgent extends AgentBase {
       const r = this.loadRules();
       if (r) parts.push("【项目规则（强制遵循）】\n" + r);
     }
+    // 结构化记忆
     if (this.cfg.memory && this.cfg.memory.enabled) {
-      const m = this.loadMemory();
+      const m = this.memory.formatForContext(3000);
       if (m) parts.push("【项目记忆（参考）】\n" + m);
+    }
+    // 当前任务计划
+    const planCtx = this.plan.formatForContext();
+    if (planCtx) parts.push(planCtx);
+    // 匹配相关 Skill 并注入
+    if (userText) {
+      const matched = this.skills.match(userText, 3);
+      if (matched.length) {
+        parts.push("【相关 Skill（可参考的解决方案模板）】\n" + this.skills.formatForContext(matched));
+        for (const s of matched) this.skills.recordUse(s.id);
+      }
     }
     if (this.cfg.repoMap !== false) {
       const ov = repoMap.repoOverview(this.files);
@@ -349,32 +447,63 @@ class LlmAgent extends AgentBase {
 
   async compactHistory() {
     if (!this.cfg.context || !this.cfg.context.autoCompact) return;
-    const budget = (this.cfg.context.budgetTokens) || 120000;
-    if (this._estTokens(this.history) <= budget * 0.85) return;
-    const keep = 6;
+    const budget = (this.cfg.context.budgetTokens) || 1000000;
+    const used = this._estTokens(this.history);
+    if (used <= budget * 0.85) return;
+    // 分阶段压缩：保留最近 10 条 + 摘要
+    const keep = 10;
     if (this.history.length <= keep + 2) return;
     const old = this.history.slice(0, this.history.length - keep);
     const recent = this.history.slice(this.history.length - keep);
     const summary = await this._summarize(old);
     this.history = [{ role: "system", content: "[历史摘要] " + summary }, ...recent];
-    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（保留最近 " + keep + " 条）", cls: "tl-info" });
+    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(this._estTokens(this.history)/1000) + "k，保留最近 " + keep + " 条）", cls: "tl-info" });
+    // 压缩后同时归纳记忆
+    if (this.cfg.memory && this.cfg.memory.enabled) {
+      this._consolidateMemory(old);
+    }
   }
 
-  /* ---------------- auto memory（会话中沉淀） ---------------- */
+  /* 定期归纳记忆：把多条零散记忆合并为主题摘要，防止记忆爆炸 */
+  _consolidateMemory(oldMsgs) {
+    try {
+      const allMemories = this.memory.list({ limit: 100 });
+      if (allMemories.length < 20) return; // 不足 20 条不需要归纳
+      // 按主题分组
+      const byTopic = {};
+      for (const m of allMemories) {
+        const key = m.topic || m.type;
+        (byTopic[key] = byTopic[key] || []).push(m);
+      }
+      // 同主题超过 5 条的，合并最早的几条为摘要
+      for (const topic in byTopic) {
+        const group = byTopic[topic];
+        if (group.length < 5) continue;
+        const toMerge = group.sort((a, b) => a.ts - b.ts).slice(0, group.length - 2);
+        const mergedContent = toMerge.map((m) => m.content).join("；");
+        // 删除旧条目，添加合并条目
+        for (const m of toMerge) this.memory.remove(m.id);
+        this.memory.add(toMerge[0].type, topic, "[归纳] " + mergedContent.slice(0, 300), { source: "consolidate" });
+      }
+      this.emit({ type: "term.line", text: "[Agent] 记忆已归纳压缩（" + allMemories.length + " 条 -> " + this.memory.size + " 条）", cls: "tl-info" });
+    } catch (e) {}
+  }
+
+  /* ---------------- auto memory（会话中沉淀，Phase 2：结构化存储） ---------------- */
   _maybeRemember(text) {
     if (!this.cfg.memory || !this.cfg.memory.enabled) return;
     if (!text || text.length > 600) return;
-    if (!/(不对|错了?|错误|应该|正确的是|记住|纠正|改成|其实|并非|不要|需要|建议)/.test(text)) return;
-    const line = "- " + text.replace(/\s+/g, " ").slice(0, 300);
-    const file = this._memoryPath();
-    let prev = "";
-    try { prev = fs.readFileSync(file, "utf8"); } catch (e) {}
-    if (prev.split("\n").some((l) => l.trim() === line.trim())) return; // 去重
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, (prev && !prev.endsWith("\n") ? prev + "\n" : prev) + line + "\n", "utf8");
-      this.emit({ type: "term.line", text: "[Agent] 已将你的偏好记入项目记忆", cls: "tl-info" });
-    } catch (e) {}
+    // 关键词匹配 → 自动分类记忆类型
+    let type = "preference";
+    let topic = "用户偏好";
+    if (/(不对|错了?|错误|纠正|改成|其实|并非)/.test(text)) { type = "lesson"; topic = "经验教训"; }
+    else if (/(应该|正确的是|建议|最佳实践|推荐)/.test(text)) { type = "pattern"; topic = "最佳实践"; }
+    else if (/(记住|备忘|以后|下次|将来)/.test(text)) { type = "decision"; topic = "决策约定"; }
+    else if (/(不要|禁止|不能|不允许|避免)/.test(text)) { type = "preference"; topic = "禁止事项"; }
+    const entry = this.memory.add(type, topic, text.replace(/\s+/g, " ").slice(0, 300));
+    if (entry) {
+      this.emit({ type: "term.line", text: "[Agent] 已将你的偏好记入项目记忆（" + type + "）", cls: "tl-info" });
+    }
   }
 
   /* ---------- 工具实现 ---------- */
@@ -493,6 +622,50 @@ class LlmAgent extends AgentBase {
         t.done(true, rs.length + " 处匹配");
         return txt;
       }
+      case "search_memory": {
+        const t = this.tool("read", "搜索记忆", args.query);
+        const results = this.memory.search(args.query, { type: args.type, limit: 10 });
+        const txt = results.length
+          ? results.map((e) => "[" + e.type + "] " + (e.topic ? e.topic + "：" : "") + e.content).join("\n")
+          : "无相关记忆";
+        t.body(txt);
+        t.done(true, results.length + " 条记忆");
+        return txt;
+      }
+      case "create_skill": {
+        const t = this.tool("edit", "创建 Skill", args.name);
+        const sk = this.skills.add({
+          name: args.name,
+          description: args.description || "",
+          trigger: args.trigger || "",
+          body: args.body || "",
+        });
+        if (sk && !sk._duplicate) {
+          t.done(true, "Skill 已创建: " + sk.name);
+          return "Skill 创建成功: " + sk.name + " (id: " + sk.id + ")";
+        }
+        t.done(false, sk && sk._duplicate ? "同名 Skill 已存在" : "创建失败");
+        return sk && sk._duplicate ? "同名 Skill 已存在: " + sk.name : "Skill 创建失败";
+      }
+      case "create_plan": {
+        const plan = this.plan.create(args.title, args.tasks);
+        if (plan) {
+          this.emit({ type: "plan.created", plan });
+          return "计划已创建: " + plan.title + " (" + plan.tasks.length + " 个任务)";
+        }
+        return "计划创建失败";
+      }
+      case "update_plan": {
+        const active = this.plan.getActive();
+        if (!active) return "没有活跃的计划";
+        const plan = this.plan.updateTask(active.id, args.taskIndex, args.status, args.note);
+        if (plan) {
+          this.emit({ type: "plan.updated", plan });
+          const task = plan.tasks[args.taskIndex];
+          return "任务 " + (args.taskIndex + 1) + " 状态更新为: " + args.status + (args.note ? " (" + args.note + ")" : "");
+        }
+        return "任务更新失败";
+      }
       default:
         return "未知工具: " + name;
     }
@@ -513,14 +686,17 @@ class LlmAgent extends AgentBase {
     this.history.push({ role: "user", content });
 
     await this.compactHistory();
-    this.emit({ type: "context.usage", used: this._estTokens(this.history), budget: (this.cfg.context || {}).budgetTokens || 120000 });
+    this.emit({ type: "context.usage", used: this._estTokens(this.history), budget: (this.cfg.context || {}).budgetTokens || 1000000 });
 
-    // 控制上下文长度：最多保留最近 40 条（摘要后更低）
-    if (this.history.length > 40) this.history = this.history.slice(-40);
+    // 控制上下文长度：最多保留最近 100 条（压缩后通常远低于此）
+    if (this.history.length > 100) this.history = this.history.slice(-100);
 
-    const aug = this.buildSystemAugment();
+    // Phase 2：智能上下文检索（替代全量注入）
+    const smartCtx = this.contextRetriever.buildSmartContext(clean, { files: this.files });
+    const aug = this.buildSystemAugment(clean);
     const messages = [{ role: "system", content: SYSTEM_PROMPT }];
     if (aug) messages.push({ role: "system", content: aug });
+    if (smartCtx) messages.push({ role: "system", content: smartCtx });
     for (const h of this.history) messages.push(h);
 
     let rounds = 0;
@@ -533,14 +709,29 @@ class LlmAgent extends AgentBase {
         }
 
         let tk = null, mg = null;
-        const r = await chatStream(this.cfg.llm, messages, TOOLS, {
-          onReasoning: (d) => { if (!tk) tk = this.thinkStart(); tk.delta(d); },
-          onContent: (d) => {
-            if (tk) { tk.end(); tk = null; }
-            if (!mg) mg = this.msgStart();
-            mg.delta(d);
-          },
-        });
+        let r = null, llmErr = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            r = await chatStream(this.cfg.llm, messages, TOOLS, {
+              onReasoning: (d) => { if (!tk) tk = this.thinkStart(); tk.delta(d); },
+              onContent: (d) => {
+                if (tk) { tk.end(); tk = null; }
+                if (!mg) mg = this.msgStart();
+                mg.delta(d);
+              },
+            });
+            llmErr = null;
+            break;
+          } catch (e) {
+            llmErr = e;
+            if (attempt < 2) {
+              const wait = Math.pow(2, attempt) * 5;
+              this.emit({ type: "term.line", text: "[Agent] LLM 调用失败（" + e.message.slice(0, 80) + "），第 " + (attempt + 1) + " 次重试，等待 " + wait + " 秒…", cls: "tl-warn" });
+              await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+            }
+          }
+        }
+        if (llmErr) throw llmErr;
         if (tk) tk.end();
         if (mg) mg.end();
 
@@ -570,12 +761,28 @@ class LlmAgent extends AgentBase {
           messages.push(toolMsg);
           this.history.push(toolMsg);
         }
+        // 工具调用后检查是否需要压缩（长任务中间也会膨胀）
+        await this.compactHistory();
+        this.emit({ type: "context.usage", used: this._estTokens(this.history), budget: (this.cfg.context || {}).budgetTokens || 1000000 });
         this.state(true, "AI 思考中");
       }
 
       const changes = this.pushChanges(true);
       if (changes.length) this.emit({ type: "term.line", text: "[Agent] 本次任务共改动 " + changes.length + " 个文件", cls: "tl-info" });
       this.round++;
+
+      /* Phase 2：任务完成后 → 自我进化 + Skill 自动提取（异步，不阻塞主流程） */
+      if (this.cfg.memory && this.cfg.memory.enabled && this.history.length >= 2) {
+        const taskTopic = text.slice(0, 60);
+        this.evolution.processTaskCompletion(chatStream, this.cfg.llm, this.history, taskTopic, "成功完成")
+          .then((r) => { if (r.saved) this.emit({ type: "term.line", text: "[进化] 已提取 " + r.saved + " 条经验教训", cls: "tl-info" }); })
+          .catch(() => {});
+        this.skills.autoExtract(chatStream, this.cfg.llm, this.history, taskTopic)
+          .then((sk) => { if (sk) this.emit({ type: "term.line", text: "[Skill] 已自动沉淀: " + sk.name, cls: "tl-info" }); })
+          .catch(() => {});
+        // 记忆归纳：每完成一次任务检查是否需要压缩
+        this._consolidateMemory(this.history);
+      }
     } catch (err) {
       this.emit({ type: "term.line", text: "[LLM 引擎异常] " + err.message, cls: "tl-err" });
       await this.say("LLM 调用出错：" + err.message + "\n\n请检查右上角「模型设置」中的 Base URL / API Key / 模型名，或切换到内置演示引擎体验。");

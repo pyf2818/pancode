@@ -22,7 +22,7 @@ const DEFAULTS = {
     apiKey: "",
     model: "gpt-4o-mini",
     temperature: 0.2,
-    maxToolRounds: 24,    // 单次任务最多工具调用轮数（防失控）
+    maxToolRounds: 100,   // 单次任务最多工具调用轮数
   },
   // —— Phase 1：Agent 框架 ——
   permissions: {
@@ -35,7 +35,7 @@ const DEFAULTS = {
     systemPrompt: "",     // 自定义人格覆盖（非空时优先于预设）
   },
   rules: { enabled: true },        // 是否加载 .pancode/rules 作为强制约束
-  context: { budgetTokens: 120000, autoCompact: true }, // 上下文预算与自动压缩
+  context: { budgetTokens: 1000000, autoCompact: true }, // 上下文预算 1M tokens
   memory: { enabled: true },       // auto memory（会话中沉淀记忆）
 };
 
@@ -177,9 +177,15 @@ function publicInfo(cfg) {
 function memoryPath(cfg) {
   const wsAbs = path.resolve(ROOT, (cfg && cfg.workspace) || "workspace");
   const key = crypto.createHash("md5").update(wsAbs).digest("hex");
-  return path.join(ROOT, ".pancode", "memory", key + ".md");
+  return path.join(ROOT, ".pancode", "memory", key + ".json");
 }
 /* 项目规则目录（loadRules 从此读取 *.md 强制注入到系统提示词） */
 function rulesDir() { return path.join(ROOT, ".pancode", "rules"); }
+/* 项目 Skill 文件路径 */
+function skillPath(cfg) {
+  const wsAbs = path.resolve(ROOT, (cfg && cfg.workspace) || "workspace");
+  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
+  return path.join(ROOT, ".pancode", "skills", key + ".json");
+}
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, agentSettings, engineMode, publicInfo, memoryPath, rulesDir, ROOT, CONFIG_PATH };
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, agentSettings, engineMode, publicInfo, memoryPath, skillPath, rulesDir, ROOT, CONFIG_PATH };

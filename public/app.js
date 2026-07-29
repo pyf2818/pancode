@@ -51,6 +51,11 @@ const inputBox = document.createElement("div");
 inputBox.id = "chatInputBox";
 inputBox.innerHTML =
   '<div id="ctxBarWrap" title="上下文用量" style="display:none"><div id="ctxBarFill"></div><span id="ctxBarTxt"></span></div>' +
+  '<div id="ciSkillBar" class="ci-skill-bar">' +
+    '<button id="btnSkillPick" class="ci-skill-pick" title="选择 Skill 引用到对话"><i data-ico="sparkle"></i>Skill</button>' +
+    '<div id="ciSkillPop" class="ci-skill-pop" style="display:none"></div>' +
+    '<span id="ciSkillActive" class="ci-skill-active" style="display:none"></span>' +
+  '</div>' +
   '<div id="ciChips"></div>' +
   '<textarea id="chatInput" rows="2" placeholder="向 AI 描述你的任务；支持 @file:路径 / @folder:路径 引用，可粘贴或拖入图片…"></textarea>' +
   '<div class="ci-bottom">' +
@@ -97,7 +102,8 @@ function switchMode(mode) {
 $("btnModeEditor").onclick = () => switchMode("editor");
 $("btnModeAgents").onclick = () => switchMode("agents");
 
-/* ---------------- 文件树（含右键菜单） ---------------- */
+/* ---------------- 文件树（含右键菜单 + 文件夹折叠） ---------------- */
+const collapsedDirs = {};  // { dirName: true } 记录折叠的目录
 function renderTree() {
   const tree = $("fileTree");
   if (!tree) return;
@@ -125,13 +131,15 @@ function renderTree() {
     tree.appendChild(el);
   };
   Object.keys(dirs).sort().forEach((dir) => {
+    const collapsed = !!collapsedDirs[dir];
     const head = document.createElement("div");
-    head.className = "ft-item";
+    head.className = "ft-item ft-dir-head" + (collapsed ? " collapsed" : "");
     head.style.paddingLeft = "14px";
-    head.innerHTML = '<span class="ft-dir">' + ico("folder") + "</span><b>" + esc(dir) + "</b>";
+    head.innerHTML = '<span class="ft-dir-toggle">' + ico("chevR") + '</span><span class="ft-dir">' + ico("folder") + "</span><b>" + esc(dir) + '</b><span class="ft-dir-count">' + dirs[dir].length + '</span>';
+    head.onclick = () => { collapsedDirs[dir] = !collapsedDirs[dir]; renderTree(); };
     head.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, dir, true); };
     tree.appendChild(head);
-    dirs[dir].sort().forEach((p) => mkItem(p, 1));
+    if (!collapsed) dirs[dir].sort().forEach((p) => mkItem(p, 1));
   });
   roots.forEach((p) => mkItem(p, 0));
 }
@@ -298,6 +306,18 @@ function initResizers() {
     if (sx === null) return; sx = null; sbR.classList.remove("dragging"); document.body.style.cursor = "";
     localStorage.setItem("cw-sidebar-w", sb.offsetWidth); if (editor) editor.layout();
   });
+  /* 侧边栏双击完全缩回 */
+  sbR.addEventListener("dblclick", () => {
+    const ab = $("activitybar");
+    if (sb.classList.contains("fully-collapsed")) {
+      sb.classList.remove("fully-collapsed");
+      sb.style.width = (parseInt(localStorage.getItem("cw-sidebar-w")) || 230) + "px";
+    } else {
+      sb.classList.add("fully-collapsed");
+    }
+    if (editor) editor.layout();
+  });
+
 
   /* 终端高度 */
   const bp = $("bottomPanel"), pr = $("panelResizer");
@@ -412,25 +432,25 @@ function initResizers() {
     }
   });
 
-  /* 预览面板：宽度调整（仅在预览显示时可用，双击重置为 50/50） */
+  /* 预览面板：宽度调整 - 完全照搬侧边栏模式 */
   const hp = $("htmlPreview"), pvR = $("previewResizer");
-  let pvx = null;
+  let px = null;
   const pvW0 = parseInt(localStorage.getItem("cw-preview-w"));
   if (pvW0 && hp.classList.contains("show")) { hp.style.flex = "none"; hp.style.width = pvW0 + "px"; hp.classList.add("sized"); }
   pvR.addEventListener("mousedown", (e) => {
     if (!hp.classList.contains("show")) return;
-    pvx = e.clientX; pvR.classList.add("dragging"); document.body.style.cursor = "col-resize"; e.preventDefault();
+    hp.style.flex = "none"; hp.classList.add("sized");
+    px = e.clientX; pvR.classList.add("dragging"); document.body.style.cursor = "col-resize"; e.preventDefault();
   });
   window.addEventListener("mousemove", (e) => {
-    if (pvx === null) return;
-    const right = hp.getBoundingClientRect().right;
-    let w = right - e.clientX;                 // 向左拖 → 预览变宽
-    w = Math.max(240, Math.min(right - 200, w));
-    hp.style.flex = "none"; hp.style.width = w + "px"; hp.classList.add("sized");
+    if (px === null) return;
+    let w = hp.offsetWidth - (e.clientX - px);
+    w = Math.max(200, Math.min(window.innerWidth * 0.65, w));
+    hp.style.width = w + "px"; px = e.clientX;
     if (state.monacoReady && editor) editor.layout();
   });
   window.addEventListener("mouseup", () => {
-    if (pvx === null) return; pvx = null; pvR.classList.remove("dragging"); document.body.style.cursor = "";
+    if (px === null) return; px = null; pvR.classList.remove("dragging"); document.body.style.cursor = "";
     localStorage.setItem("cw-preview-w", hp.offsetWidth); if (editor) editor.layout();
   });
   pvR.addEventListener("dblclick", () => {
@@ -561,7 +581,8 @@ function togglePreview(force) {
     if (pvR) pvR.classList.add("show");
     renderPreview();
   } else {
-    previewOn = false; hp.classList.remove("show");
+    previewOn = false; hp.classList.remove("show", "sized");
+    hp.style.flex = ""; hp.style.width = "";
     if (pvR) pvR.classList.remove("show");
   }
   const btn = $("bcPreview"); if (btn) btn.classList.toggle("active", previewOn);
@@ -683,11 +704,19 @@ document.querySelectorAll(".ab-btn").forEach((btn) => {
   btn.onclick = () => {
     const v = btn.dataset.view;
     if (v === "ai") { switchMode("agents"); return; }
+    // 侧边栏缩回时，点击活动栏按钮重新展开
+    const sb = $("sidebar");
+    if (sb.classList.contains("fully-collapsed")) {
+      sb.classList.remove("fully-collapsed");
+      sb.style.width = (parseInt(localStorage.getItem("cw-sidebar-w")) || 230) + "px";
+      if (editor) editor.layout();
+    }
     document.querySelectorAll(".ab-btn").forEach((b) => b.classList.toggle("active", b === btn));
-    ["explorer", "search", "scm"].forEach((name) => {
+    ["explorer", "search", "scm", "skills"].forEach((name) => {
       $("view-" + name).style.display = name === v ? "block" : "none";
     });
     if (v === "search") setTimeout(() => $("searchInput").focus(), 50);
+    if (v === "skills") onSkillsViewActive();
   };
 });
 $("bpToggle").onclick = () => $("bottomPanel").classList.toggle("collapsed");
@@ -1205,6 +1234,9 @@ function handleEvent(ev) {
     case "agent.done": state.round = ev.round; answerBlock = null; thinkCount = 0; lastThink = null; break;
     case "agent.reset": state.round = 0; answerBlock = null; thinkCount = 0; lastThink = null; break;
 
+    case "plan.created": renderPlan(ev.plan); break;
+    case "plan.updated": renderPlan(ev.plan); break;
+
     case "agent.settings": applyAgentSettings(ev.agent); break;
     case "context.usage": updateCtxBar(ev.used, ev.budget); break;
   }
@@ -1241,8 +1273,20 @@ function setRunning(running, label) {
   const live = document.querySelector(".ag-live-dot");
   if (live) live.classList.toggle("running", running);
   const liveTxt = $("agLiveTxt"); if (liveTxt) liveTxt.textContent = txt;
-  const send = inputBox.querySelector("#btnSend");
-  if (send) send.disabled = running;
+  const btn = inputBox.querySelector("#btnSend");
+  if (btn) {
+    btn.disabled = running;
+    if (running) {
+      btn.innerHTML = ico("stop") + "停止";
+      btn.classList.add("stop-mode");
+      btn.onclick = () => { send({ type: "term.kill" }); send({ type: "newchat" }); };
+    } else {
+      btn.innerHTML = ico("send") + "发送";
+      btn.classList.remove("stop-mode");
+      // Agent 空闲时自动处理队列
+      if (msgQueue.length > 0) setTimeout(processQueue, 500);
+    }
+  }
 }
 
 /* ---------------- 本地鉴权 ---------------- */
@@ -1298,16 +1342,54 @@ function addAttachFile(file) {
   rd.readAsDataURL(file);
 }
 
-/* ---------------- 输入事件 ---------------- */
+/* ---------------- 输入事件 + 消息排队 ---------------- */
+let activeSkill = null;
+const msgQueue = [];  // 消息队列
+
+function renderQueueBadge() {
+  let badge = inputBox.querySelector("#ciQueueBadge");
+  if (msgQueue.length > 0) {
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.id = "ciQueueBadge";
+      badge.className = "ci-queue-badge";
+      inputBox.querySelector(".ci-bottom").insertBefore(badge, inputBox.querySelector("#btnSend"));
+    }
+    badge.textContent = "排队 " + msgQueue.length;
+    badge.style.display = "inline-flex";
+  } else if (badge) {
+    badge.style.display = "none";
+  }
+}
+
+function processQueue() {
+  if (state.running || msgQueue.length === 0) return;
+  const { text, attachments } = msgQueue.shift();
+  renderQueueBadge();
+  send({ type: "chat", text, attachments });
+}
+
 function bindInput() {
   const ta = inputBox.querySelector("#chatInput");
   const doSend = () => {
     const v = ta.value.trim();
-    if ((!v && !pendingAttach.length) || state.running) return;
+    if (!v && !pendingAttach.length) return;
     ta.value = "";
     const attachments = pendingAttach.splice(0, pendingAttach.length).map((a) => ({ src: a.src, name: a.name }));
     renderChips();
-    send({ type: "chat", text: v || "（请分析所附图片）", attachments });
+    let text = v || "（请分析所附图片）";
+    if (activeSkill) {
+      text = "[引用 Skill: " + activeSkill.name + "]\n" + (activeSkill.description || "") + "\n\n" + activeSkill.body + "\n\n---\n\n" + text;
+      fetch("/api/skills/market/" + activeSkill.id + "/use", { method: "POST" }).catch(() => {});
+    }
+    // 如果 Agent 正在运行，加入队列
+    if (state.running) {
+      msgQueue.push({ text, attachments });
+      renderQueueBadge();
+      toast("已加入队列（第 " + msgQueue.length + " 条），Agent 完成后自动执行");
+    } else {
+      send({ type: "chat", text, attachments });
+    }
     if (attachments.length) termLine('<span class="tl-info">[附件] 已随消息发送 ' + attachments.length + " 张图片</span>");
   };
   inputBox.querySelector("#btnSend").onclick = doSend;
@@ -1346,6 +1428,20 @@ function bindInput() {
       termLine('<span class="tl-info">[Agent] 权限模式 → ' + label + "</span>");
     } catch (err) { termLine('<span class="tl-err">[Agent] 权限切换失败: ' + esc(err.message) + "</span>"); }
   };
+
+  // Skill 选择器
+  const btnSkillPick = inputBox.querySelector("#btnSkillPick");
+  const ciSkillPop = inputBox.querySelector("#ciSkillPop");
+  if (btnSkillPick) {
+    btnSkillPick.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const show = ciSkillPop.style.display === "none";
+      ciSkillPop.style.display = show ? "block" : "none";
+      if (show) renderSkillPop();
+    });
+    ciSkillPop.addEventListener("click", (e) => e.stopPropagation());
+    document.addEventListener("click", () => { ciSkillPop.style.display = "none"; });
+  }
   const ti = terminal.querySelector("#termInput");
   ti.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -1387,7 +1483,7 @@ function persistConv() {
   c.dom = chatStream.innerHTML;
   const t = convFirstUserTitle();
   if (t && (!c.title || c.title === "新对话")) c.title = t;
-  c.ts = Date.now();
+  // 不更新 ts，保持创建时间排序不变，避免会话列表跳动
   saveConvList(list);
 }
 
@@ -1401,8 +1497,7 @@ function renderConvList() {
   const host = $("agSessionList");
   if (!host) return;
   const list = loadConvList();
-  list.sort((a, b) => b.ts - a.ts);          // 最新置顶
-  saveConvList(list);
+  list.sort((a, b) => b.ts - a.ts);          // 按创建时间排序，不重新保存
   host.innerHTML = "";
   if (!list.length) {
     host.innerHTML = '<div class="ag-session"><div class="ag-sess-main"><div class="ag-sess-name ag-sess-empty">暂无历史对话</div></div></div>';
@@ -1507,6 +1602,56 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ---------------- 设置面板 ---------------- */
+function getModelPresets() { try { return JSON.parse(localStorage.getItem("cw-model-presets")) || []; } catch (e) { return []; } }
+function saveModelPresets(presets) { localStorage.setItem("cw-model-presets", JSON.stringify(presets)); }
+
+function renderModelPresets() {
+  const presets = getModelPresets();
+  const box = $("modelPresets");
+  const list = $("modelPresetList");
+  list.innerHTML = "";
+  const currentURL = $("setBaseURL").value.trim();
+  const currentModel = $("setModel").value.trim();
+  if (presets.length) {
+    presets.forEach((p, i) => {
+      const el = document.createElement("div");
+      el.className = "model-preset" + (p.baseURL === currentURL && p.model === currentModel ? " active" : "");
+      el.innerHTML = '<span style="color:var(--blue)">●</span><span class="model-preset-name">' + esc(p.name) + '</span><span class="model-preset-model">' + esc(p.model) + '</span><span class="model-preset-del" data-i="' + i + '">✕</span>';
+      el.onclick = (e) => {
+        if (e.target.closest(".model-preset-del")) return;
+        $("setBaseURL").value = p.baseURL;
+        $("setModel").value = p.model;
+        $("setApiKey").placeholder = p.hasKey ? "已保存（留空不修改）" : "sk-…";
+        renderModelPresets();
+      };
+      el.querySelector(".model-preset-del").onclick = (e) => {
+        e.stopPropagation();
+        presets.splice(i, 1);
+        saveModelPresets(presets);
+        renderModelPresets();
+      };
+      list.appendChild(el);
+    });
+  } else {
+    const empty = document.createElement("div");
+    empty.style.cssText = "font-size:11px;color:var(--text-dim);padding:4px 0";
+    empty.textContent = "暂无预设，填写下方配置后点击「保存为预设」";
+    list.appendChild(empty);
+  }
+  // 保存当前配置为预设按钮
+  const add = document.createElement("div");
+  add.className = "model-preset-add";
+  add.textContent = "+ 保存当前配置为预设";
+  add.onclick = () => {
+    const name = prompt("为这个配置命名：", $("setModel").value.trim() || "我的模型");
+    if (!name) return;
+    presets.push({ name, baseURL: $("setBaseURL").value.trim(), model: $("setModel").value.trim(), hasKey: !!$("setApiKey").value.trim() || !!($("setApiKey").placeholder.includes("已保存")) });
+    saveModelPresets(presets);
+    renderModelPresets();
+  };
+  list.appendChild(add);
+}
+
 async function openSettings() {
   const modal = $("settingsModal");
   modal.style.display = "flex";
@@ -1517,11 +1662,12 @@ async function openSettings() {
     $("setModel").value = r.mode === "llm" ? r.model : ($("setModel").value || "");
     $("setApiKey").placeholder = r.hasKey ? "已保存 " + r.keyTail + "（留空表示不修改）" : "sk-…";
     $("setApiKey").value = "";
+    renderModelPresets();
   } catch (e) {}
 }
 $("btnSettings").onclick = openSettings;
 $("setClose").onclick = () => ($("settingsModal").style.display = "none");
-$("settingsModal").addEventListener("click", (e) => { if (e.target === $("settingsModal")) $("settingsModal").style.display = "none"; });
+// 弹窗只点 X 关闭，点击外部不关闭
 
 $("setTest").onclick = async () => {
   const st = $("setStatus");
@@ -1534,6 +1680,70 @@ $("setTest").onclick = async () => {
     if (r.ok) { st.className = "set-status ok"; st.textContent = "连接成功，模型响应: " + (r.sample || "ok"); }
     else { st.className = "set-status err"; st.textContent = "连接失败: " + r.error; }
   } catch (e) { st.className = "set-status err"; st.textContent = "请求异常: " + e.message; }
+};
+
+// 拉取模型列表功能
+$("setFetchModels").onclick = async () => {
+  const st = $("setStatus");
+  const baseURL = $("setBaseURL").value.trim();
+  if (!baseURL) {
+    st.className = "set-status err";
+    st.textContent = "请先填写 Base URL";
+    return;
+  }
+  
+  st.className = "set-status";
+  st.textContent = "正在拉取模型列表…";
+
+  try {
+    // 通过服务端代理请求，避免浏览器 CORS 拦截
+    const apiKey = $("setApiKey").value.trim();
+    let proxyURL = "/api/models?baseURL=" + encodeURIComponent(baseURL);
+    if (apiKey) proxyURL += "&apiKey=" + encodeURIComponent(apiKey);
+
+    const response = await fetch(proxyURL);
+    const data = await response.json();
+    
+    if (data.data && Array.isArray(data.data)) {
+      // 成功获取模型列表
+      const models = data.data.map(m => m.id || m.name).filter(Boolean);
+      if (models.length > 0) {
+        // 创建模型选择下拉框
+        let selectHTML = '<select id="modelSelect" style="margin-top:8px;width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text)">';
+        models.forEach(model => {
+          selectHTML += `<option value="${model}">${model}</option>`;
+        });
+        selectHTML += '</select>';
+        
+        // 在模型名输入框后面添加下拉框
+        const modelInput = $("setModel");
+        const container = modelInput.parentNode;
+        const existingSelect = document.getElementById('modelSelect');
+        if (existingSelect) existingSelect.remove();
+        container.insertAdjacentHTML('beforeend', selectHTML);
+        
+        // 当选择模型时，更新输入框
+        document.getElementById('modelSelect').onchange = (e) => {
+          $("setModel").value = e.target.value;
+        };
+        
+        st.className = "set-status ok";
+        st.textContent = `成功拉取 ${models.length} 个模型，请选择或手动输入`;
+      } else {
+        st.className = "set-status err";
+        st.textContent = "未找到可用模型";
+      }
+    } else if (data.error) {
+      st.className = "set-status err";
+      st.textContent = "拉取失败: " + (data.error.message || data.error);
+    } else {
+      st.className = "set-status err";
+      st.textContent = "返回格式不正确";
+    }
+  } catch (e) {
+    st.className = "set-status err";
+    st.textContent = "请求异常: " + e.message;
+  }
 };
 
 $("setSave").onclick = async () => {
@@ -1579,7 +1789,7 @@ function agmSyncPromptVis() {
 }
 $("btnAgentSettings").onclick = openAgentSettings;
 $("agmClose").onclick = () => ($("agentModal").style.display = "none");
-$("agentModal").addEventListener("click", (e) => { if (e.target === $("agentModal")) $("agentModal").style.display = "none"; });
+// Agent 设置弹窗只点 X 关闭
 $("agmPersona").addEventListener("change", agmSyncPromptVis);
 
 $("agmSave").onclick = async () => {
@@ -1664,7 +1874,7 @@ async function openSediment() {
 }
 $("btnSediment").onclick = openSediment;
 $("sedClose").onclick = () => ($("sedimentModal").style.display = "none");
-$("sedimentModal").addEventListener("click", (e) => { if (e.target === $("sedimentModal")) $("sedimentModal").style.display = "none"; });
+// 沉淀弹窗只点 X 关闭
 $("sedSave").onclick = async () => {
   const st = $("sedStatus");
   const rb = document.querySelector('input[name="sedTarget"]:checked');
@@ -1679,7 +1889,8 @@ $("sedSave").onclick = async () => {
       st.className = "set-status ok";
       st.textContent = target === "rule" ? "已沉淀为项目规则，下次对话起强制生效" : "已沉淀为项目记忆，下次对话起作为参考";
       $("sedContent").value = "";
-      setTimeout(() => ($("sedimentModal").style.display = "none"), 1100);
+      toast(target === "rule" ? "✅ 已沉淀为项目规则" : "✅ 已沉淀为项目记忆");
+      setTimeout(() => ($("sedimentModal").style.display = "none"), 800);
     } else { st.className = "set-status err"; st.textContent = "沉淀失败: " + r.error; }
   } catch (e) { st.className = "set-status err"; st.textContent = "请求异常: " + e.message; }
 };
@@ -1758,7 +1969,7 @@ $("btnOpenFolder").onclick = () => {
   fmBrowse(fm.dir || "");
 };
 $("fmClose").onclick = () => ($("folderModal").style.display = "none");
-$("folderModal").addEventListener("click", (e) => { if (e.target === $("folderModal")) $("folderModal").style.display = "none"; });
+// 文件夹弹窗只点 X 关闭
 $("fmUp").onclick = () => fmBrowse(fm.parent === "" ? "" : (fm.parent || ""));
 $("fmHome").onclick = () => fmBrowse(fm.home || "");
 $("fmGo").onclick = () => fmBrowse($("fmPath").value.trim());
@@ -1780,6 +1991,363 @@ function welcome() {
   chatStream.appendChild(el);
 }
 
+/* ---------------- 用户认证 ---------------- */
+const userAuth = { token: localStorage.getItem("cw-user-token") || "", username: "" };
+
+async function checkAuth() {
+  try {
+    const r = await fetch("/api/auth/status?userToken=" + encodeURIComponent(userAuth.token)).then((x) => x.json());
+    if (r.loggedIn) {
+      userAuth.username = r.username;
+      $("tbUserTxt").textContent = r.username;
+      $("tbUserBtn").classList.add("logged");
+    } else {
+      userAuth.token = ""; userAuth.username = "";
+      $("tbUserTxt").textContent = "未登录";
+      $("tbUserBtn").classList.remove("logged");
+    }
+  } catch (e) { /* 静默 */ }
+}
+
+$("tbUserBtn").onclick = () => { $("authModal").style.display = "flex"; $("authStatus").textContent = ""; };
+$("authClose").onclick = () => ($("authModal").style.display = "none");
+// 登录弹窗只点 X 关闭，点击外部不关闭
+
+let authMode = "login";
+$("authSwitch").onclick = () => {
+  authMode = authMode === "login" ? "register" : "login";
+  $("authTitle").textContent = authMode === "login" ? "登录" : "注册";
+  $("authSubmit").textContent = authMode === "login" ? "登录" : "注册";
+  $("authSwitch").textContent = authMode === "login" ? "注册新账号" : "返回登录";
+  $("authStatus").textContent = "";
+};
+
+$("authSubmit").onclick = async () => {
+  const u = $("authUser").value.trim(), p = $("authPass").value;
+  if (!u || !p) { $("authStatus").className = "set-status err"; $("authStatus").textContent = "请填写用户名和密码"; return; }
+  const url = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: u, password: p }) }).then((x) => x.json());
+    if (r.ok) {
+      userAuth.token = r.token; userAuth.username = r.username;
+      localStorage.setItem("cw-user-token", r.token);
+      $("tbUserTxt").textContent = r.username;
+      $("tbUserBtn").classList.add("logged");
+      $("authModal").style.display = "none";
+      toast(authMode === "login" ? "✅ 登录成功" : "✅ 注册成功");
+    } else {
+      $("authStatus").className = "set-status err";
+      $("authStatus").textContent = r.error;
+    }
+  } catch (e) { $("authStatus").className = "set-status err"; $("authStatus").textContent = "请求异常: " + e.message; }
+};
+
+/* ---------------- Skills 市场 ---------------- */
+let allSkills = [];   // 所有 Skills（市场+工作区）
+let builtinSkills = []; // 内置 Workflow
+let skillCategories = {}; // 分类定义
+
+async function loadSkills() {
+  try {
+    const r = await fetch("/api/skills/all").then((x) => x.json());
+    allSkills = r.skills || [];
+    builtinSkills = r.builtin || [];
+    skillCategories = r.categories || {};
+    renderSkillsList();
+  } catch (e) {}
+}
+
+function renderSkillsList() {
+  const marketBox = $("skillsList");
+  const localBox = $("localSkillsList");
+  const countEl = $("skillsCount");
+
+  // 分离来源
+  const userSkills = allSkills.filter((s) => s.source === "manual" || s.source === "import");
+  const autoSkills = allSkills.filter((s) => s.source === "auto");
+
+  if (countEl) countEl.textContent = (userSkills.length + autoSkills.length + builtinSkills.length) + " 个 Skill";
+
+  // 市场 Skills（用户创建/导入）
+  if (marketBox) {
+    marketBox.innerHTML = "";
+    // 内置 Workflow
+    if (builtinSkills.length) {
+      const wfTitle = document.createElement("div");
+      wfTitle.className = "side-section-head";
+      wfTitle.innerHTML = '<span style="font-size:11px;color:var(--text-dim)">内置工作流</span>';
+      marketBox.appendChild(wfTitle);
+      builtinSkills.forEach((s) => { marketBox.appendChild(makeSkillEl(s, "workflow")); });
+    }
+    // 用户创建
+    if (userSkills.length) {
+      const uTitle = document.createElement("div");
+      uTitle.className = "side-section-head";
+      uTitle.innerHTML = '<span style="font-size:11px;color:var(--text-dim)">用户创建</span>';
+      marketBox.appendChild(uTitle);
+      userSkills.forEach((s) => { marketBox.appendChild(makeSkillEl(s, "market")); });
+    }
+    if (!builtinSkills.length && !userSkills.length) {
+      marketBox.innerHTML = '<div class="scm-empty">暂无 Skills。点击 + 创建或导入。</div>';
+    }
+  }
+
+  // 工作区 Skills（Agent 沉淀）
+  if (localBox) {
+    localBox.innerHTML = "";
+    if (!autoSkills.length) {
+      localBox.innerHTML = '<div class="scm-empty">Agent 自动沉淀的 Skill 会出现在这里。</div>';
+    } else {
+      autoSkills.forEach((s) => { localBox.appendChild(makeSkillEl(s, "local")); });
+    }
+  }
+  replaceIcons();
+}
+
+const CAT_COLORS = { frontend: "#4fc1ff", backend: "#4ec9b0", devops: "#c586c0", test: "#dcdcaa", refactor: "#ce9178", security: "#f48771", perf: "#cca700", debug: "#d16969", config: "#8a8a8a", workflow: "#0e639c", other: "#808080" };
+
+function makeSkillEl(s, sourceType) {
+  const el = document.createElement("div");
+  el.className = "skill-item";
+  const catColor = CAT_COLORS[s.category] || "#808080";
+  const isBuiltin = s.source === "workflow";
+  const isAuto = s.source === "auto";
+  const srcTag = isBuiltin ? ' <span style="font-size:9px;color:var(--text-dim)">内置</span>' : (isAuto ? ' <span style="font-size:9px;color:var(--ok)">沉淀</span>' : '');
+  el.innerHTML =
+    '<div class="skill-ic" style="background:' + catColor + '">' + esc((s.name || "S")[0]) + '</div>' +
+    '<div class="skill-meta"><div class="skill-name">' + esc(s.name) + srcTag + '</div>' +
+    '<div class="skill-desc">' + esc(s.description || "无描述") + '</div></div>' +
+    '<span class="skill-use">引用 ' + (s.useCount || 0) + '</span>' +
+    '<div class="skill-actions">' +
+    '<button class="skill-view" title="查看详情">查看</button>' +
+    '<button class="skill-ref" title="引用到对话">引用</button>' +
+    (sourceType !== "workflow" ? '<button class="danger" title="删除">删</button>' : '') + '</div>';
+  el.querySelector(".skill-view").onclick = (e) => { e.stopPropagation(); showSkillDetail(s); };
+  el.querySelector(".skill-ref").onclick = (e) => { e.stopPropagation(); insertSkillToChat(s); };
+  const delBtn = el.querySelector(".danger");
+  if (delBtn) delBtn.onclick = (e) => { e.stopPropagation(); deleteSkill(s.id); };
+  return el;
+}
+
+/* Skill 详情弹窗 */
+function showSkillDetail(skill) {
+  let modal = $("skillDetailModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "skillDetailModal";
+    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:60;display:none;align-items:center;justify-content:center";
+    modal.innerHTML = '<div class="set-box" style="max-width:560px;max-height:80vh;display:flex;flex-direction:column">' +
+      '<div class="set-head"><span id="skillDetailTitle"></span><button id="skillDetailClose"><i data-ico="close"></i></button></div>' +
+      '<div class="set-body" id="skillDetailBody" style="overflow-y:auto"></div>' +
+      '</div>';
+    document.body.appendChild(modal);
+    $("skillDetailClose").onclick = () => { modal.style.display = "none"; };
+  // Skill 详情弹窗只点 X 关闭
+  }
+  $("skillDetailTitle").innerHTML = '<i data-ico="sparkle"></i> ' + esc(skill.name);
+  const catColor = CAT_COLORS[skill.category] || "#808080";
+  let body = "";
+  body += "<label style=\"display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px\">名称</label><input id=\"sdName\" type=\"text\" value=\"" + esc(skill.name) + "\" style=\"width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:8px\">";
+  body += "<label style=\"display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px\">描述</label><input id=\"sdDesc\" type=\"text\" value=\"" + esc(skill.description || "") + "\" style=\"width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:8px\">";
+  body += "<div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px\">";
+  body += "<span style=\"font-size:10px;padding:2px 8px;border-radius:8px;background:" + catColor + "22;color:" + catColor + ";border:1px solid " + catColor + "44\">" + esc(skill.category || "other") + "</span>";
+  if (skill.tags && skill.tags.length) skill.tags.forEach((t) => { body += "<span style=\"font-size:10px;padding:2px 6px;border-radius:8px;background:var(--bg4);color:var(--text-dim)\">" + esc(t) + "</span>"; });
+  body += "<span style=\"font-size:10px;padding:2px 6px;border-radius:8px;background:var(--bg4);color:var(--text-dim)\">引用 " + (skill.useCount || 0) + " 次</span>";
+  body += "</div>";
+  body += "<label style=\"display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px\">触发关键词</label><input id=\"sdTrigger\" type=\"text\" value=\"" + esc(skill.trigger || "") + "\" style=\"width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:8px\">";
+  body += "<label style=\"display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px\">内容（Markdown）</label>";
+  body += "<textarea id=\"sdBody\" rows=\"10\" style=\"width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:12px;line-height:1.6;font-family:var(--mono);resize:vertical;outline:none\">" + esc(skill.body || "") + "</textarea>";
+  body += "<div style=\"display:flex;gap:8px;margin-top:12px;justify-content:flex-end\">";
+  body += "<button id=\"skillDetailSave\" class=\"set-btn\" style=\"background:var(--ok);color:#000\">保存修改</button>";
+  body += "<button id=\"skillDetailRef\" class=\"set-btn\" style=\"background:var(--accent);color:#fff\">引用到对话</button>";
+  body += "</div>";
+  $("skillDetailBody").innerHTML = body;
+  replaceIcons(modal);
+  $("skillDetailRef").onclick = () => { modal.style.display = "none"; insertSkillToChat(skill); };
+  $("skillDetailSave").onclick = async () => {
+    const patch = {
+      name: $("sdName").value.trim(),
+      description: $("sdDesc").value.trim(),
+      trigger: $("sdTrigger").value.trim(),
+      body: $("sdBody").value.trim(),
+      category: skill.category || "other",
+    };
+    try {
+      let r;
+      if (skill.id) {
+        // 已有 Skill -> 更新
+        r = await fetch("/api/skills/market/" + skill.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then((x) => x.json());
+      } else {
+        // 内置 Workflow 没有 id -> 创建为新 Skill
+        r = await fetch("/api/skills/market", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then((x) => x.json());
+      }
+      if (r.ok) { toast("Skill 已保存"); modal.style.display = "none"; loadSkills(); }
+      else toast("保存失败: " + r.error);
+    } catch (e) { toast("请求异常: " + e.message); }
+  };
+  modal.style.display = "flex";
+}
+
+function insertSkillToChat(skill) {
+  // 设置 activeSkill，发送时自动注入
+  activeSkill = skill;
+  const tag = inputBox.querySelector("#ciSkillActive");
+  if (tag) {
+    tag.style.display = "inline-flex";
+    tag.innerHTML = '<i data-ico="sparkle"></i>' + esc(skill.name) + '<span class="ci-skill-x">×</span>';
+    replaceIcons(tag);
+    tag.querySelector(".ci-skill-x").onclick = () => { activeSkill = null; tag.style.display = "none"; };
+  }
+  // 关闭弹出框
+  const pop = inputBox.querySelector("#ciSkillPop");
+  if (pop) pop.style.display = "none";
+  toast("✅ 已选中 Skill: " + skill.name + "（发送时自动引用）");
+  fetch("/api/skills/market/" + skill.id + "/use", { method: "POST" }).catch(() => {});
+}
+
+/* Skill 选择器弹出列表 */
+function renderSkillPop() {
+  const pop = inputBox.querySelector("#ciSkillPop");
+  if (!pop) return;
+  const all = [...builtinSkills, ...allSkills];
+  if (!all.length) { pop.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:12px">暂无可用 Skill</div>'; return; }
+  const CAT_COLORS = { frontend: "#4fc1ff", backend: "#4ec9b0", devops: "#c586c0", test: "#dcdcaa", refactor: "#ce9178", security: "#f48771", perf: "#cca700", debug: "#d16969", config: "#8a8a8a", workflow: "#0e639c", other: "#808080" };
+  pop.innerHTML = "";
+  all.forEach((s) => {
+    const el = document.createElement("div");
+    el.className = "ci-skill-opt";
+    const catColor = CAT_COLORS[s.category] || "#808080";
+    const srcLabel = s.source === "workflow" ? "内置" : (s.source === "auto" ? "沉淀" : "用户");
+    el.innerHTML =
+      '<span class="ci-skill-opt-cat" style="background:' + catColor + '">' + esc(s.category || "other") + '</span>' +
+      '<span class="ci-skill-opt-name">' + esc(s.name) + '</span>' +
+      '<span class="ci-skill-opt-src">' + srcLabel + '</span>';
+    el.onclick = () => insertSkillToChat(s);
+    pop.appendChild(el);
+  });
+}
+
+async function deleteSkill(id) {
+  if (!confirm("确定删除此 Skill？")) return;
+  try {
+    await fetch("/api/skills/market/" + id, { method: "DELETE" });
+    toast("已删除");
+    loadSkills();
+  } catch (e) {}
+}
+
+// 新建 Skill 弹窗
+$("btnNewSkill").onclick = () => { $("skillModal").style.display = "flex"; $("skillStatus").textContent = ""; $("skillName").value = ""; $("skillDesc").value = ""; $("skillTrigger").value = ""; $("skillBody").value = ""; };
+$("skillClose").onclick = () => ($("skillModal").style.display = "none");
+// Skill 创建弹窗只点 X 关闭
+
+$("skillSave").onclick = async () => {
+  const body = {
+    name: $("skillName").value.trim(),
+    description: $("skillDesc").value.trim(),
+    category: $("skillCategory").value,
+    trigger: $("skillTrigger").value.trim(),
+    body: $("skillBody").value.trim(),
+  };
+  if (!body.name || !body.body) { $("skillStatus").className = "set-status err"; $("skillStatus").textContent = "名称和内容不能为空"; return; }
+  try {
+    const r = await fetch("/api/skills/market", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json());
+    if (r.ok) {
+      $("skillStatus").className = "set-status ok";
+      $("skillStatus").textContent = "✅ 已保存到 Skills 市场";
+      toast("✅ Skill 已创建");
+      loadSkills();
+      setTimeout(() => ($("skillModal").style.display = "none"), 800);
+    } else { $("skillStatus").className = "set-status err"; $("skillStatus").textContent = r.error; }
+  } catch (e) { $("skillStatus").className = "set-status err"; $("skillStatus").textContent = "请求异常: " + e.message; }
+};
+
+// 导入 Skill JSON
+$("btnImportSkill").onclick = () => {
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = ".json";
+  inp.onchange = async () => {
+    const file = inp.files[0]; if (!file) return;
+    try {
+      const text = await file.text();
+      const skill = JSON.parse(text);
+      const r = await fetch("/api/skills/market", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(skill) }).then((x) => x.json());
+      if (r.ok) { toast("✅ 导入成功: " + skill.name); loadSkills(); }
+      else toast("❌ 导入失败: " + r.error);
+    } catch (e) { toast("❌ JSON 格式错误"); }
+  };
+  inp.click();
+};
+
+// 切换到 Skills 面板时加载
+function onSkillsViewActive() {
+  loadSkills();
+}
+
+/* ---------------- 任务计划渲染 ---------------- */
+const PLAN_ICONS = { pending: "○", in_progress: "◐", done: "●", skipped: "×" };
+function renderPlan(plan) {
+  if (!plan) return;
+  const box = $("agPlanEmpty");
+  const active = $("agPlanActive");
+  if (box) box.style.display = "none";
+  if (active) active.style.display = "block";
+  const done = plan.tasks.filter((t) => t.status === "done" || t.status === "skipped").length;
+  const total = plan.tasks.length;
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  const statusLabel = plan.status === "completed" ? "已完成" : "进行中";
+  const statusClass = plan.status === "completed" ? "done" : "active";
+  let html = '<div class="plan-title">' + ico("tasklist") + '<span>' + esc(plan.title) + '</span><span class="plan-status ' + statusClass + '">' + statusLabel + '</span></div>';
+  plan.tasks.forEach((t, i) => {
+    const cls = t.status;
+    const icon = t.status === "done" ? "✓" : t.status === "in_progress" ? "●" : t.status === "skipped" ? "×" : "";
+    html += '<div class="plan-task ' + cls + '"><span class="plan-check">' + icon + '</span><span class="plan-text">' + esc(t.text) + (t.note ? ' <span style="color:var(--text-dim);font-size:10px">(' + esc(t.note) + ')</span>' : "") + '</span></div>';
+  });
+  html += '<div class="plan-progress"><span>' + done + '/' + total + '</span><div class="plan-progress-bar"><div class="plan-progress-fill" style="width:' + pct + '%"></div></div><span>' + pct + '%</span></div>';
+  if (active) { active.innerHTML = html; replaceIcons(active); }
+}
+
+async function loadPlan() {
+  try {
+    const r = await fetch("/api/plans").then((x) => x.json());
+    if (r.active) renderPlan(r.active);
+  } catch (e) {}
+}
+
+/* ---------------- Goal 模式 ---------------- */
+let goalMode = false;
+let goalPollTimer = null;
+
+function setGoalMode(active) {
+  goalMode = active;
+  const btn = $("btnGoal");
+  if (btn) btn.classList.toggle("active", active);
+  if (!active && goalPollTimer) { clearInterval(goalPollTimer); goalPollTimer = null; }
+}
+
+$("btnGoal").onclick = (e) => {
+  e.stopPropagation();
+  const pop = $("goalPop");
+  const show = pop.style.display === "none";
+  pop.style.display = show ? "flex" : "none";
+  if (show) $("goalInput").focus();
+};
+$("goalPop").addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", () => { $("goalPop").style.display = "none"; });
+
+$("goalStart").onclick = () => {
+  const goal = $("goalInput").value.trim();
+  if (!goal) return;
+  $("goalPop").style.display = "none";
+  $("goalInput").value = "";
+  setGoalMode(true);
+  send({ type: "chat", text: "[GOAL MODE] 请创建计划并持续执行，直到完成以下目标后自动停止：\n\n" + goal + "\n\n要求：\n1. 先用 create_plan 拆解为具体子任务\n2. 逐个执行，每完成一步用 update_plan 标记\n3. 每步执行后验证结果，失败则修复重试\n4. 所有步骤完成后用 create_plan 的任务全部 done 来结束\n5. 中间不要停下来询问用户，自主推进", attachments: [] });
+  toast("Goal 已启动，Agent 将持续执行直到完成");
+};
+
+/* 当 Agent 完成时检查是否在 goal 模式 */
+const _origHandleEvent = handleEvent;
+
 /* ---------------- 启动 ---------------- */
 applyTheme(getTheme());
 $("hpClose").onclick = () => togglePreview(false);
@@ -1790,5 +2358,6 @@ mountShared();
 restoreConv();
 initConvObserver();
 bindInput();
-bootstrap().finally(connect);
+checkAuth();
+bootstrap().finally(() => { loadSkills(); loadPlan(); connect(); });
 bootMonaco();

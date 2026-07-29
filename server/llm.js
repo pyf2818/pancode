@@ -3,8 +3,11 @@
    - 原生 fetch（Node ≥ 18），零第三方依赖
    - SSE 流式解析：content 增量 + reasoning 增量 + tool_calls 聚合
    - 兼容 OpenAI / DeepSeek / Moonshot / 通义 / vLLM / Ollama 等网关
+   - 429 自动重试 + 指数退避
    ============================================================ */
 "use strict";
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 /**
  * 发起一次流式对话。
@@ -12,9 +15,12 @@
  * @param {Array}  messages  OpenAI 格式消息
  * @param {Array}  tools     OpenAI 格式工具定义
  * @param {object} cb  { onContent(text), onReasoning(text) }
+ * @param {number} attempt  当前重试次数（内部用）
  * @returns {Promise<{content, reasoning, toolCalls:[{id,name,arguments}], finish}>}
  */
-async function chatStream(cfg, messages, tools, cb) {
+async function chatStream(cfg, messages, tools, cb, attempt) {
+  attempt = attempt || 0;
+  const MAX_RETRIES = 3;
   const url = cfg.baseURL.replace(/\/+$/, "") + "/chat/completions";
   const body = {
     model: cfg.model,
@@ -32,6 +38,15 @@ async function chatStream(cfg, messages, tools, cb) {
     },
     body: JSON.stringify(body),
   });
+
+  // 429 限流自动重试（指数退避）
+  if (res.status === 429 && attempt < MAX_RETRIES) {
+    const retryAfter = res.headers.get("retry-after");
+    const waitSec = retryAfter ? parseInt(retryAfter) : Math.min(30, Math.pow(2, attempt) * 3);
+    if (cb && cb.onReasoning) cb.onReasoning("[限流重试] 第" + (attempt + 1) + "次重试，等待" + waitSec + "秒…");
+    await sleep(waitSec * 1000);
+    return chatStream(cfg, messages, tools, cb, attempt + 1);
+  }
 
   if (!res.ok) {
     const txt = await res.text().catch(() => "");

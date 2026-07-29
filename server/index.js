@@ -19,6 +19,7 @@ const { TerminalLayer } = require("./terminal");
 const { ping } = require("./llm");
 const { LlmAgent } = require("./agent-llm");
 const { DemoAgent } = require("./agent-demo");
+const auth = require("./auth");
 const VERSION = (() => { try { return require("../package.json").version; } catch (e) { return "2.3.0"; } })();
 
 const cfg = configMod.load();
@@ -108,7 +109,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 /* ---------- 本地鉴权 ---------- */
-const NO_AUTH = new Set(["/api/health", "/api/bootstrap", "/api/state", "/api/version", "/api/raw", "/api/preview/docx", "/api/fs/browse"]);
+const NO_AUTH = new Set(["/api/health", "/api/bootstrap", "/api/state", "/api/version", "/api/raw", "/api/preview/docx", "/api/fs/browse", "/api/models", "/api/auth/register", "/api/auth/login", "/api/auth/status", "/api/skills/all", "/api/skills/market", "/api/plans"]);
 function authed(req) {
   const h = req.headers["authorization"] || "";
   const q = (req.query && req.query.token) || "";
@@ -134,6 +135,117 @@ app.get("/api/bootstrap", (req, res) => {
   const ip = req.socket.remoteAddress || "";
   if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(ip)) return res.status(403).json({ ok: false, error: "仅本机可领取令牌" });
   res.json({ token: AUTH_TOKEN });
+});
+
+/* ---------- 用户认证 API ---------- */
+app.get("/api/auth/status", (req, res) => {
+  const userToken = req.headers["x-user-token"] || req.query.userToken;
+  const user = auth.verify(userToken);
+  res.json({ ok: true, loggedIn: !!user, username: user ? user.username : null, hasUsers: auth.hasUsers() });
+});
+app.post("/api/auth/register", (req, res) => {
+  const { username, password } = req.body || {};
+  const r = auth.register(String(username || "").trim(), String(password || ""));
+  res.json(r);
+});
+app.post("/api/auth/login", (req, res) => {
+  const { username, password } = req.body || {};
+  const r = auth.login(String(username || "").trim(), String(password || ""));
+  res.json(r);
+});
+app.post("/api/auth/logout", (req, res) => {
+  const userToken = req.headers["x-user-token"];
+  auth.logout(userToken);
+  res.json({ ok: true });
+});
+
+/* ---------- Skills 生态 API ---------- */
+app.get("/api/skills/market", (req, res) => {
+  try {
+    if (!engine || !engine.skills) return res.json({ ok: true, skills: [], builtin: [] });
+    const skills = engine.skills.list({ limit: 50, category: req.query.category, search: req.query.q });
+    res.json({ ok: true, skills, stats: engine.skills.stats, builtin: engine.skills.builtinWorkflows });
+  } catch (e) { res.json({ ok: true, skills: [], builtin: [] }); }
+});
+app.get("/api/skills/all", (req, res) => {
+  try {
+    if (!engine || !engine.skills) return res.json({ ok: true, skills: [], stats: { total: 0, market: 0, local: 0, builtin: 0 }, builtin: [], categories: {} });
+    const skills = engine.skills.list({ limit: 100 });
+    res.json({ ok: true, skills, stats: engine.skills.stats, builtin: engine.skills.builtinWorkflows, categories: engine.skills.categories });
+  } catch (e) { res.json({ ok: true, skills: [], builtin: [], categories: {} }); }
+});
+app.post("/api/skills/market", (req, res) => {
+  try {
+    if (!engine || !engine.skills) return res.status(503).json({ ok: false, error: "引擎未就绪" });
+    const skill = engine.skills.add(req.body || {}, "manual");
+    if (!skill) return res.status(400).json({ ok: false, error: "名称不能为空" });
+    if (skill._duplicate) return res.status(409).json({ ok: false, error: "同名 Skill 已存在: " + skill.name });
+    res.json({ ok: true, skill });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.put("/api/skills/market/:id", (req, res) => {
+  try {
+    if (!engine || !engine.skills) return res.status(503).json({ ok: false, error: "引擎未就绪" });
+    const skill = engine.skills.update(req.params.id, req.body || {});
+    if (!skill) return res.status(404).json({ ok: false, error: "Skill 不存在" });
+    res.json({ ok: true, skill });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.delete("/api/skills/market/:id", (req, res) => {
+  try {
+    if (!engine || !engine.skills) return res.status(503).json({ ok: false, error: "引擎未就绪" });
+    const ok = engine.skills.remove(req.params.id);
+    res.json({ ok });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.post("/api/skills/market/:id/use", (req, res) => {
+  try {
+    if (!engine || !engine.skills) return res.json({ ok: true });
+    engine.skills.recordUse(req.params.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.post("/api/skills/market/:id/rate", (req, res) => {
+  try {
+    if (!engine || !engine.skills) return res.status(503).json({ ok: false, error: "引擎未就绪" });
+    const skill = engine.skills.rate(req.params.id, Number(req.body.rating) || 0);
+    if (!skill) return res.status(404).json({ ok: false, error: "Skill 不存在" });
+    res.json({ ok: true, skill });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.get("/api/skills/search/:query", (req, res) => {
+  try {
+    if (!engine || !engine.skills) return res.json({ ok: true, skills: [] });
+    const matched = engine.skills.match(req.params.query, 10);
+    res.json({ ok: true, skills: matched });
+  } catch (e) { res.json({ ok: true, skills: [] }); }
+});
+
+/* ---------- 任务计划 API ---------- */
+app.get("/api/plans", (req, res) => {
+  try {
+    if (!engine || !engine.plan) return res.json({ ok: true, active: null, recent: [] });
+    const active = engine.plan.getActive();
+    const recent = engine.plan.recent(5);
+    res.json({ ok: true, active, recent });
+  } catch (e) { res.json({ ok: true, active: null, recent: [] }); }
+});
+app.post("/api/plans", (req, res) => {
+  try {
+    if (!engine || !engine.plan) return res.status(503).json({ ok: false, error: "引擎未就绪" });
+    const plan = engine.plan.create(req.body.title, req.body.tasks);
+    broadcast({ type: "plan.created", plan });
+    res.json({ ok: true, plan });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.post("/api/plans/:id/complete", (req, res) => {
+  try {
+    if (!engine || !engine.plan) return res.status(503).json({ ok: false, error: "引擎未就绪" });
+    const plan = engine.plan.complete(req.params.id);
+    if (!plan) return res.status(404).json({ ok: false, error: "计划不存在" });
+    broadcast({ type: "plan.updated", plan });
+    res.json({ ok: true, plan });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
 /* ---------- 工作区管理：打开任意本地文件夹 ---------- */
@@ -235,6 +347,21 @@ function listSubdirs(abs) {
   return out;
 }
 
+/* 代理拉取模型列表：服务端请求外部 API，避免前端 CORS 被拦截 */
+app.get("/api/models", async (req, res) => {
+  try {
+    const baseURL = String(req.query.baseURL || cfg.llm.baseURL || "").replace(/\/+$/, "");
+    const apiKey = String(req.query.apiKey || cfg.llm.apiKey || "");
+    if (!baseURL) return res.status(400).json({ ok: false, error: "Base URL 不能为空" });
+    const url = baseURL.replace(/\/+$/, "") + "/models";
+    const headers = {};
+    if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
+    const r = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+    const data = await r.json();
+    res.json(data);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get("/api/settings", (req, res) => res.json(configMod.publicInfo(cfg)));
 app.post("/api/settings", (req, res) => {
   try {
@@ -268,6 +395,67 @@ app.post("/api/agent-settings", (req, res) => {
     broadcast({ type: "agent.settings", agent: configMod.agentSettings(cfg) });
     res.json({ ok: true, agent: configMod.agentSettings(cfg) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- Phase 2：长期记忆 API ---------- */
+app.get("/api/memory", (req, res) => {
+  try {
+    const q = String(req.query.q || "");
+    const type = req.query.type || null;
+    const results = q ? engine.memory.search(q, { type, limit: 20 }) : engine.memory.list({ type, limit: 30 });
+    res.json({ ok: true, entries: results, total: engine.memory.size });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.post("/api/memory", (req, res) => {
+  try {
+    const { type, topic, content } = req.body || {};
+    if (!content) return res.status(400).json({ ok: false, error: "内容不能为空" });
+    const entry = engine.memory.add(type || "lesson", topic || "", content);
+    res.json({ ok: true, entry });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.delete("/api/memory/:id", (req, res) => {
+  try {
+    const ok = engine.memory.remove(req.params.id);
+    res.json({ ok });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- Phase 2：Skill 系统 API ---------- */
+app.get("/api/skills", (req, res) => {
+  try {
+    const q = String(req.query.q || "");
+    const results = q ? engine.skills.match(q, 10) : engine.skills.list({ limit: 30 });
+    res.json({ ok: true, skills: results, total: engine.skills.size });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.post("/api/skills", (req, res) => {
+  try {
+    const skill = engine.skills.add(req.body || {});
+    if (!skill) return res.status(400).json({ ok: false, error: "Skill 名称不能为空" });
+    res.json({ ok: true, skill });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.put("/api/skills/:id", (req, res) => {
+  try {
+    const skill = engine.skills.update(req.params.id, req.body || {});
+    if (!skill) return res.status(404).json({ ok: false, error: "Skill 不存在" });
+    res.json({ ok: true, skill });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.delete("/api/skills/:id", (req, res) => {
+  try {
+    const ok = engine.skills.remove(req.params.id);
+    res.json({ ok });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- Phase 2：进化报告 API ---------- */
+app.get("/api/evolution", (req, res) => {
+  try {
+    const report = engine.evolution.getReport();
+    res.json({ ok: true, report });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 /* ---------- 会话沉淀：把有效决策 / 约定沉淀为「项目规则」或「项目记忆」 ---------- */
