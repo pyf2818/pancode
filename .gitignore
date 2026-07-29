@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Configuration files (contain secrets)
+pancode.config.json
+cursorweb.config.json
+.env
+
+# Logs
+*.log
+server_run.log
+
+# Workspace data (Agent's working directory)
+workspace/
+
+# Electron build
+release/
+dist/
+build/
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PanCode internal
+.pancode/
+scripts/verify_*.js

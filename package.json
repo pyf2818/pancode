@@ -1,0 +1,49 @@
+{
+  "name": "pancode",
+  "version": "2.3.0",
+  "description": "基于 Monaco Editor (VS Code 开源内核) 的 Web AI 编程工作台 — 可写编辑器 + Git 基线 + 真实 LLM Agent 工具调用循环（OpenAI 兼容），无 Key 时演示引擎保底",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "desktop": "electron .",
+    "dist": "electron-builder --win nsis",
+    "smoke": "node scripts/smoke-test.js",
+    "test:fileops": "node scripts/fileops-test.js",
+    "test": "node scripts/smoke-test.js && node scripts/fileops-test.js"
+  },
+  "build": {
+    "appId": "com.pancode.app",
+    "productName": "pancode",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**",
+      "server/**",
+      "public/**",
+      "workspace/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mammoth": "^1.12.0",
+    "ws": "^8.17.0"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "40.9.3",
+    "electron-builder": "^26.0.12"
+  }
+}

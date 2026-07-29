@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pancode — AI 编程工作台</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 5l4 3-4 3' fill='none' stroke='%234fc1ff' stroke-width='1.5' stroke-linecap='round'/%3E%3Cpath d='M11 2.5l2.5 6.2-2.7-.6-1.6 2.3L8 4z' fill='%234fc1ff'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<!-- ======================= 顶部标题栏 ======================= -->
+<div id="titlebar">
+  <div class="tb-left">
+    <div class="traffic"><span class="t-red"></span><span class="t-yellow"></span><span class="t-green"></span></div>
+    <div class="tb-logo"><i data-ico="logo" data-cls="ico-logo"></i><b>pancode</b></div>
+    <button id="btnOpenFolder" class="tb-open" title="打开任意本地文件夹作为工作区"><i data-ico="folder"></i><span class="tb-project">todo-app</span><i data-ico="chevD"></i></button>
+  </div>
+  <div class="tb-center">
+    <div class="mode-switch">
+      <button id="btnModeEditor" class="mode-btn active" title="代码编辑器模式"><i data-ico="editorWin"></i>Editor Window</button>
+      <button id="btnModeAgents" class="mode-btn" title="AI 对话工作台模式"><i data-ico="robot"></i>Agents Window</button>
+    </div>
+  </div>
+  <div class="tb-right">
+    <button id="btnTheme" class="tb-theme" title="切换浅色 / 深色主题"><i data-ico="moon"></i></button>
+    <button id="btnSettings" title="配置 LLM API（OpenAI 兼容）"><i data-ico="gear"></i>模型设置</button>
+    <button id="btnAgentSettings" title="Agent 权限 / 人格 / 规则 / 上下文 / 记忆"><i data-ico="robot"></i>Agent 设置</button>
+    <button id="btnWorkflow" title="选择可复用的工作流模板，自动填入输入框"><i data-ico="tasklist"></i>工作流</button>
+    <button id="btnSediment" title="把本次会话的有效决策 / 约定沉淀为项目规则或记忆"><i data-ico="save"></i>沉淀</button>
+    <button id="btnReset" title="丢弃全部更改，恢复到 Git/快照基线"><i data-ico="reset"></i>还原工作区</button>
+    <span id="tbAgentState" class="agent-state idle"><span class="dot"></span>AI 空闲</span>
+  </div>
+</div>
+
+<!-- ======================= Editor Window ======================= -->
+<div id="editorWindow" class="window">
+  <div id="activitybar">
+    <button class="ab-btn active" data-view="explorer" title="资源管理器"><i data-ico="files"></i></button>
+    <button class="ab-btn" data-view="search" title="搜索"><i data-ico="search"></i></button>
+    <button class="ab-btn" data-view="scm" title="源代码管理"><i data-ico="scm"></i><span id="scmBadge" class="ab-badge" style="display:none">0</span></button>
+    <button class="ab-btn" data-view="ai" title="切换到 Agents Window"><i data-ico="sparkle"></i></button>
+  </div>
+
+  <div id="sidebar">
+    <div class="side-view" id="view-explorer">
+      <div class="side-title">资源管理器</div>
+      <div class="side-section-head"><span id="projName">WORKSPACE</span>
+        <span class="side-actions">
+          <button id="btnNewFile" title="新建文件"><i data-ico="filePlus"></i></button>
+          <button id="btnNewFolder" title="新建文件夹"><i data-ico="folderPlus"></i></button>
+        </span>
+      </div>
+      <div id="fileTree"></div>
+    </div>
+    <div class="side-view" id="view-search" style="display:none">
+      <div class="side-title">搜索</div>
+      <div class="search-box"><input id="searchInput" type="text" placeholder="在所有文件中搜索…" spellcheck="false"></div>
+      <div id="searchResults"></div>
+    </div>
+    <div class="side-view" id="view-scm" style="display:none">
+      <div class="side-title">源代码管理</div>
+      <div class="side-section-head" id="scmHead">更改 (0)</div>
+      <div id="scmList"><div class="scm-empty">暂无更改。当 AI 修改代码后，改动会出现在这里。</div></div>
+    </div>
+  </div>
+
+  <div id="sidebarResizer" class="resizer resizer-v" title="拖动调整侧边栏宽度"></div>
+
+  <div id="editorMain">
+    <div id="tabbar"></div>
+    <div id="breadcrumb"></div>
+    <div id="editorRow">
+      <div id="monacoHost"></div>
+      <div id="previewResizer" class="resizer resizer-v" title="拖动调整预览面板宽度（双击重置）"></div>
+      <div id="htmlPreview">
+        <div class="hp-head">
+          <span class="hp-title"><i data-ico="eye"></i>预览</span>
+          <span class="hp-hint" id="hpHint">保存时自动刷新</span>
+          <button id="hpRefresh" class="hp-btn" title="刷新预览"><i data-ico="reset"></i></button>
+          <button id="hpClose" class="hp-btn" title="关闭预览"><i data-ico="close"></i></button>
+        </div>
+        <iframe id="hpFrame" class="hp-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+      </div>
+    </div>
+    <div id="binPreview" style="display:none"><div id="binPreviewBody"></div></div>
+    <div id="panelResizer" class="resizer resizer-h" title="拖动调整终端高度"></div>
+    <div id="bottomPanel">
+      <div class="bp-tabs">
+        <span class="bp-tab"><i data-ico="terminal"></i>终端</span>
+        <span class="bp-tab-hint">真实执行 — AI 与你都可以在这里运行命令</span>
+        <button id="bpToggle" title="折叠/展开面板"><i data-ico="chevD"></i></button>
+      </div>
+      <div id="terminalSlotEditor" class="terminal-slot"></div>
+    </div>
+  </div>
+
+  <div id="chatResizer" class="resizer resizer-v" title="拖动调整 AI 聊天栏宽度（双击收起/展开）"></div>
+
+  <div id="chatPanel">
+    <div class="cp-head">
+      <span class="cp-title"><i data-ico="sparkle" data-cls="ico-accent"></i>AI 助手</span>
+      <span class="cp-model" id="cpModelEditor">…</span>
+    </div>
+    <div id="chatSlotEditor" class="chat-slot"></div>
+    <div class="chat-input-wrap" id="chatInputEditor"></div>
+  </div>
+
+  <div id="statusbar">
+    <div class="sb-left">
+      <span class="sb-item sb-branch"><i data-ico="branch"></i><span id="sbBranch">…</span></span>
+      <span class="sb-item" id="sbProblems"><i data-ico="check"></i>0 错误</span>
+      <span class="sb-item" id="sbChanges"><i data-ico="diff"></i><span id="sbChangesTxt">0 处改动</span></span>
+    </div>
+    <div class="sb-right">
+      <span class="sb-item" id="sbCursor">行 1, 列 1</span>
+      <span class="sb-item" id="sbLang">JavaScript</span>
+      <span class="sb-item">UTF-8</span>
+      <span class="sb-item" id="sbAgent"><i data-ico="sparkle"></i><span id="sbAgentTxt">AI 空闲</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= Agents Window ======================= -->
+<div id="agentsWindow" class="window" style="display:none">
+  <aside id="agSessions">
+    <div class="ag-brand">
+      <span class="ag-brand-ico"><i data-ico="robot"></i></span>
+      <div class="ag-brand-txt">
+        <div class="ag-brand-name">pancode Agent</div>
+        <div class="ag-brand-sub">AI 编程工作台</div>
+      </div>
+    </div>
+    <div class="ag-side-title">会话</div>
+    <div id="agSessionList">
+      <div class="ag-session active">
+        <span class="ag-sess-dot" title="进行中"></span>
+        <div class="ag-sess-main">
+          <div class="ag-sess-name"><i data-ico="sparkle"></i>当前对话</div>
+          <div class="ag-sess-meta" id="agSessMeta">已就绪 · workspace</div>
+        </div>
+      </div>
+    </div>
+    <div class="ag-side-title" style="margin-top:20px">智能体能力</div>
+    <div class="ag-caps">
+      <div class="ag-cap"><span class="ag-cap-ic"><i data-ico="read"></i></span><span>读取 / 编辑真实项目文件</span></div>
+      <div class="ag-cap"><span class="ag-cap-ic"><i data-ico="terminal"></i></span><span>调用真实集成终端</span></div>
+      <div class="ag-cap"><span class="ag-cap-ic"><i data-ico="tasklist"></i></span><span>自主运行测试并迭代修复</span></div>
+      <div class="ag-cap"><span class="ag-cap-ic"><i data-ico="diff"></i></span><span>生成改动 Diff 报告</span></div>
+    </div>
+  </aside>
+
+  <div id="agSessionsResizer" class="resizer resizer-v" title="拖动调整会话栏宽度（双击收起/展开）"></div>
+
+  <main id="agCenter">
+    <header class="ag-chat-head">
+      <div class="ag-head-left">
+        <div class="ag-avatar"><i data-ico="sparkle"></i></div>
+        <div class="ag-head-txt">
+          <div class="ag-head-name">Agent 会话</div>
+          <div class="ag-head-sub"><span class="ag-live-dot"></span><span id="agLiveTxt">AI 空闲</span> · <span class="cp-model" id="cpModelAgents">…</span></div>
+        </div>
+      </div>
+      <button id="agExport" class="ag-new-btn ghost" title="将当前对话导出为 Markdown 文件"><i data-ico="save"></i>导出</button>
+      <button id="agNewTask" class="ag-new-btn" title="开始一个真正的新对话，清空当前聊天记录"><i data-ico="plus"></i>新建对话</button>
+    </header>
+    <div id="chatSlotAgents" class="chat-slot"></div>
+    <div class="chat-input-wrap" id="chatInputAgents"></div>
+  </main>
+
+  <div id="agRightResizer" class="resizer resizer-v" title="拖动调整右侧面板宽度（双击收起/展开）"></div>
+
+  <aside id="agRight">
+    <section class="ag-panel">
+      <div class="ag-panel-title"><span class="cp-title"><i data-ico="terminal"></i>实时终端</span><span class="ag-panel-hint">真实执行</span></div>
+      <div id="terminalSlotAgents" class="terminal-slot"></div>
+    </section>
+    <section class="ag-panel ag-panel-grow">
+      <div class="ag-panel-title"><span class="cp-title"><i data-ico="diff"></i>本次改动</span><span id="agChangeCount" class="ag-panel-hint">0 个文件</span></div>
+      <div id="agChangedFiles"><div class="scm-empty">Agent 修改代码后，文件与 Diff 会显示在这里。</div></div>
+    </section>
+  </aside>
+</div>
+
+<!-- ======================= 模型设置弹窗 ======================= -->
+<div id="settingsModal" style="display:none">
+  <div class="set-box">
+    <div class="set-head"><span><i data-ico="gear"></i> 模型设置 — OpenAI 兼容 API</span><button id="setClose"><i data-ico="close"></i></button></div>
+    <div class="set-body">
+      <div class="set-tip">填入任意 OpenAI 兼容服务（OpenAI / DeepSeek / Moonshot / 通义 / Ollama / vLLM…），保存后 Agent 立即切换为<b>真实 LLM 引擎</b>；留空则使用内置演示引擎。</div>
+      <label>Base URL<input id="setBaseURL" type="text" placeholder="https://api.deepseek.com/v1" spellcheck="false"></label>
+      <label>API Key<input id="setApiKey" type="password" placeholder="sk-…" spellcheck="false"></label>
+      <label>模型名<input id="setModel" type="text" placeholder="deepseek-chat" spellcheck="false"></label>
+      <div class="set-status" id="setStatus"></div>
+      <div class="set-actions">
+        <button id="setTest" class="btn-sub">测试连接</button>
+        <button id="setSave" class="btn-main">保存并切换引擎</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 打开文件夹弹窗 ======================= -->
+<div id="folderModal" style="display:none">
+  <div class="set-box fm-box">
+    <div class="set-head"><span><i data-ico="folder"></i> 打开文件夹 — 任意本地目录都可以成为工作区</span><button id="fmClose"><i data-ico="close"></i></button></div>
+    <div class="set-body">
+      <div class="fm-pathrow">
+        <button id="fmUp" class="btn-sub" title="上一级">↑</button>
+        <button id="fmHome" class="btn-sub" title="用户主目录"><i data-ico="home"></i></button>
+        <input id="fmPath" type="text" placeholder="输入或粘贴文件夹路径，如 D:\my-project" spellcheck="false">
+        <button id="fmGo" class="btn-sub">转到</button>
+      </div>
+      <div id="fmRecent" class="fm-recent"></div>
+      <div id="fmList" class="fm-list"></div>
+      <div class="set-status" id="fmStatus"></div>
+      <div class="set-actions">
+        <span class="fm-current" id="fmCurrent"></span>
+        <button id="fmOpen" class="btn-main">打开此文件夹</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= Agent 设置弹窗 ======================= -->
+<div id="agentModal" style="display:none">
+  <div class="set-box agm-box">
+    <div class="set-head"><span><i data-ico="robot"></i> Agent 设置 — 权限 / 人格 / 规则 / 上下文 / 记忆</span><button id="agmClose"><i data-ico="close"></i></button></div>
+    <div class="set-body">
+      <div class="agm-grid">
+        <div class="agm-col">
+          <div class="agm-sec-title">权限模式</div>
+          <label>模式
+            <select id="agmMode">
+              <option value="ask">逐项确认 — 所有写入 / 命令都需批准（默认）</option>
+              <option value="semi">半自动 — 命中允许清单自动放行，其余仍确认</option>
+              <option value="auto">全自动 — 全部放行（拒绝清单与沙箱仍生效）</option>
+            </select>
+          </label>
+          <label>允许清单（每行一条，支持子串或 /正则/，半自动模式生效）
+            <textarea id="agmAllow" rows="3" spellcheck="false" placeholder="npm test&#10;/^git (status|diff)/"></textarea>
+          </label>
+          <label>拒绝清单（每行一条，任何模式下命中即硬拦截）
+            <textarea id="agmDeny" rows="3" spellcheck="false" placeholder="rm -rf&#10;.env"></textarea>
+          </label>
+        </div>
+        <div class="agm-col">
+          <div class="agm-sec-title">人格 / 灵魂设定</div>
+          <label>预设
+            <select id="agmPersona">
+              <option value="default">默认 — 通用编程助手</option>
+              <option value="fullstack">全栈工程师</option>
+              <option value="frontend">前端专家</option>
+              <option value="backend">后端专家</option>
+              <option value="custom">自定义（编写系统提示词）</option>
+            </select>
+          </label>
+          <label id="agmPromptRow" style="display:none">自定义系统提示词
+            <textarea id="agmPrompt" rows="4" spellcheck="false" placeholder="你是一位……（将追加到系统提示词后）"></textarea>
+          </label>
+          <div class="agm-sec-title" style="margin-top:6px">上下文 / 记忆 / 规则</div>
+          <label class="agm-check"><input type="checkbox" id="agmRules">启用项目规则（.pancode/rules/*.md 强制注入）</label>
+          <label class="agm-check"><input type="checkbox" id="agmMemory">启用自动记忆（记住你的纠正与偏好）</label>
+          <label class="agm-check"><input type="checkbox" id="agmCompact">上下文超预算 85% 时自动摘要压缩</label>
+          <label>上下文预算（tokens）<input id="agmBudget" type="number" min="8000" step="1000" placeholder="120000"></label>
+        </div>
+      </div>
+      <div class="set-status" id="agmStatus"></div>
+      <div class="set-actions">
+        <span class="agm-hint">保存后立即广播到所有窗口，对下一条消息生效</span>
+        <button id="agmSave" class="btn-main">保存设置</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 工作流模板弹出层 ======================= -->
+<div id="wfPop" class="wf-pop" style="display:none">
+  <div class="wf-pop-head"><i data-ico="tasklist"></i> 工作流模板（目标驱动）</div>
+  <div id="wfList" class="wf-list"></div>
+  <div class="wf-pop-tip">点击模板会自动填入输入框，补充 <b>&lt;…&gt;</b> 占位后发送</div>
+</div>
+
+<!-- ======================= 会话沉淀弹窗 ======================= -->
+<div id="sedimentModal" style="display:none">
+  <div class="set-box sed-box">
+    <div class="set-head"><span><i data-ico="save"></i> 会话沉淀 — 把有效决策 / 约定固化为长期资产</span><button id="sedClose"><i data-ico="close"></i></button></div>
+    <div class="set-body">
+      <div class="sed-tip">一次好的「沉淀」会让未来的每次对话都更懂这个项目。选择沉淀目标：<b>项目规则</b>会被强制注入每次对话（像纪律），<b>项目记忆</b>作为参考背景（像经验）。</div>
+      <label>标题（可选）
+        <input id="sedTitle" type="text" placeholder="例如：登录必须用 JWT、禁止在控制器里写 SQL" spellcheck="false">
+      </label>
+      <label>内容（沉淀什么决策 / 约定 / 教训）
+        <textarea id="sedContent" rows="5" spellcheck="false" placeholder="例如：用户要求所有接口统一返回 {code,data,msg} 结构；分页用 page/size 参数。"></textarea>
+      </label>
+      <div class="sed-target">
+        <label class="sed-radio"><input type="radio" name="sedTarget" value="rule" checked> <span><b>项目规则</b><i>强制注入 · 像纪律</i></span></label>
+        <label class="sed-radio"><input type="radio" name="sedTarget" value="memory"> <span><b>项目记忆</b><i>参考背景 · 像经验</i></span></label>
+      </div>
+      <details class="sed-existing">
+        <summary>查看当前已沉淀内容（规则 + 记忆）</summary>
+        <pre id="sedPreview" class="sed-preview">（加载中…）</pre>
+      </details>
+      <div class="set-status" id="sedStatus"></div>
+      <div class="set-actions">
+        <button id="sedSave" class="btn-main">沉淀并保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 右键菜单 ======================= -->
+<div id="ctxMenu" style="display:none"></div>
+
+<!-- ======================= Diff 弹窗 ======================= -->
+<div id="diffModal" style="display:none">
+  <div class="diff-box">
+    <div class="diff-head">
+      <span id="diffTitle">Diff</span>
+      <span class="diff-legend"><i class="lg-del"></i>修改前 <i class="lg-add"></i>修改后</span>
+      <button id="diffClose"><i data-ico="close"></i>关闭</button>
+    </div>
+    <div id="diffHost"></div>
+  </div>
+</div>
+
+<script src="icons.js"></script>
+<script src="/vendor/monaco/vs/loader.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
