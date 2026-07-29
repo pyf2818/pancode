@@ -220,7 +220,10 @@ class LlmAgent extends AgentBase {
   constructor(ctx) {
     super(ctx);
     this.cfg = ctx.cfg;                 // 全局配置（引用，可热更新）
-    this.history = [];                  // 跨轮对话记忆
+    this.history = [];                  // 当前对话历史（切换时保存/恢复）
+    this.conversations = new Map();     // convId -> { history, round }
+    this._currentConv = "default";      // 当前活跃对话 ID
+    this._abort = false;                // 中断标志
     this.pending = new Map();           // 等待用户确认的工具调用 id -> { resolve, timer }
     this._apSeq = 0;
     this._memPath = null;
@@ -255,6 +258,28 @@ class LlmAgent extends AgentBase {
   fileChanged(rel) {
     this._repoDirty = true;
     super.fileChanged(rel);
+  }
+
+  /* ---------------- 多对话管理 ---------------- */
+  switchConversation(convId) {
+    if (this._currentConv && this.history.length) {
+      this.conversations.set(this._currentConv, { history: this.history, round: this.round });
+    }
+    this._currentConv = convId || "default";
+    const saved = this.conversations.get(this._currentConv);
+    this.history = saved ? saved.history : [];
+    this.round = saved ? saved.round : 0;
+    this._abort = false;
+  }
+
+  abort() {
+    this._abort = true;
+    this.running = false;
+    for (const [id, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.resolve({ approved: false, reason: "用户中断" });
+    }
+    this.pending.clear();
   }
 
   /* ---------------- 权限决策 ---------------- */
@@ -676,6 +701,7 @@ class LlmAgent extends AgentBase {
     if (this.running) return;
     opts = opts || {};
     const attachments = Array.isArray(opts.attachments) ? opts.attachments : [];
+    this._abort = false;
 
     const { clean, block } = this._resolveMentions(text);
     this._maybeRemember(text);
@@ -703,6 +729,7 @@ class LlmAgent extends AgentBase {
     try {
       for (;;) {
         rounds++;
+        if (this._abort) { await this.say("已中断"); break; }
         if (rounds > this.cfg.llm.maxToolRounds) {
           await this.say("已达到单任务最大工具调用轮数（" + this.cfg.llm.maxToolRounds + "），先停在这里。如果还需要继续，请再发一条消息。");
           break;

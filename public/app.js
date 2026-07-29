@@ -434,24 +434,25 @@ function initResizers() {
 
   /* 预览面板：宽度调整 - 完全照搬侧边栏模式 */
   const hp = $("htmlPreview"), pvR = $("previewResizer");
-  let px = null;
+  let px = null, pvSW = 0;
   const pvW0 = parseInt(localStorage.getItem("cw-preview-w"));
-  if (pvW0 && hp.classList.contains("show")) { hp.style.flex = "none"; hp.style.width = pvW0 + "px"; hp.classList.add("sized"); }
+  if (pvW0 && hp.classList.contains("show")) { hp.style.flex = "none"; hp.style.width = pvW0 + "px"; hp.classList.add("sized"); pvSW = pvW0; }
   pvR.addEventListener("mousedown", (e) => {
     if (!hp.classList.contains("show")) return;
     hp.style.flex = "none"; hp.classList.add("sized");
+    pvSW = hp.getBoundingClientRect().width || pvSW;
     px = e.clientX; pvR.classList.add("dragging"); document.body.style.cursor = "col-resize"; e.preventDefault();
   });
   window.addEventListener("mousemove", (e) => {
     if (px === null) return;
-    let w = hp.offsetWidth - (e.clientX - px);
+    var w = pvSW - (e.clientX - px);
     w = Math.max(200, Math.min(window.innerWidth * 0.65, w));
-    hp.style.width = w + "px"; px = e.clientX;
+    hp.style.width = w + "px"; px = e.clientX; pvSW = w;
     if (state.monacoReady && editor) editor.layout();
   });
   window.addEventListener("mouseup", () => {
     if (px === null) return; px = null; pvR.classList.remove("dragging"); document.body.style.cursor = "";
-    localStorage.setItem("cw-preview-w", hp.offsetWidth); if (editor) editor.layout();
+    localStorage.setItem("cw-preview-w", hp.offsetWidth || pvSW); if (editor) editor.layout();
   });
   pvR.addEventListener("dblclick", () => {
     hp.style.flex = "1"; hp.style.width = ""; hp.classList.remove("sized");
@@ -1516,6 +1517,7 @@ function renderConvList() {
         '<div class="ag-sess-meta">' + meta + '</div>' +
       '</div>' +
       '<button class="ag-sess-del" title="删除此对话"><i data-ico="close"></i></button>';
+    item.querySelector(".ag-sess-name").ondblclick = (e) => { e.stopPropagation(); var newName = prompt("输入新名称：", c.title || "新对话"); if (newName && newName.trim()) { c.title = newName.trim(); var l2 = loadConvList(); var f = l2.find(function(x){return x.id===c.id;}); if(f){f.title=newName.trim();saveConvList(l2);} renderConvList(); } };
     item.addEventListener("click", (e) => { if (e.target.closest(".ag-sess-del")) return; openConv(c.id); });
     const del = item.querySelector(".ag-sess-del");
     if (del) del.addEventListener("click", (e) => { e.stopPropagation(); deleteConv(c.id); });
@@ -2347,6 +2349,32 @@ $("goalStart").onclick = () => {
 
 /* 当 Agent 完成时检查是否在 goal 模式 */
 const _origHandleEvent = handleEvent;
+
+/* ---------------- 语言切换 ---------------- */
+(function(){
+  var LANG_BTN=document.getElementById("btnLangToggle");
+  if(LANG_BTN){
+    LANG_BTN.onclick=function(){
+      var cur=localStorage.getItem("cw-lang")||"zh";
+      var nxt=cur==="zh"?"en":"zh";
+      localStorage.setItem("cw-lang",nxt);
+      var ls=window.LANGS;
+      if(!ls)return;
+      document.querySelectorAll("[data-i18n]").forEach(function(el){
+        var tx=ls[nxt]?ls[nxt][el.dataset.i18n]:null;
+        if(!tx)tx=ls.zh?ls.zh[el.dataset.i18n]:null;
+        if(tx)el.textContent=tx;
+      });
+      document.querySelectorAll("[data-i18n-title]").forEach(function(el){
+        var tx=ls[nxt]?ls[nxt][el.dataset.i18nTitle]:null;
+        if(!tx)tx=ls.zh?ls.zh[el.dataset.i18nTitle]:null;
+        if(tx)el.title=tx;
+      });
+    };
+    var cur=localStorage.getItem("cw-lang")||"zh";
+    if(cur!=="zh")LANG_BTN.onclick();
+  }
+})();
 
 /* ---------------- 启动 ---------------- */
 applyTheme(getTheme());

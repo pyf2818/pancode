@@ -528,8 +528,12 @@ wss.on("connection", (ws) => {
 
     switch (m.type) {
       case "chat":
-        if (typeof m.text === "string" && m.text.trim())
+        if (typeof m.text === "string" && m.text.trim()) {
+          if (m.convId && typeof engine.switchConversation === "function") {
+            engine.switchConversation(m.convId);
+          }
           engine.handleChat(m.text.slice(0, 8000), { attachments: Array.isArray(m.attachments) ? m.attachments : [] });
+        }
         break;
 
       case "term.exec":
@@ -601,13 +605,29 @@ wss.on("connection", (ws) => {
         }, ws);
         break;
 
-      /* 新建对话：仅清空 AI 对话上下文（engine.history），不丢弃文件改动 */
+      /* 新建对话：仅清空 AI 对话上下文，不丢弃文件改动 */
       case "newchat":
         safe(() => {
-          engine.round = 0;
-          if (engine.history) engine.history = [];
+          if (typeof engine.switchConversation === "function" && m.convId) {
+            engine.switchConversation(m.convId);
+          } else {
+            engine.round = 0;
+            if (engine.history) engine.history = [];
+          }
           broadcast({ type: "agent.reset" });
           broadcast({ type: "term.line", text: "[pancode] 已开始新对话，AI 上下文已清空（文件改动保留）", cls: "tl-info" });
+        }, ws);
+        break;
+
+      /* 中断当前 Agent 运行 */
+      case "abort":
+        safe(() => {
+          if (typeof engine.abort === "function") {
+            engine.abort();
+            broadcast({ type: "term.line", text: "[pancode] Agent 已中断", cls: "tl-warn" });
+            broadcast({ type: "agent.state", running: false, label: "AI 空闲" });
+            broadcast({ type: "agent.done", round: engine.round });
+          }
         }, ws);
         break;
 

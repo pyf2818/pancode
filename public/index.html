@@ -24,11 +24,11 @@
   </div>
   <div class="tb-right">
     <button id="btnTheme" class="tb-theme" title="切换浅色 / 深色主题"><i data-ico="moon"></i></button>
-    <button id="btnSettings" title="配置 LLM API（OpenAI 兼容）"><i data-ico="gear"></i>模型设置</button>
-    <button id="btnAgentSettings" title="Agent 权限 / 人格 / 规则 / 上下文 / 记忆"><i data-ico="robot"></i>Agent 设置</button>
-    <button id="btnWorkflow" title="选择可复用的工作流模板，自动填入输入框"><i data-ico="tasklist"></i>工作流</button>
-    <button id="btnSediment" title="把本次会话的有效决策 / 约定沉淀为项目规则或记忆"><i data-ico="save"></i>沉淀</button>
-    <button id="btnReset" title="丢弃全部更改，恢复到 Git/快照基线"><i data-ico="reset"></i>还原工作区</button>
+    <button id="btnSettings" data-i18n-title="modelSettings" title="模型设置"><i data-ico="gear"></i><span data-i18n="modelSettings">模型设置</span></button>
+    <button id="btnAgentSettings" data-i18n-title="agentSettings" title="Agent 设置"><i data-ico="robot"></i><span data-i18n="agentSettings">Agent 设置</span></button>
+    <button id="btnWorkflow" data-i18n-title="workflow" title="工作流"><i data-ico="tasklist"></i><span data-i18n="workflow">工作流</span></button>
+    <button id="btnSediment" data-i18n-title="sediment" title="沉淀"><i data-ico="save"></i><span data-i18n="sediment">沉淀</span></button>
+    <button id="btnReset" data-i18n-title="resetWorkspace" title="还原工作区"><i data-ico="reset"></i><span data-i18n="resetWorkspace">还原工作区</span></button>
     <div id="goalWrap" class="goal-wrap">
       <button id="btnGoal" class="goal-btn" title="Goal 模式：设定目标，Agent 持续执行直到完成"><i data-ico="play"></i>Goal</button>
       <div id="goalPop" class="goal-pop" style="display:none">
@@ -37,7 +37,8 @@
         <button id="goalStart" class="set-btn" style="background:var(--ok);color:#000;width:100%">启动 Goal</button>
       </div>
     </div>
-    <span id="tbAgentState" class="agent-state idle"><span class="dot"></span>AI 空闲</span>
+    <span id="tbAgentState" class="agent-state idle"><span class="dot"></span><span data-i18n="aiIdle">AI 空闲</span></span>
+    <button id="btnLangToggle" class="tb-lang" title="Switch language"><span data-i18n="langToggle">EN</span></button>
     <span id="tbUserBtn" class="tb-user" title="点击登录/注册"><i data-ico="robot"></i><span id="tbUserTxt">未登录</span></span>
   </div>
 </div>
@@ -45,16 +46,16 @@
 <!-- ======================= Editor Window ======================= -->
 <div id="editorWindow" class="window">
   <div id="activitybar">
-    <button class="ab-btn active" data-view="explorer" title="资源管理器"><i data-ico="files"></i></button>
-    <button class="ab-btn" data-view="search" title="搜索"><i data-ico="search"></i></button>
-    <button class="ab-btn" data-view="scm" title="源代码管理"><i data-ico="scm"></i><span id="scmBadge" class="ab-badge" style="display:none">0</span></button>
-    <button class="ab-btn" data-view="skills" title="Skills 市场"><i data-ico="sparkle"></i></button>
-    <button class="ab-btn" data-view="ai" title="切换到 Agents Window"><i data-ico="robot"></i></button>
+    <button class="ab-btn active" data-view="explorer" data-i18n-title="explorer" title="资源管理器"><i data-ico="files"></i></button>
+    <button class="ab-btn" data-view="search" data-i18n-title="search" title="搜索"><i data-ico="search"></i></button>
+    <button class="ab-btn" data-view="scm" data-i18n-title="scm" title="源代码管理"><i data-ico="scm"></i><span id="scmBadge" class="ab-badge" style="display:none">0</span></button>
+    <button class="ab-btn" data-view="skills" data-i18n-title="skills" title="Skills 市场"><i data-ico="sparkle"></i></button>
+    <button class="ab-btn" data-view="ai" title="Agents Window"><i data-ico="robot"></i></button>
   </div>
 
   <div id="sidebar">
     <div class="side-view" id="view-explorer">
-      <div class="side-title">资源管理器</div>
+      <div class="side-title" data-i18n="explorer">资源管理器</div>
       <div class="side-section-head"><span id="projName">WORKSPACE</span>
         <span class="side-actions">
           <button id="btnNewFile" title="新建文件"><i data-ico="filePlus"></i></button>
@@ -64,17 +65,17 @@
       <div id="fileTree"></div>
     </div>
     <div class="side-view" id="view-search" style="display:none">
-      <div class="side-title">搜索</div>
+      <div class="side-title" data-i18n="search">搜索</div>
       <div class="search-box"><input id="searchInput" type="text" placeholder="在所有文件中搜索…" spellcheck="false"></div>
       <div id="searchResults"></div>
     </div>
     <div class="side-view" id="view-scm" style="display:none">
-      <div class="side-title">源代码管理</div>
+      <div class="side-title" data-i18n="scm">源代码管理</div>
       <div class="side-section-head" id="scmHead">更改 (0)</div>
       <div id="scmList"><div class="scm-empty">暂无更改。当 AI 修改代码后，改动会出现在这里。</div></div>
     </div>
     <div class="side-view" id="view-skills" style="display:none">
-      <div class="side-title">Skills 市场</div>
+      <div class="side-title" data-i18n="skillMarket">Skills 市场</div>
       <div class="side-section-head"><span id="skillsCount">0 个 Skill</span>
         <span class="side-actions">
           <button id="btnNewSkill" title="创建新 Skill"><i data-ico="filePlus"></i></button>
@@ -395,6 +396,7 @@
   </div>
 </div>
 
+<script src="i18n.js"></script>
 <script src="icons.js"></script>
 <script src="/vendor/monaco/vs/loader.js"></script>
 <script src="app.js"></script>

@@ -142,6 +142,14 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .tb-user.logged{color:var(--ok);border-color:var(--ok)44}
 .tb-user .ico{width:13px;height:13px}
 
+/* 语言切换按钮 */
+.tb-lang{font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;display:inline-flex;align-items:center;gap:4px;background:transparent}
+.tb-lang:hover{background:var(--bg4);color:var(--text)}
+
+/* 语言切换 */
+.tb-lang{font-size:12px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+.tb-lang:hover{background:var(--bg4);color:var(--text)}
+
 /* Goal 模式 */
 .goal-wrap{position:relative}
 .goal-btn{font-size:12px;padding:4px 10px;border-radius:6px;border:1px solid var(--ok);color:var(--ok);display:inline-flex;align-items:center;gap:5px;background:none;cursor:pointer}
@@ -353,9 +361,10 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .ci-skill-pick{font-size:11px;color:var(--text-dim);padding:3px 8px;border-radius:5px;border:1px solid var(--border);background:var(--bg3);display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .ci-skill-pick:hover{color:var(--text);border-color:var(--accent)}
 .ci-skill-pick .ico{width:12px;height:12px}
-.ci-skill-pop{position:absolute;top:28px;left:0;width:320px;max-height:300px;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);z-index:100;padding:4px}
+.ci-skill-pop{position:absolute;top:28px;left:0;width:360px;max-height:400px;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);z-index:100;padding:6px}
 .ci-skill-pop::-webkit-scrollbar{width:6px}
 .ci-skill-pop::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.ci-skill-pop-head{font-size:11px;color:var(--text-dim);padding:4px 8px 6px;border-bottom:1px solid var(--border);margin-bottom:4px;position:sticky;top:0;background:var(--bg2);z-index:1}
 .ci-skill-opt{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12px}
 .ci-skill-opt:hover{background:var(--hover)}
 .ci-skill-opt-name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
