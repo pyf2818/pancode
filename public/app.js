@@ -458,6 +458,20 @@ function initResizers() {
     hp.style.flex = "1"; hp.style.width = ""; hp.classList.remove("sized");
     localStorage.removeItem("cw-preview-w"); if (editor) editor.layout();
   });
+
+  /* 预览缩放（类浏览器 zoom + 滚动容器，方向自然） */
+  const zoomIn = $("hpZoomIn"), zoomOut = $("hpZoomOut"), zoomReset = $("hpZoomReset");
+  const stepZoom = (d) => { previewZoom = Math.max(0.25, Math.min(3, Math.round((previewZoom + d) * 100) / 100)); applyPreviewZoom(); };
+  if (zoomIn) zoomIn.onclick = () => stepZoom(0.1);
+  if (zoomOut) zoomOut.onclick = () => stepZoom(-0.1);
+  if (zoomReset) zoomReset.onclick = () => { previewZoom = 1; applyPreviewZoom(); };
+  window.addEventListener("keydown", (e) => {
+    if (!previewOn) return;
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && (e.key === "=" || e.key === "+")) { e.preventDefault(); stepZoom(0.1); }
+    else if (ctrl && e.key === "-") { e.preventDefault(); stepZoom(-0.1); }
+    else if (ctrl && e.key === "0") { e.preventDefault(); previewZoom = 1; applyPreviewZoom(); }
+  });
 }
 
 /* ---------- 二进制预览（对齐 VS Code：图片内置预览 / Word 类似 Office Viewer） ---------- */
@@ -512,7 +526,7 @@ const MD_CSS =
   "blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid #0a6ebd;background:#f3f7fb;color:#555}" +
   "table{border-collapse:collapse;margin:1em 0}th,td{border:1px solid #ddd;padding:6px 12px;font-size:14px}" +
   "img{max-width:100%}a{color:#0a6ebd;text-decoration:none}a:hover{text-decoration:underline}hr{border:none;border-top:1px solid #eaeaea;margin:1.4em 0}";
-let previewOn = false, previewTimer = null;
+let previewOn = false, previewTimer = null, previewZoom = 1;
 function isPreviewable(p) { return PREVIEW_EXTS.has(extOf(p)); }
 
 function renderMarkdown(src) {
@@ -557,6 +571,13 @@ function renderMarkdown(src) {
   return out.join("\n");
 }
 
+function applyPreviewZoom() {
+  const frame = $("hpFrame");
+  if (frame) frame.style.zoom = previewZoom;
+  const txt = $("hpZoomTxt");
+  if (txt) txt.textContent = Math.round(previewZoom * 100) + "%";
+}
+
 function renderPreview() {
   const path = state.activeFile;
   const frame = $("hpFrame");
@@ -567,6 +588,7 @@ function renderPreview() {
   } else {
     frame.srcdoc = "<!DOCTYPE html><html><head><meta charset='utf-8'><style>" + MD_CSS + "</style></head><body class='md-body'>" + renderMarkdown(val) + "</body></html>";
   }
+  frame.style.zoom = previewZoom;
 }
 function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 350); }
 
@@ -579,7 +601,12 @@ function togglePreview(force) {
     hp.classList.add("show");
     const pvW = parseInt(localStorage.getItem("cw-preview-w"));
     if (pvW) { hp.style.flex = "none"; hp.style.width = pvW + "px"; hp.classList.add("sized"); }
+    else {
+      const defW = Math.min(620, Math.max(360, Math.round(window.innerWidth * 0.42)));
+      hp.style.flex = "none"; hp.style.width = defW + "px"; hp.classList.add("sized");
+    }
     if (pvR) pvR.classList.add("show");
+    applyPreviewZoom();
     renderPreview();
   } else {
     previewOn = false; hp.classList.remove("show", "sized");
@@ -2149,9 +2176,12 @@ function renderCodexTree() {
   root.querySelectorAll('[data-node]').forEach((n) => {
     const k = n.dataset.kind;
     if (k === "soul") n.onclick = () => openSoulEditor();
-    else n.onclick = () => openNodeDetail(k, n.dataset.id);
+    else n.onclick = (e) => { e.stopPropagation(); openNodeDetail(k, n.dataset.id); };
   });
-  root.querySelectorAll('[data-unlock]').forEach((n) => { n.onclick = () => toast(n.dataset.unlock); });
+  root.querySelectorAll('[data-cat]').forEach((n) => {
+    n.onclick = () => openCategoryDetail(n.dataset.cat);
+  });
+  root.querySelectorAll('[data-unlock-id]').forEach((n) => { n.onclick = () => openUnlockDetail(n.dataset.unlockId); });
 }
 
 function buildCodexSVG(t, prog) {
@@ -2173,11 +2203,11 @@ function buildCodexSVG(t, prog) {
     { key: "lesson", x: 296, y: 300, label: "教训", items: t.memory.lesson.items, c: C.lesson },
   ];
   cats.forEach((cat) => {
-    s += '<path d="M' + root_.x + ' ' + root_.y + ' C' + root_.x + ' ' + (root_.y + 40) + ' ' + cat.x + ' ' + (cat.y - 50) + ' ' + cat.x + ' ' + cat.y + '" stroke="' + cat.c.s + '" stroke-width="3" fill="none" opacity="0.7"/>';
+    s += '<path class="evo-branch" d="M' + root_.x + ' ' + root_.y + ' C' + root_.x + ' ' + (root_.y + 40) + ' ' + cat.x + ' ' + (cat.y - 50) + ' ' + cat.x + ' ' + cat.y + '" stroke="' + cat.c.s + '" stroke-width="3" fill="none" opacity="0.7"/>';
   });
 
   // 根：灵魂（内联人形 SVG，替代 emoji）
-  s += '<g data-node data-kind="soul" data-id="soul" style="cursor:pointer">' +
+  s += '<g class="evo-node-root" data-node data-kind="soul" data-id="soul" style="cursor:pointer">' +
     '<circle cx="' + root_.x + '" cy="' + root_.y + '" r="22" fill="' + C.soul.f + '" stroke="' + C.soul.s + '" stroke-width="1.5"/>' +
     '<circle cx="' + root_.x + '" cy="' + (root_.y - 5) + '" r="4.6" fill="#fff"/>' +
     '<path d="M' + (root_.x - 8.5) + ' ' + (root_.y + 7) + 'c0-4.8 3.8-8 8.5-8s8.5 3.2 8.5 8" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/></g>';
@@ -2186,33 +2216,43 @@ function buildCodexSVG(t, prog) {
   cats.forEach((cat) => {
     const lv = Math.min(9, 1 + Math.floor(cat.items.length / 3));
     const r = 14 + Math.min(lv, 5);
-    s += '<circle cx="' + cat.x + '" cy="' + cat.y + '" r="' + r + '" fill="' + cat.c.f + '" stroke="' + cat.c.s + '" stroke-width="1.5"/>';
+    const top = cat.items.slice(0, 3);
+    s += '<g class="evo-cat-group" data-cat="' + cat.key + '" style="cursor:pointer">';
+    s += '<circle class="evo-node-cat" cx="' + cat.x + '" cy="' + cat.y + '" r="' + r + '" fill="' + cat.c.f + '" stroke="' + cat.c.s + '" stroke-width="1.5"/>';
     s += '<text x="' + cat.x + '" y="' + (cat.y + 4) + '" font-size="11" font-weight="600" fill="#fff" text-anchor="middle">L' + lv + '</text>';
     s += '<text x="' + cat.x + '" y="' + (cat.y + r + 16) + '" font-size="11.5" font-weight="600" style="fill:var(--text)" text-anchor="middle">' + cat.label + ' ' + cat.items.length + '</text>';
 
-    const top = cat.items.slice(0, 3);
     top.forEach((it, i) => {
       const ox = cat.x + (i - 1) * 34;
       const oy = cat.y + r + 34 + (i % 2) * 16;
       const ir = 8;
       const id = it.id;
       const kind = cat.key === "skills" ? "skill" : "mem";
-      s += '<g data-node data-kind="' + kind + '" data-id="' + esc(id) + '" style="cursor:pointer">';
+      const nm = (cat.key === "skills" ? it.name : (it.topic || it.type || ""));
+      s += '<g class="evo-node-leaf" data-node data-kind="' + kind + '" data-id="' + esc(id) + '" style="cursor:pointer">';
+      s += '<title>' + esc((nm || "").slice(0, 30)) + '</title>';
       s += '<circle cx="' + ox + '" cy="' + oy + '" r="' + ir + '" fill="' + cat.c.f + '" opacity="0.85" stroke="' + cat.c.s + '" stroke-width="1"/>';
       s += '</g>';
-      const nm = (cat.key === "skills" ? it.name : (it.topic || it.type || ""));
-      s += '<text x="' + ox + '" y="' + (oy + ir + 11) + '" font-size="9" style="fill:var(--text-dim)" text-anchor="middle">' + esc((nm || "").slice(0, 8)) + '</text>';
     });
+    s += '</g>';
   });
 
-  // 解锁节点（虚线锁定态）
+  // 进阶称号（虚线锁定态，可点击查看说明）
+  s += '<text x="64" y="412" font-size="10.5" font-weight="600" style="fill:var(--text-dim)" text-anchor="start">进阶称号 · 达成条件后解锁</text>';
   const un = (prog && prog.unlockNodes) || [];
   un.forEach((u, i) => {
     const ux = 64 + i * 116;
     const uy = 432;
-    s += '<g data-unlock data-unlock="' + esc(u.label + "：" + (u.met ? "已解锁" : u.req)) + '" style="cursor:help">';
+    const cls = u.met ? "evo-unlock-on" : "";
+    s += '<g class="' + cls + '" data-unlock-id="' + esc(u.id) + '" style="cursor:pointer">';
+    s += '<title>' + esc(u.label + "：" + (u.met ? "已解锁" : u.req)) + '</title>';
     s += '<circle cx="' + ux + '" cy="' + uy + '" r="16" fill="' + (u.met ? "#1a8c6e" : "#eef0f2") + '" stroke="' + (u.met ? "#0f5a45" : "#b0b6bd") + '" stroke-width="1.5" stroke-dasharray="4 3"/>';
-    s += '<text x="' + ux + '" y="' + (uy + 5) + '" font-size="13" text-anchor="middle">' + (u.met ? "✓" : "?") + '</text>';
+    if (u.met) {
+      s += '<path d="M' + (ux - 5) + ' ' + uy + 'l3.4 3.4L' + (ux + 5.5) + ' ' + (uy - 4) + '" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
+    } else {
+      s += '<rect x="' + (ux - 4.5) + '" y="' + (uy - 1) + '" width="9" height="7" rx="1.4" fill="none" stroke="#8a9098" stroke-width="1.6"/>';
+      s += '<path d="M' + (ux - 2.6) + ' ' + (uy - 1) + 'v-2.2a2.6 2.6 0 0 1 5.2 0v2.2" fill="none" stroke="#8a9098" stroke-width="1.6"/>';
+    }
     s += '</g>';
     s += '<text x="' + ux + '" y="' + (uy + 30) + '" font-size="9.5" style="fill:var(--text-dim)" text-anchor="middle">' + esc(u.label) + '</text>';
   });
@@ -2299,7 +2339,7 @@ function openNodeDetail(kind, id) {
   if (!modal) {
     modal = document.createElement("div");
     modal.id = "evoDetailModal";
-    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:70;display:none;align-items:center;justify-content:center";
+    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:90;display:none;align-items:center;justify-content:center";
     modal.innerHTML = '<div class="set-box" style="max-width:520px;max-height:80vh;display:flex;flex-direction:column">' +
       '<div class="set-head"><span id="evoDetailTitle"></span><button id="evoDetailClose"><i data-ico="close"></i></button></div>' +
       '<div class="set-body" id="evoDetailBody" style="overflow-y:auto"></div>' +
@@ -2353,13 +2393,71 @@ function openNodeDetail(kind, id) {
   modal.style.display = "flex"; replaceIcons();
 }
 
+/* 分类全量列表（点击成长树的 记忆/技能/经验/教训 模块） */
+function openCategoryDetail(catKey) {
+  const modal = $("evoDetailModal");
+  if (!modal || !evoData) return;
+  const title = modal.querySelector("#evoDetailTitle");
+  const body = modal.querySelector("#evoDetailBody");
+  const foot = modal.querySelector("#evoDetailFoot");
+  foot.innerHTML = "";
+  const t = evoData.tree;
+  const map = {
+    memory: { label: "记忆", kind: "mem", items: t.memory.memory.items, color: "#0a6ebd", ico: "memory" },
+    skills: { label: "技能", kind: "skill", items: t.skills.reduce((a, g) => a.concat(g.items), []), color: "#1a8c6e", ico: "toolbox" },
+    exp:    { label: "经验", kind: "mem", items: t.memory.experience.items, color: "#b58a00", ico: "bulb" },
+    lesson: { label: "教训", kind: "mem", items: t.memory.lesson.items, color: "#d94343", ico: "warn" },
+  };
+  const m = map[catKey];
+  if (!m) return;
+  title.innerHTML = ico(m.ico) + " " + m.label + " · " + m.items.length + " 条";
+  if (!m.items.length) { body.innerHTML = '<div class="evo-empty">暂无条目。完成几次任务后 Agent 会自动沉淀。</div>'; modal.style.display = "flex"; replaceIcons(); return; }
+  const rowHtml = (it) => {
+    const nm = catKey === "skills" ? (it.name || "") : (it.topic || it.type || it.content || "");
+    const sub = catKey === "skills" ? (it.desc || "") : (it.content || "");
+    return '<div class="evo-cat-row" data-kind="' + m.kind + '" data-id="' + esc(it.id) + '">' +
+      '<span class="evo-cat-dot" style="background:' + m.color + '"></span>' +
+      '<div class="evo-cat-main"><div class="evo-cat-name">' + esc(("" + (nm || "")).slice(0, 60)) + '</div>' +
+      (sub ? '<div class="evo-cat-sub">' + esc(("" + sub).slice(0, 90)) + '</div>' : '') + '</div>' +
+      '<span class="evo-cat-go">' + ico("chevR") + '</span></div>';
+  };
+  body.innerHTML = '<div class="evo-cat-list">' + m.items.map(rowHtml).join("") + '</div>';
+  body.querySelectorAll(".evo-cat-row").forEach((r) => { r.onclick = () => openNodeDetail(r.dataset.kind, r.dataset.id); });
+  modal.style.display = "flex"; replaceIcons();
+}
+
+/* 进阶称号说明（点击成长树底部的 架构师/导师/贤者） */
+function openUnlockDetail(id) {
+  const modal = $("evoDetailModal");
+  if (!modal || !evoData) return;
+  const u = (evoData.progression.unlockNodes || []).find((x) => x.id === id);
+  if (!u) return;
+  const title = modal.querySelector("#evoDetailTitle");
+  const body = modal.querySelector("#evoDetailBody");
+  const foot = modal.querySelector("#evoDetailFoot");
+  foot.innerHTML = "";
+  title.innerHTML = ico(u.met ? "trophy" : "lock") + " 进阶称号：" + u.label;
+  const roleDesc = {
+    architect: "当 Agent 积累的技能足够多、对你和项目的理解够深时，它更像一位「架构师」——能主动规划结构、拆分模块、把控全局。",
+    mentor: "当 Agent 进化到较高阶段（阶段≥3 茁壮及以上），它更像一位「导师」——能总结方法论、带你看清问题本质，而不只是执行。",
+    sage: "当 Agent 灵魂稳固且技能丰富（阶段≥3 且 Skill≥20），它趋近于「贤者」——稳定、可靠、越来越懂你，是长期协作沉淀的结果。",
+  };
+  body.innerHTML = '<div class="evo-detail">' +
+    '<div class="evo-d-k">这是什么</div><div>' + esc(roleDesc[id] || "Agent 的进阶称号，代表它在该方向的成熟度。") + '</div>' +
+    '<div class="evo-d-k">解锁条件</div><div>' + esc(u.req) + '</div>' +
+    '<div class="evo-d-k">当前状态</div><div>' + (u.met
+      ? '<span style="color:var(--green,#1a8c6e);font-weight:600">✓ 已解锁</span>'
+      : '<span style="color:var(--text-dim)">未解锁，继续完成任务、沉淀技能即可达成</span>') + '</div></div>';
+  modal.style.display = "flex"; replaceIcons();
+}
+
 /* 灵魂编辑弹窗（手动编辑 + 显示待确认提案） */
 function openSoulEditor() {
   let modal = $("soulEditorModal");
   if (!modal) {
     modal = document.createElement("div");
     modal.id = "soulEditorModal";
-    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:70;display:none;align-items:center;justify-content:center";
+    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:90;display:none;align-items:center;justify-content:center";
     modal.innerHTML = '<div class="set-box" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column">' +
       '<div class="set-head"><span>' + ico("soul") + ' 编辑 Agent 灵魂</span><button id="soulEditorClose"><i data-ico="close"></i></button></div>' +
       '<div class="set-body" id="soulEditorBody" style="overflow-y:auto;padding:12px"></div>' +

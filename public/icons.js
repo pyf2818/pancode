@@ -46,6 +46,8 @@
     play: `<path d="M5 3.4l7 4.6-7 4.6z" ${S}/>`,
     /* 加号 */
     plus: `<path d="M8 3v10M3 8h10" ${S}/>`,
+    /* 减号 */
+    minus: `<path d="M3 8h10" ${S}/>`,
     /* diff 文档 */
     diff: `<path d="M4 2.5h5.5l2.5 2.5v8.5H4z" ${S}/><path d="M6 7h4M6 9.5h4M8 5v4" ${S} opacity="0"/><path d="M5.8 7.2h4.4M8 5v4.4M5.8 10.6h4.4" ${S}/>`,
     /* 重置：环形箭头 */

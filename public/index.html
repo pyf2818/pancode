@@ -101,10 +101,18 @@
         <div class="hp-head">
           <span class="hp-title"><i data-ico="eye"></i>预览</span>
           <span class="hp-hint" id="hpHint">保存时自动刷新</span>
+          <span class="hp-zoom">
+            <button id="hpZoomOut" class="hp-btn" title="缩小 (Ctrl -)"><i data-ico="minus"></i></button>
+            <span id="hpZoomTxt" class="hp-zoom-txt">100%</span>
+            <button id="hpZoomIn" class="hp-btn" title="放大 (Ctrl +)"><i data-ico="plus"></i></button>
+            <button id="hpZoomReset" class="hp-btn" title="重置缩放"><i data-ico="reset"></i></button>
+          </span>
           <button id="hpRefresh" class="hp-btn" title="刷新预览"><i data-ico="reset"></i></button>
           <button id="hpClose" class="hp-btn" title="关闭预览"><i data-ico="close"></i></button>
         </div>
-        <iframe id="hpFrame" class="hp-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+        <div id="hpScroll" class="hp-scroll">
+          <iframe id="hpFrame" class="hp-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+        </div>
       </div>
     </div>
     <div id="binPreview" style="display:none"><div id="binPreviewBody"></div></div>

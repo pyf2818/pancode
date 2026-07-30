@@ -202,6 +202,34 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .evo-achs{display:flex;flex-wrap:wrap;gap:8px}
 .evo-ach{display:flex;align-items:center;gap:5px;font-size:11px;padding:5px 9px;border-radius:20px;border:1px solid var(--border);background:var(--bg2);color:var(--text-dim)}
 .evo-ach.on{border-color:var(--green,#1a8c6e);color:var(--text);background:var(--bg)}
+
+/* 分类全量列表 */
+.evo-cat-list{display:flex;flex-direction:column;gap:6px;padding:4px 2px}
+.evo-cat-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);cursor:pointer}
+.evo-cat-row:hover{border-color:var(--accent);background:var(--bg3)}
+.evo-cat-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.evo-cat-main{flex:1;min-width:0}
+.evo-cat-name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.evo-cat-sub{font-size:11px;color:var(--text-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.evo-cat-go{color:var(--text-dim);display:inline-flex}
+.evo-cat-go .ico{width:14px;height:14px}
+
+/* 进化树动画 */
+@keyframes evo-draw{to{stroke-dashoffset:0}}
+.evo-branch{stroke-dasharray:600;stroke-dashoffset:600;animation:evo-draw 1.4s ease forwards}
+@keyframes evo-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.07)}}
+.evo-node-root,.evo-node-cat{transform-box:fill-box;transform-origin:center;animation:evo-pulse 3.4s ease-in-out infinite}
+.evo-node-cat{animation-duration:3.8s}
+@keyframes evo-pop{from{opacity:0;transform:scale(.3)}to{opacity:1;transform:scale(1)}}
+.evo-node-leaf{transform-box:fill-box;transform-origin:center;animation:evo-pop .5s ease both}
+.evo-node-leaf:nth-child(2){animation-delay:.15s}
+.evo-node-leaf:nth-child(3){animation-delay:.3s}
+.evo-node-leaf:hover{filter:brightness(1.18)}
+.evo-cat-group:hover .evo-node-cat{filter:brightness(1.12)}
+@keyframes evo-unlock{0%,100%{transform:scale(1)}50%{transform:scale(1.12)}}
+.evo-unlock-on{transform-box:fill-box;transform-origin:center;animation:evo-unlock 2.4s ease-in-out infinite}
+.evo-codex-tree svg{overflow:visible}
+
 .evo-ach-ico{font-size:14px}
 .ft-item.active{background:var(--active);color:var(--text);font-weight:600}
 .ft-item .ft-mod{margin-left:auto;margin-right:8px;color:var(--warn);font-size:11px;font-weight:700}
@@ -299,15 +327,21 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 #htmlPreview.sized{flex:none}
 #previewResizer{display:none;flex-shrink:0}
 #previewResizer.show{display:block}
+#previewResizer{width:9px;margin-left:-4px;cursor:col-resize}
+#previewResizer::before{content:"";position:absolute;left:4px;top:50%;transform:translateY(-50%);width:2px;height:34px;border-radius:2px;background:var(--border);transition:background .15s}
+#previewResizer:hover::before,#previewResizer.dragging::before{background:var(--accent);height:54px}
 .hp-head{height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;flex-shrink:0;background:var(--bg3);border-bottom:1px solid var(--border)}
 .hp-title{font-size:12px;font-weight:600;color:var(--text);display:inline-flex;align-items:center;gap:5px}
 .hp-title .ico{color:var(--blue)}
 .hp-hint{font-size:11px;color:var(--text-dim)}
-.hp-btn{margin-left:auto;color:var(--text-dim);padding:3px 6px;border-radius:4px;display:inline-flex}
+.hp-zoom{margin-left:auto;display:inline-flex;align-items:center;gap:1px;padding:2px 4px;border:1px solid var(--border);border-radius:7px;background:var(--bg2)}
+.hp-zoom-txt{font-size:11px;color:var(--text-dim);min-width:38px;text-align:center;font-variant-numeric:tabular-nums}
+.hp-btn{color:var(--text-dim);padding:3px 6px;border-radius:4px;display:inline-flex}
 .hp-btn+.hp-btn{margin-left:2px}
 .hp-btn:hover{background:var(--bg4);color:var(--text)}
 .hp-btn .ico{width:13px;height:13px}
-.hp-frame{flex:1;min-height:0;width:100%;border:none;background:#fff}
+.hp-scroll{flex:1;min-height:0;overflow:auto;background:#fff}
+.hp-frame{width:100%;height:100%;border:none;background:#fff;transform-origin:top left}
 
 /* 底部面板（终端） */
 #bottomPanel{height:230px;border-top:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;background:var(--bg)}
