@@ -705,6 +705,7 @@ document.querySelectorAll(".ab-btn").forEach((btn) => {
   btn.onclick = () => {
     const v = btn.dataset.view;
     if (v === "ai") { switchMode("agents"); return; }
+    if (v === "evolution") { openEvolutionCodex(); return; }
     // 侧边栏缩回时，点击活动栏按钮重新展开
     const sb = $("sidebar");
     if (sb.classList.contains("fully-collapsed")) {
@@ -713,18 +714,14 @@ document.querySelectorAll(".ab-btn").forEach((btn) => {
       if (editor) editor.layout();
     }
     document.querySelectorAll(".ab-btn").forEach((b) => b.classList.toggle("active", b === btn));
-    ["explorer", "search", "scm", "skills", "evolution"].forEach((name) => {
+    ["explorer", "search", "scm", "skills"].forEach((name) => {
       $("view-" + name).style.display = name === v ? "block" : "none";
     });
     if (v === "search") setTimeout(() => $("searchInput").focus(), 50);
     if (v === "skills") onSkillsViewActive();
-    if (v === "evolution") onEvolutionViewActive();
   };
 });
 $("bpToggle").onclick = () => $("bottomPanel").classList.toggle("collapsed");
-
-/* 进化树 UI 绑定（Tab 切换 / 编辑灵魂 / 刷新） */
-bindEvolutionUI();
 
 /* ---------------- 改动面板（Git 状态：M/A/D） ---------------- */
 const ST_TXT = { M: "M", A: "U", D: "D" };
@@ -2067,16 +2064,13 @@ async function loadSkills() {
 let evoData = null;
 let evoTab = "tree";
 
-function onEvolutionViewActive() {
-  loadEvolutionTree();
-}
-
 async function loadEvolutionTree() {
   try {
     const r = await fetch("/api/evolution/tree").then((x) => x.json());
     if (!r.ok) return;
     evoData = r;
-    if (evoTab === "tree") renderEvolutionTree(); else renderEvolutionTimeline();
+    const codex = $("evoCodexModal");
+    if (codex && codex.style.display !== "none") renderCodex();
     updateEvoCounts(r.counts);
   } catch (e) {}
 }
@@ -2087,60 +2081,197 @@ function updateEvoCounts(c) {
   if (el) el.textContent = "记忆 " + (c.memory || 0) + " · 经验 " + (c.experience || 0) + " · 教训 " + (c.lesson || 0) + " · Skills " + (c.skills || 0) + (c.pending ? " · 待确认 " + c.pending : "");
 }
 
-/* 树视图：灵魂 + 记忆 + 经验 + 教训 + Skills 分层 */
-function renderEvolutionTree() {
-  const root = $("evoTree");
+/* ============ 进化图鉴（游戏化进化树 v2） ============ */
+function openEvolutionCodex() {
+  let modal = $("evoCodexModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "evoCodexModal";
+    modal.className = "evo-codex-mask";
+    modal.innerHTML =
+      '<div class="evo-codex">' +
+        '<div class="evo-codex-head">' +
+          '<div class="evo-codex-title">🌳 进化图鉴</div>' +
+          '<div class="evo-codex-stage" id="evoStage"></div>' +
+          '<div class="evo-codex-xp"><div class="evo-codex-xp-fill" id="evoXpFill"></div></div>' +
+          '<div class="evo-codex-xp-txt" id="evoXpTxt"></div>' +
+          '<button class="evo-codex-close" id="evoCodexClose" title="关闭">✕</button>' +
+        '</div>' +
+        '<div class="evo-codex-tabs">' +
+          '<button class="evo-tab active" data-tab="tree">🌳 成长树</button>' +
+          '<button class="evo-tab" data-tab="timeline">🕒 时间线</button>' +
+          '<span class="evo-codex-spacer"></span>' +
+          '<button class="evo-tbtn" id="evoCodexEditSoul"><span>🧬</span>编辑灵魂</button>' +
+          '<button class="evo-tbtn" id="evoCodexRefresh">↻</button>' +
+        '</div>' +
+        '<div class="evo-codex-body">' +
+          '<div class="evo-codex-tree" id="evoCodexTree"></div>' +
+          '<div class="evo-codex-side" id="evoCodexSide"></div>' +
+          '<div class="evo-codex-timeline" id="evoCodexTimeline" style="display:none"></div>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(modal);
+    modal.querySelector("#evoCodexClose").onclick = () => { modal.style.display = "none"; };
+    modal.onclick = (e) => { if (e.target === modal) modal.style.display = "none"; };
+    modal.querySelectorAll(".evo-tab").forEach((tab) => {
+      tab.onclick = () => {
+        const tb = tab.dataset.tab;
+        modal.querySelectorAll(".evo-tab").forEach((x) => x.classList.toggle("active", x === tab));
+        $("evoCodexTree").style.display = tb === "tree" ? "" : "none";
+        $("evoCodexSide").style.display = tb === "tree" ? "" : "none";
+        $("evoCodexTimeline").style.display = tb === "timeline" ? "" : "none";
+        if (tb === "tree") renderCodexTree(); else renderEvolutionTimeline($("evoCodexTimeline"));
+      };
+    });
+    modal.querySelector("#evoCodexEditSoul").onclick = () => openSoulEditor();
+    modal.querySelector("#evoCodexRefresh").onclick = () => loadEvolutionTree();
+  }
+  modal.style.display = "flex";
+  loadEvolutionTree();
+}
+
+function renderCodex() {
+  const prog = evoData && evoData.progression;
+  if (!prog) return;
+  $("evoStage").textContent = "阶段 " + prog.stage.id + " · " + prog.stage.name;
+  $("evoXpFill").style.width = Math.round(prog.stageProgress * 100) + "%";
+  $("evoXpTxt").textContent = prog.xpToNext > 0
+    ? (prog.xp + " XP · 距下阶段 " + prog.xpToNext)
+    : (prog.xp + " XP · 已满级");
+  renderCodexTree();
+  renderCodexSide();
+}
+
+function renderCodexTree() {
+  const root = $("evoCodexTree");
   if (!root || !evoData) return;
-  root.innerHTML = "";
-  const t = evoData.tree;
+  root.innerHTML = buildCodexSVG(evoData.tree, evoData.progression);
+  root.querySelectorAll('[data-node]').forEach((n) => {
+    const k = n.dataset.kind;
+    if (k === "soul") n.onclick = () => openSoulEditor();
+    else n.onclick = () => openNodeDetail(k, n.dataset.id);
+  });
+  root.querySelectorAll('[data-unlock]').forEach((n) => { n.onclick = () => toast(n.dataset.unlock); });
+}
 
-  // 灵魂节点
-  const soul = t.soul;
-  const soulEl = document.createElement("div");
-  soulEl.className = "evo-node evo-soul";
-  let soulLists = "";
-  const listBlock = (title, arr) => (arr && arr.length ? '<div class="evo-sub"><b>' + title + "</b>" + arr.map((x) => '<div class="evo-li">· ' + esc(x) + "</div>").join("") + "</div>" : "");
-  soulLists = listBlock("价值观", soul.values) + listBlock("边界", soul.boundaries) + listBlock("原则", soul.principles);
-  soulEl.innerHTML =
-    '<div class="evo-node-head" data-act="soul"><span class="evo-ico">' + (soul.icon || "🧬") + '</span><span class="evo-name">' + esc(soul.name || "Agent") + '</span><span class="evo-tag">灵魂</span>' + (soul.pendingCount ? '<span class="evo-badge">' + soul.pendingCount + " 待确认</span>" : "") + "</div>" +
-    (soulLists || '<div class="evo-empty">尚未定义灵魂</div>');
-  soulEl.querySelector(".evo-node-head").onclick = () => openSoulEditor();
-  root.appendChild(soulEl);
+function buildCodexSVG(t, prog) {
+  const C = {
+    soul:   { f: "#9b3fb0", s: "#6a2a86" },
+    memory: { f: "#0a6ebd", s: "#084c7a" },
+    skills: { f: "#1a8c6e", s: "#0f5a45" },
+    exp:    { f: "#b58a00", s: "#8a6a00" },
+    lesson: { f: "#d94343", s: "#a32d2d" },
+  };
+  const W = 360, H = 470;
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" preserveAspectRatio="xMidYMid meet" font-family="-apple-system,Segoe UI,sans-serif" role="img">';
 
-  // 记忆 / 经验 / 教训
-  const memDefs = [
-    { key: "memory", node: t.memory.memory },
-    { key: "experience", node: t.memory.experience },
-    { key: "lesson", node: t.memory.lesson },
+  const root_ = { x: 180, y: 34 };
+  const cats = [
+    { key: "memory", x: 64, y: 150, label: "记忆", items: t.memory.memory.items, c: C.memory },
+    { key: "skills", x: 296, y: 150, label: "技能", items: t.skills.reduce((a, g) => a.concat(g.items), []), c: C.skills },
+    { key: "exp", x: 64, y: 300, label: "经验", items: t.memory.experience.items, c: C.exp },
+    { key: "lesson", x: 296, y: 300, label: "教训", items: t.memory.lesson.items, c: C.lesson },
   ];
-  for (const d of memDefs) {
-    const g = d.node;
-    const grp = document.createElement("div");
-    grp.className = "evo-node";
-    let items = g.items.map((e) => '<div class="evo-li evo-click" data-kind="mem" data-id="' + esc(e.id) + '">· <b>' + esc(e.topic || g.label) + "</b>：" + esc(e.content.slice(0, 90)) + "</div>").join("");
-    grp.innerHTML =
-      '<div class="evo-node-head"><span class="evo-ico">' + g.icon + '</span><span class="evo-name">' + g.label + '</span><span class="evo-tag">' + g.items.length + "</span></div>" +
-      (items || '<div class="evo-empty">暂无</div>');
-    grp.querySelectorAll(".evo-click").forEach((li) => { li.onclick = () => openNodeDetail("mem", li.dataset.id); });
-    root.appendChild(grp);
-  }
+  cats.forEach((cat) => {
+    s += '<path d="M' + root_.x + ' ' + root_.y + ' C' + root_.x + ' ' + (root_.y + 40) + ' ' + cat.x + ' ' + (cat.y - 50) + ' ' + cat.x + ' ' + cat.y + '" stroke="' + cat.c.s + '" stroke-width="3" fill="none" opacity="0.7"/>';
+  });
 
-  // Skills 三组
-  for (const sk of t.skills) {
-    const grp = document.createElement("div");
-    grp.className = "evo-node";
-    let items = sk.items.map((s) => '<div class="evo-li evo-click" data-kind="skill" data-id="' + esc(s.id) + '">· <b>' + esc(s.name) + "</b>：" + esc((s.desc || "").slice(0, 70)) + "</div>").join("");
-    grp.innerHTML =
-      '<div class="evo-node-head"><span class="evo-ico">' + sk.icon + '</span><span class="evo-name">' + sk.label + '</span><span class="evo-tag">' + sk.items.length + "</span></div>" +
-      (items || '<div class="evo-empty">暂无</div>');
-    grp.querySelectorAll(".evo-click").forEach((li) => { li.onclick = () => openNodeDetail("skill", li.dataset.id); });
-    root.appendChild(grp);
-  }
+  // 根：灵魂
+  s += '<g data-node data-kind="soul" data-id="soul" style="cursor:pointer"><circle cx="' + root_.x + '" cy="' + root_.y + '" r="22" fill="' + C.soul.f + '" stroke="' + C.soul.s + '" stroke-width="1.5"/>' +
+    '<text x="' + root_.x + '" y="' + (root_.y + 5) + '" font-size="13" font-weight="600" fill="#fff" text-anchor="middle">🧬</text></g>';
+  s += '<text x="' + root_.x + '" y="' + (root_.y + 42) + '" font-size="12" font-weight="600" style="fill:var(--text)" text-anchor="middle">' + esc(t.soul.name || "Agent") + '</text>';
+
+  cats.forEach((cat) => {
+    const lv = Math.min(9, 1 + Math.floor(cat.items.length / 3));
+    const r = 14 + Math.min(lv, 5);
+    s += '<circle cx="' + cat.x + '" cy="' + cat.y + '" r="' + r + '" fill="' + cat.c.f + '" stroke="' + cat.c.s + '" stroke-width="1.5"/>';
+    s += '<text x="' + cat.x + '" y="' + (cat.y + 4) + '" font-size="11" font-weight="600" fill="#fff" text-anchor="middle">L' + lv + '</text>';
+    s += '<text x="' + cat.x + '" y="' + (cat.y + r + 16) + '" font-size="11.5" font-weight="600" style="fill:var(--text)" text-anchor="middle">' + cat.label + ' ' + cat.items.length + '</text>';
+
+    const top = cat.items.slice(0, 3);
+    top.forEach((it, i) => {
+      const ox = cat.x + (i - 1) * 34;
+      const oy = cat.y + r + 34 + (i % 2) * 16;
+      const ir = 8;
+      const id = it.id;
+      const kind = cat.key === "skills" ? "skill" : "mem";
+      s += '<g data-node data-kind="' + kind + '" data-id="' + esc(id) + '" style="cursor:pointer">';
+      s += '<circle cx="' + ox + '" cy="' + oy + '" r="' + ir + '" fill="' + cat.c.f + '" opacity="0.85" stroke="' + cat.c.s + '" stroke-width="1"/>';
+      s += '</g>';
+      const nm = (cat.key === "skills" ? it.name : (it.topic || it.type || ""));
+      s += '<text x="' + ox + '" y="' + (oy + ir + 11) + '" font-size="9" style="fill:var(--text-dim)" text-anchor="middle">' + esc((nm || "").slice(0, 8)) + '</text>';
+    });
+  });
+
+  // 解锁节点（虚线锁定态）
+  const un = (prog && prog.unlockNodes) || [];
+  un.forEach((u, i) => {
+    const ux = 64 + i * 116;
+    const uy = 432;
+    s += '<g data-unlock data-unlock="' + esc(u.label + "：" + (u.met ? "已解锁" : u.req)) + '" style="cursor:help">';
+    s += '<circle cx="' + ux + '" cy="' + uy + '" r="16" fill="' + (u.met ? "#1a8c6e" : "#eef0f2") + '" stroke="' + (u.met ? "#0f5a45" : "#b0b6bd") + '" stroke-width="1.5" stroke-dasharray="4 3"/>';
+    s += '<text x="' + ux + '" y="' + (uy + 5) + '" font-size="13" text-anchor="middle">' + (u.met ? "✓" : "?") + '</text>';
+    s += '</g>';
+    s += '<text x="' + ux + '" y="' + (uy + 30) + '" font-size="9.5" style="fill:var(--text-dim)" text-anchor="middle">' + esc(u.label) + '</text>';
+  });
+
+  s += '</svg>';
+  return s;
+}
+
+function renderCodexSide() {
+  const root = $("evoCodexSide");
+  if (!root || !evoData) return;
+  const prog = evoData.progression;
+  const t = evoData.tree;
+  const a = prog.attributes;
+  const attrRow = (label, val) =>
+    '<div class="evo-attr"><span class="evo-attr-name">' + label + '</span>' +
+    '<div class="evo-attr-bar"><i style="width:' + Math.round(val) + '%"></i></div>' +
+    '<span class="evo-attr-val">' + Math.round(val) + '</span></div>';
+
+  const ach = (prog.achievements || []).map((x) =>
+    '<div class="evo-ach ' + (x.unlocked ? "on" : "off") + '" title="' + esc(x.name) + '">' +
+      '<span class="evo-ach-ico">' + (x.unlocked ? x.icon : "🔒") + '</span>' +
+      '<span class="evo-ach-name">' + esc(x.name) + '</span></div>').join("");
+
+  const pathBtns = ["craftsman", "scholar", "companion"].map((p) => {
+    const names = { craftsman: "工匠", scholar: "学者", companion: "伙伴" };
+    const descs = { craftsman: "重代码质量", scholar: "重知识沉淀", companion: "重默契陪伴" };
+    const active = prog.path === p;
+    return '<button class="evo-path-btn' + (active ? " active" : "") + '" data-path="' + p + '">' +
+      '<b>' + names[p] + '</b><span>' + descs[p] + '</span></button>';
+  }).join("");
+
+  root.innerHTML =
+    '<div class="evo-sec">能力属性</div>' +
+    attrRow("理解力", a.understanding) +
+    attrRow("技艺", a.craft) +
+    attrRow("稳健", a.robustness) +
+    attrRow("默契", a.rapport) +
+    '<div class="evo-sec">灵魂核心</div>' +
+    '<div class="evo-soulcard" data-act="soul"><span class="evo-soul-emoji">' + (t.soul.emoji || "🧬") + '</span>' +
+      '<div><div class="evo-soul-name">' + esc(t.soul.name || "Agent") + '</div>' +
+      '<div class="evo-soul-sub">' + esc((t.soul.values && t.soul.values[0]) || "尚未定义灵魂") + '</div>' +
+      (t.soul.pendingCount ? '<div class="evo-soul-pend">' + t.soul.pendingCount + ' 项微调待确认</div>' : '') +
+      '</div></div>' +
+    '<div class="evo-sec">进化路线 <span class="evo-sec-tip">选定后影响属性成长偏向</span></div>' +
+    '<div class="evo-paths">' + pathBtns + '</div>' +
+    '<div class="evo-sec">成就徽章</div>' +
+    '<div class="evo-achs">' + ach + '</div>';
+
+  root.querySelector(".evo-soulcard").onclick = () => openSoulEditor();
+  root.querySelectorAll(".evo-path-btn").forEach((b) => {
+    b.onclick = async () => {
+      await fetch("/api/progression", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: b.dataset.path }) });
+      loadEvolutionTree();
+    };
+  });
 }
 
 /* 时间线视图：按 ts 排成纵向时间轴 */
-function renderEvolutionTimeline() {
-  const root = $("evoTimeline");
+function renderEvolutionTimeline(rootArg) {
+  const root = rootArg || $("evoTimeline");
   if (!root || !evoData) return;
   root.innerHTML = "";
   const tl = evoData.timeline || [];
@@ -2277,22 +2408,6 @@ function openSoulEditor() {
   body.querySelectorAll("[data-rej]").forEach((b) => b.onclick = async () => { await fetch("/api/soul/proposal/" + b.dataset.rej + "?accept=0", { method: "PUT" }); openSoulEditor(); loadEvolutionTree(); });
 
   modal.style.display = "flex"; replaceIcons();
-}
-
-/* 进化树 Tab 切换 + 工具条按钮 */
-function bindEvolutionUI() {
-  document.querySelectorAll(".evo-tab").forEach((tab) => {
-    tab.onclick = () => {
-      evoTab = tab.dataset.tab;
-      document.querySelectorAll(".evo-tab").forEach((t) => t.classList.toggle("active", t === tab));
-      const tree = $("evoTree"), tl = $("evoTimeline");
-      tree.style.display = evoTab === "tree" ? "block" : "none";
-      tl.style.display = evoTab === "timeline" ? "block" : "none";
-      if (evoData) { if (evoTab === "tree") renderEvolutionTree(); else renderEvolutionTimeline(); }
-    };
-  });
-  const es = $("btnEditSoul"); if (es) es.onclick = () => openSoulEditor();
-  const rf = $("btnRefreshEvo"); if (rf) rf.onclick = () => loadEvolutionTree();
 }
 
 function renderSkillsList() {

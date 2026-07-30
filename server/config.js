@@ -193,5 +193,11 @@ function soulPath(cfg) {
   const key = crypto.createHash("md5").update(wsAbs).digest("hex");
   return path.join(ROOT, ".pancode", "soul", key + ".json");
 }
+/* 项目进度(进化路线)文件路径 — 与记忆/技能/灵魂同算法、同工作区哈希 */
+function progressionPath(cfg) {
+  const wsAbs = path.resolve(ROOT, (cfg && cfg.workspace) || "workspace");
+  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
+  return path.join(ROOT, ".pancode", "progression", key + ".json");
+}
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, rulesDir, ROOT, CONFIG_PATH };
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };

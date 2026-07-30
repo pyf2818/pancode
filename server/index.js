@@ -20,6 +20,8 @@ const { ping } = require("./llm");
 const { LlmAgent } = require("./agent-llm");
 const { DemoAgent } = require("./agent-demo");
 const { SoulStore } = require("./soul-store");
+const { ProgressionStore } = require("./progression-store");
+const { computeProgression } = require("./progression");
 const auth = require("./auth");
 const VERSION = (() => { try { return require("../package.json").version; } catch (e) { return "2.3.0"; } })();
 
@@ -36,7 +38,7 @@ function broadcast(ev) {
 
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
-let files = null, git = null, term = null, engine = null, soulStore = null;
+let files = null, git = null, term = null, engine = null, soulStore = null, progressionStore = null;
 
 function buildEngine() {
   const ctx = { emit: broadcast, files, git, term, cfg };
@@ -503,10 +505,15 @@ app.get("/api/evolution/tree", (req, res) => {
     (soul.proposals || []).forEach((p) => push("soul", soul.emoji || "🧬", "灵魂微调提案：" + p.content.slice(0, 60), p.status, p.ts, p.id));
     timeline.sort((a, b) => b.ts - a.ts);
 
+    // 进度系统：阶段 / 经验值 / 属性 / 成就 / 解锁规则
+    const ps = progressionStore || (progressionStore = new ProgressionStore(configMod.progressionPath(cfg)));
+    const prog = computeProgression({ soul, memEntries, skills: skills, builtin: builtin || [], path: ps.get().path });
+
     res.json({
       ok: true,
       tree: { soul: soulNode, memory: memGroups, skills: skillNodes },
       timeline,
+      progression: prog,
       counts: {
         memory: memGroups.memory.items.length,
         experience: memGroups.experience.items.length,
@@ -548,6 +555,15 @@ app.put("/api/soul/proposal/:id", (req, res) => {
     const p = ss.resolveProposal(req.params.id, accept);
     if (!p) return res.status(404).json({ ok: false, error: "提案不存在" });
     res.json({ ok: true, proposal: p });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- 进度：设定进化路线（持久化） ---------- */
+app.post("/api/progression", (req, res) => {
+  try {
+    const ps = progressionStore || (progressionStore = new ProgressionStore(configMod.progressionPath(cfg)));
+    const p = ps.setPath((req.body && req.body.path) || null);
+    res.json({ ok: true, path: p.path });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
