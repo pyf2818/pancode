@@ -2207,26 +2207,63 @@ function insertSkillToChat(skill) {
   fetch("/api/skills/market/" + skill.id + "/use", { method: "POST" }).catch(() => {});
 }
 
-/* Skill 选择器弹出列表 */
+/* Skill 选择器弹出列表（按来源分组：内置 / 创建 / 沉淀，支持搜索 + 滚动） */
 function renderSkillPop() {
   const pop = inputBox.querySelector("#ciSkillPop");
   if (!pop) return;
-  const all = [...builtinSkills, ...allSkills];
-  if (!all.length) { pop.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:12px">暂无可用 Skill</div>'; return; }
-  const CAT_COLORS = { frontend: "#4fc1ff", backend: "#4ec9b0", devops: "#c586c0", test: "#dcdcaa", refactor: "#ce9178", security: "#f48771", perf: "#cca700", debug: "#d16969", config: "#8a8a8a", workflow: "#0e639c", other: "#808080" };
+
+  const builtin = builtinSkills || [];
+  const userSkills = (allSkills || []).filter((s) => s.source === "manual" || s.source === "import");
+  const autoSkills = (allSkills || []).filter((s) => s.source === "auto");
+
   pop.innerHTML = "";
-  all.forEach((s) => {
-    const el = document.createElement("div");
-    el.className = "ci-skill-opt";
-    const catColor = CAT_COLORS[s.category] || "#808080";
-    const srcLabel = s.source === "workflow" ? "内置" : (s.source === "auto" ? "沉淀" : "用户");
-    el.innerHTML =
-      '<span class="ci-skill-opt-cat" style="background:' + catColor + '">' + esc(s.category || "other") + '</span>' +
-      '<span class="ci-skill-opt-name">' + esc(s.name) + '</span>' +
-      '<span class="ci-skill-opt-src">' + srcLabel + '</span>';
-    el.onclick = () => insertSkillToChat(s);
-    pop.appendChild(el);
-  });
+
+  // 顶部搜索框（sticky）
+  const head = document.createElement("div");
+  head.className = "ci-skill-pop-head";
+  head.innerHTML = '<input id="ciSkillSearch" type="text" placeholder="搜索 Skill 名称 / 描述…" ' +
+    'style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;outline:none">';
+  pop.appendChild(head);
+
+  const listWrap = document.createElement("div");
+  pop.appendChild(listWrap);
+
+  function paint(filter) {
+    const q = (filter || "").trim().toLowerCase();
+    listWrap.innerHTML = "";
+    const groups = [
+      { title: "内置工作流", list: builtin },
+      { title: "用户创建", list: userSkills },
+      { title: "工作区沉淀（Agent 自动）", list: autoSkills },
+    ];
+    let shown = 0;
+    groups.forEach((g) => {
+      const items = q ? g.list.filter((s) => (s.name + " " + (s.description || "")).toLowerCase().includes(q)) : g.list;
+      if (!items.length) return;
+      const gt = document.createElement("div");
+      gt.className = "ci-skill-group-title";
+      gt.textContent = g.title + "（" + items.length + "）";
+      listWrap.appendChild(gt);
+      items.forEach((s) => {
+        const el = document.createElement("div");
+        el.className = "ci-skill-opt";
+        const catColor = CAT_COLORS[s.category] || "#808080";
+        el.innerHTML =
+          '<span class="ci-skill-opt-cat" style="background:' + catColor + '">' + esc(s.category || "other") + '</span>' +
+          '<span class="ci-skill-opt-name" title="' + esc(s.description || "") + '">' + esc(s.name) + '</span>' +
+          (s.useCount ? '<span class="ci-skill-opt-src">引用 ' + s.useCount + '</span>' : '');
+        el.onclick = () => insertSkillToChat(s);
+        listWrap.appendChild(el);
+        shown++;
+      });
+    });
+    if (!shown) listWrap.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:12px">没有匹配的 Skill</div>';
+  }
+
+  paint("");
+  const searchInput = head.querySelector("#ciSkillSearch");
+  searchInput.addEventListener("input", (e) => paint(e.target.value));
+  setTimeout(() => searchInput.focus(), 50);
 }
 
 async function deleteSkill(id) {
