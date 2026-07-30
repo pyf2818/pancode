@@ -96,7 +96,7 @@ class AgentBase {
       const st = diffStat(base === null ? "" : base, cur);
       list.push({ path: ch.path, status: ch.status, add: st.add, del: st.del });
     }
-    this.emit({ type: "changes", list, card: !!card });
+    this.emit({ type: "changes", list, card: !!card, convId: this._currentConv });
     return list;
   }
 

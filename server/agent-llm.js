@@ -230,7 +230,8 @@ class LlmAgent extends AgentBase {
     super(ctx);
     this.cfg = ctx.cfg;                 // 全局配置（引用，可热更新）
     this.history = [];                  // 当前对话历史（切换时保存/恢复）
-    this.conversations = new Map();     // convId -> { history, round }
+    this.conversations = new Map();     // convId -> { history, round, changes }
+    this.convChanges = {};              // convId -> 该会话改动的文件清单（按会话记录显示）
     this._currentConv = "default";      // 当前活跃对话 ID
     this._abort = false;                // 中断标志
     this.pending = new Map();           // 等待用户确认的工具调用 id -> { resolve, timer }
@@ -278,7 +279,9 @@ class LlmAgent extends AgentBase {
           history: c.history,
           round: Number(c.round) || 0,
           ts: Number(c.ts) || Date.now(),
+          changes: Array.isArray(c.changes) ? c.changes : [],
         });
+        if (Array.isArray(c.changes)) this.convChanges[String(c.id)] = c.changes;
       }
       // 恢复上次活跃对话为当前上下文
       const cur = raw && raw.current ? String(raw.current) : "";
@@ -304,6 +307,7 @@ class LlmAgent extends AgentBase {
       history: this.history,
       round: this.round,
       ts: Date.now(),
+      changes: (this.convChanges && this.convChanges[this._currentConv]) || [],
     });
   }
 
@@ -318,6 +322,7 @@ class LlmAgent extends AgentBase {
           round: v.round || 0,
           ts: v.ts || Date.now(),
           history: Array.isArray(v.history) ? v.history.slice(-CONV_MAX_MSGS) : [],
+          changes: Array.isArray(v.changes) ? v.changes : [],
         })).filter((c) => c.history.length);
         safeWrite.saveJson(this._convPath, {
           v: 1,
@@ -350,6 +355,7 @@ class LlmAgent extends AgentBase {
         round: v.round || 0,
         ts: v.ts || Date.now(),
         history: Array.isArray(v.history) ? v.history.slice(-CONV_MAX_MSGS) : [],
+        changes: Array.isArray(v.changes) ? v.changes : [],
       })).filter((c) => c.history.length);
       if (!conversations.length) return;
       safeWrite.atomicWrite(this._convPath, JSON.stringify({
@@ -441,6 +447,7 @@ ${taskSummary}
   dropConversation(convId) {
     if (!convId) return;
     this.conversations.delete(String(convId));
+    delete this.convChanges[String(convId)];
     if (this._currentConv === String(convId)) { this.history = []; this.round = 0; }
     this._persistConversations();
   }
@@ -571,7 +578,7 @@ ${taskSummary}
       if (m) parts.push("【项目记忆（参考）】\n" + m);
     }
     // 当前任务计划
-    const planCtx = this.plan.formatForContext();
+    const planCtx = this.plan.formatForContext(this._currentConv);
     if (planCtx) parts.push(planCtx);
     // 匹配相关 Skill 并注入
     if (userText) {
@@ -873,19 +880,19 @@ ${taskSummary}
         return sk && sk._duplicate ? "同名 Skill 已存在: " + sk.name : "Skill 创建失败";
       }
       case "create_plan": {
-        const plan = this.plan.create(args.title, args.tasks);
+        const plan = this.plan.create(this._currentConv, args.title, args.tasks);
         if (plan) {
-          this.emit({ type: "plan.created", plan });
+          this.emit({ type: "plan.created", plan, convId: plan.convId });
           return "计划已创建: " + plan.title + " (" + plan.tasks.length + " 个任务)";
         }
         return "计划创建失败";
       }
       case "update_plan": {
-        const active = this.plan.getActive();
+        const active = this.plan.getActive(this._currentConv);
         if (!active) return "没有活跃的计划";
         const plan = this.plan.updateTask(active.id, args.taskIndex, args.status, args.note);
         if (plan) {
-          this.emit({ type: "plan.updated", plan });
+          this.emit({ type: "plan.updated", plan, convId: plan.convId });
           const task = plan.tasks[args.taskIndex];
           return "任务 " + (args.taskIndex + 1) + " 状态更新为: " + args.status + (args.note ? " (" + args.note + ")" : "");
         }
@@ -995,7 +1002,11 @@ ${taskSummary}
       }
 
       const changes = this.pushChanges(true);
-      if (changes.length) this.emit({ type: "term.line", text: "[Agent] 本次任务共改动 " + changes.length + " 个文件", cls: "tl-info" });
+      if (changes.length) {
+        // 按会话记录本次改动，切换会话时各自显示
+        this.convChanges[this._currentConv] = changes;
+        this.emit({ type: "term.line", text: "[Agent] 本次任务共改动 " + changes.length + " 个文件", cls: "tl-info" });
+      }
       this.round++;
 
       /* Phase 2：任务完成后 → 自我进化 + Skill 自动提取（异步，不阻塞主流程） */

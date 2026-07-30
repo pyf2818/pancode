@@ -824,6 +824,7 @@ $("diffClose").onclick = () => {
 };
 
 /* ---------------- 终端渲染 ---------------- */
+const termBuffers = {};   // convId -> [每条 "div.tl" 的 outerHTML]：终端日志按会话分别记录与显示
 function termLine(html) {
   const lines = $("termLines");
   const div = document.createElement("div");
@@ -832,9 +833,21 @@ function termLine(html) {
   lines.appendChild(div);
   while (lines.children.length > 800) lines.removeChild(lines.firstChild);
   lines.scrollTop = lines.scrollHeight;
+  if (convId) {
+    const arr = termBuffers[convId] || (termBuffers[convId] = []);
+    arr.push(div.outerHTML);
+    while (arr.length > 800) arr.shift();
+  }
 }
 function termPrompt(cmd) {
   termLine('<span class="tl-prompt">user@pancode</span><span class="tl-dim">:</span><span class="tl-info">~/' + esc(state.project) + '</span><span class="tl-dim">$ </span><span class="tl-cmd">' + esc(cmd) + "</span>");
+}
+/* 切换会话时把终端 DOM 换成对应会话的缓冲（与聊天 c.dom 同套路） */
+function swapTerm(id) {
+  const arr = termBuffers[id];
+  const el = $("termLines");
+  el.innerHTML = arr ? arr.join("") : "";
+  el.scrollTop = el.scrollHeight;
 }
 
 /* ---------------- 聊天流渲染 ---------------- */
@@ -1283,7 +1296,7 @@ function handleEvent(ev) {
     case "editor.open": if (state.mode === "editor" && state.files[ev.path]) openFile(ev.path, ev.line); break;
 
     case "changes": {
-      renderChanges(ev.list);
+      if (!ev.convId || ev.convId === convId) renderChanges(ev.list);
       if (ev.card && ev.list.length) {
         const el = document.createElement("div");
         el.className = "change-summary";
@@ -1308,8 +1321,8 @@ function handleEvent(ev) {
       refreshCtx();
       break;
 
-    case "plan.created": renderPlan(ev.plan); break;
-    case "plan.updated": renderPlan(ev.plan); break;
+    case "plan.created": if (!ev.convId || ev.convId === convId) renderPlan(ev.plan); break;
+    case "plan.updated": if (!ev.convId || ev.convId === convId) renderPlan(ev.plan); break;
 
     case "agent.settings": applyAgentSettings(ev.agent); break;
     case "context.usage": updateCtxBar(ev.used, ev.budget); break;
@@ -1709,6 +1722,7 @@ function persistConv() {
   const c = list.find((x) => x.id === convId);
   if (!c) return;
   c.dom = chatStream.innerHTML;
+  c.term = (termBuffers[convId] || []).join("");   // 终端日志随会话持久化
   const t = convFirstUserTitle();
   if (t && (!c.title || c.title === "新对话")) c.title = t;
   // 不更新 ts，保持创建时间排序不变，避免会话列表跳动
@@ -1760,10 +1774,13 @@ function openConv(id) {
   send({ type: "switchConv", convId: id });   // C6：同步切换服务端 AI 上下文
   const c = loadConvList().find((x) => x.id === id);
   chatStream.innerHTML = c && c.dom ? c.dom : "";
+  if (c && c.term && !termBuffers[id]) termBuffers[id] = [c.term];   // 首次进入该会话才从持久化恢复终端日志
+  swapTerm(id);                                                          // 切换显示的终端日志
   for (const k in blocks) delete blocks[k];
   answerBlock = null; thinkCount = 0; lastThink = null;
   scrollChat();
   refreshCtx();
+  loadPlan(convId);                                                      // 切换该会话的任务计划
   renderConvList();
   replaceIcons();
 }
@@ -1785,6 +1802,9 @@ function startNewConv(announce) {
   const list = loadConvList();
   list.unshift({ id: convId, title: "新对话", ts: Date.now(), dom: "" });
   saveConvList(list);
+  termBuffers[convId] = [];
+  $("termLines").innerHTML = "";     // 新会话终端日志清空
+  clearPlanPanel();                  // 新会话无任务计划
   if (announce) {
     chatStream.innerHTML = "";
     for (const k in blocks) delete blocks[k];
@@ -1806,11 +1826,14 @@ function restoreConv() {
   const c = convId && list.find((x) => x.id === convId);
   if (!c) { startNewConv(false); return; }
   chatStream.innerHTML = c.dom || "";
+  if (c.term) termBuffers[convId] = [c.term];   // 恢复终端日志
+  swapTerm(convId);
   for (const k in blocks) delete blocks[k];
   answerBlock = null; thinkCount = 0; lastThink = null;
   renderConvList();
   replaceIcons();
   scrollChat();
+  loadPlan(convId);                              // 恢复该会话的任务计划
 }
 
 function newConversation() {
@@ -1971,10 +1994,17 @@ function renderPlan(plan) {
   }
 }
 
-async function loadPlan() {
+function clearPlanPanel() {
+  const box = $("agPlanEmpty"), active = $("agPlanActive"), sticky = $("planSticky");
+  if (box) box.style.display = "block";
+  if (active) { active.style.display = "none"; active.innerHTML = ""; }
+  if (sticky) sticky.hidden = true;
+}
+async function loadPlan(cid) {
+  const id = cid || convId || "default";
   try {
-    const r = await fetch("/api/plans").then((x) => x.json());
-    if (r.active) renderPlan(r.active);
+    const r = await fetch("/api/plans?convId=" + encodeURIComponent(id)).then((x) => x.json());
+    if (r.active) renderPlan(r.active); else clearPlanPanel();
   } catch (e) {}
 }
 
@@ -2051,7 +2081,7 @@ bindInput();
 /* A1：登录成为闸门——先领取本机令牌，再判定登录态；未登录只显示登录/注册，不加载工作区数据、不连 WS */
 async function startApp() {
   if (ws) { try { ws.close(); } catch (e) {} }
-  loadSkills(); loadPlan(); connect();
+  loadSkills(); loadPlan(convId); connect();
 }
 
 /* ===== B5 全局加载遮罩 ===== */

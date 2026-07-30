@@ -239,16 +239,17 @@ app.get("/api/skills/search/:query", (req, res) => {
 app.get("/api/plans", (req, res) => {
   try {
     if (!engine || !engine.plan) return res.json({ ok: true, active: null, recent: [] });
-    const active = engine.plan.getActive();
-    const recent = engine.plan.recent(5);
+    const cid = req.query.convId || "default";
+    const active = engine.plan.getActive(cid);
+    const recent = engine.plan.recent(cid, 5);
     res.json({ ok: true, active, recent });
   } catch (e) { res.json({ ok: true, active: null, recent: [] }); }
 });
 app.post("/api/plans", (req, res) => {
   try {
     if (!engine || !engine.plan) return res.status(503).json({ ok: false, error: "引擎未就绪" });
-    const plan = engine.plan.create(req.body.title, req.body.tasks);
-    broadcast({ type: "plan.created", plan });
+    const plan = engine.plan.create(req.body.convId || (engine._currentConv) || "default", req.body.title, req.body.tasks);
+    broadcast({ type: "plan.created", plan, convId: plan.convId });
     res.json({ ok: true, plan });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
@@ -257,7 +258,7 @@ app.post("/api/plans/:id/complete", (req, res) => {
     if (!engine || !engine.plan) return res.status(503).json({ ok: false, error: "引擎未就绪" });
     const plan = engine.plan.complete(req.params.id);
     if (!plan) return res.status(404).json({ ok: false, error: "计划不存在" });
-    broadcast({ type: "plan.updated", plan });
+    broadcast({ type: "plan.updated", plan, convId: plan.convId });
     res.json({ ok: true, plan });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
@@ -718,6 +719,8 @@ wss.on("connection", (ws) => {
           git.discardAll();
           engine.round = 0;
           if (engine.history) engine.history = [];
+          // 清空当前会话记录的改动（工作区已回退基线）
+          if (engine.convChanges) engine.convChanges[engine._currentConv] = [];
           if (typeof engine.saveConversations === "function") engine.saveConversations();
           broadcast({ type: "fs.sync", files: snapshotFiles() });
           engine.pushChanges(false);
@@ -732,6 +735,8 @@ wss.on("connection", (ws) => {
           if (typeof engine.switchConversation === "function" && m.convId) {
             engine.switchConversation(String(m.convId));
           }
+          // 清空该会话记录的改动（新对话无历史改动）
+          if (engine.convChanges) engine.convChanges[String(m.convId || engine._currentConv)] = [];
           // newchat 语义 = 该会话上下文清空（新建会话本就为空；重试场景同 ID 也需清空）
           engine.round = 0;
           if (engine.history) engine.history = [];
@@ -748,6 +753,9 @@ wss.on("connection", (ws) => {
             engine.switchConversation(String(m.convId));
             const n = engine.history ? engine.history.length : 0;
             ws.send(JSON.stringify({ type: "conv.switched", convId: String(m.convId), messages: n }));
+            // 同步切换该会话记录的改动清单，前端改动面板一并切换
+            const cl = (engine.convChanges && engine.convChanges[String(m.convId)]) || [];
+            ws.send(JSON.stringify({ type: "changes", list: cl, convId: String(m.convId) }));
           }
         }, ws);
         break;

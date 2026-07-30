@@ -26,11 +26,12 @@ class PlanStore {
     require("./safe-write").saveJson(this._path, this._plans);
   }
 
-  /* ---------- 创建计划 ---------- */
-  create(title, taskTexts) {
+  /* ---------- 创建计划（绑定会话 convId） ---------- */
+  create(convId, title, taskTexts) {
     const id = "plan_" + Date.now().toString(36);
     const plan = {
       id,
+      convId: convId || "default",
       title: title || "任务计划",
       status: "active",
       ts: Date.now(),
@@ -64,9 +65,15 @@ class PlanStore {
     return plan;
   }
 
-  /* ---------- 获取当前活跃计划 ---------- */
-  getActive() {
-    return this._plans.find((p) => p.status === "active") || null;
+  /* ---------- 获取当前活跃计划（按会话） ---------- */
+  getActive(convId) {
+    const cid = convId || "default";
+    const scoped = this._plans.find((p) => p.status === "active" && p.convId === cid);
+    if (scoped) return scoped;
+    // 兼容旧数据：无 convId 的活跃计划首次访问时归并到当前会话
+    const legacy = this._plans.find((p) => p.status === "active" && p.convId == null);
+    if (legacy) { legacy.convId = cid; this._save(); return legacy; }
+    return null;
   }
 
   /* ---------- 完成计划 ---------- */
@@ -80,14 +87,18 @@ class PlanStore {
     return plan;
   }
 
-  /* ---------- 获取最近计划 ---------- */
-  recent(limit) {
-    return this._plans.sort((a, b) => b.ts - a.ts).slice(0, limit || 5);
+  /* ---------- 获取最近计划（按会话） ---------- */
+  recent(convId, limit) {
+    const cid = convId || "default";
+    return this._plans
+      .filter((p) => p.convId === cid || (p.convId == null && cid === "default"))
+      .sort((a, b) => b.ts - a.ts)
+      .slice(0, limit || 5);
   }
 
-  /* ---------- 格式化注入 LLM 上下文 ---------- */
-  formatForContext() {
-    const active = this.getActive();
+  /* ---------- 格式化注入 LLM 上下文（按会话） ---------- */
+  formatForContext(convId) {
+    const active = this.getActive(convId);
     if (!active) return "";
     let text = "【当前任务计划】" + active.title + "\n";
     active.tasks.forEach((t, i) => {
