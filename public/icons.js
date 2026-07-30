@@ -78,6 +78,24 @@
     eye: `<path d="M1.6 8S4 3.6 8 3.6 14.4 8 14.4 8 12 12.4 8 12.4 1.6 8 1.6 8z" ${S}/><circle cx="8" cy="8" r="2" ${S}/>`,
     /* 分屏预览 */
     split: `<rect x="2" y="3" width="12" height="10" rx="1.4" ${S}/><path d="M8 3.2v9.6" ${S}/>`,
+    /* 进化树：树干 + 树冠节点 */
+    tree: `<path d="M8 14V8.5" ${S}/><path d="M8 10.5 5 7.5M8 10.5 11 7.5" ${S}/><circle cx="8" cy="4.6" r="2.4" ${S}/><circle cx="4.4" cy="7.2" r="1.7" ${S}/><circle cx="11.6" cy="7.2" r="1.7" ${S}/>`,
+    /* 灵魂 / 身份：人形 */
+    soul: `<circle cx="8" cy="5.2" r="2.6" ${S}/><path d="M3.8 13c0-2.3 1.9-3.8 4.2-3.8s4.2 1.5 4.2 3.8" ${S}/>`,
+    /* 记忆：数据库柱 */
+    memory: `<ellipse cx="8" cy="3.6" rx="4.2" ry="1.6" ${S}/><path d="M3.8 3.6v8.8c0 .9 1.9 1.6 4.2 1.6s4.2-.7 4.2-1.6V3.6" ${S}/><path d="M3.8 8c0 .9 1.9 1.6 4.2 1.6s4.2-.7 4.2-1.6" ${S}/>`,
+    /* 教训：警告三角 */
+    warn: `<path d="M8 2.4 14.4 13H1.6z" ${S}/><path d="M8 6.2v3.4" ${S}/><circle cx="8" cy="11.4" r=".8" fill="currentColor" stroke="none"/>`,
+    /* 技能：工具箱 */
+    toolbox: `<rect x="2.5" y="6" width="11" height="7" rx="1.3" ${S}/><path d="M5.4 6V4.7a1.4 1.4 0 0 1 2.8 0V6" ${S}/><path d="M2.5 9h11" ${S}/>`,
+    /* 成就：奖杯 */
+    trophy: `<path d="M5 3h6v2.8a3 3 0 0 1-6 0z" ${S}/><path d="M3 3.4h2V5a2 2 0 0 1-2 2z" ${S}/><path d="M13 3.4h-2V5a2 2 0 0 0 2 2z" ${S}/><path d="M8 8.8V11M6.2 13h3.6a1.4 1.4 0 0 1-3.6 0z" ${S}/>`,
+    /* 进化路线：指南针 */
+    compass: `<circle cx="8" cy="8" r="5.6" ${S}/><path d="M8 8l2.7-1.5-1.2 2.7L7.5 9.5 8 8z" fill="currentColor" stroke="none"/>`,
+    /* 时间线：时钟 */
+    clock: `<circle cx="8" cy="8" r="5.6" ${S}/><path d="M8 4.6V8l2.6 1.6" ${S}/>`,
+    /* 锁定：挂锁 */
+    lock: `<rect x="3.6" y="7" width="8.8" height="6.4" rx="1.2" ${S}/><path d="M5.4 7V5.4a2.6 2.6 0 0 1 5.2 0V7" ${S}/><circle cx="8" cy="10" r="1.1" fill="currentColor" stroke="none"/>`,
   };
 
   /* 文件类型徽标：圆角方块 + 字母，参考 VS Code seti 风格 */

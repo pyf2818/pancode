@@ -2091,18 +2091,18 @@ function openEvolutionCodex() {
     modal.innerHTML =
       '<div class="evo-codex">' +
         '<div class="evo-codex-head">' +
-          '<div class="evo-codex-title">🌳 进化图鉴</div>' +
+          '<div class="evo-codex-title">' + ico("tree") + ' 进化图鉴</div>' +
           '<div class="evo-codex-stage" id="evoStage"></div>' +
           '<div class="evo-codex-xp"><div class="evo-codex-xp-fill" id="evoXpFill"></div></div>' +
           '<div class="evo-codex-xp-txt" id="evoXpTxt"></div>' +
-          '<button class="evo-codex-close" id="evoCodexClose" title="关闭">✕</button>' +
+          '<button class="evo-codex-close" id="evoCodexClose" title="关闭">' + ico("close") + '</button>' +
         '</div>' +
         '<div class="evo-codex-tabs">' +
-          '<button class="evo-tab active" data-tab="tree">🌳 成长树</button>' +
-          '<button class="evo-tab" data-tab="timeline">🕒 时间线</button>' +
+          '<button class="evo-tab active" data-tab="tree">' + ico("tree") + ' 成长树</button>' +
+          '<button class="evo-tab" data-tab="timeline">' + ico("clock") + ' 时间线</button>' +
           '<span class="evo-codex-spacer"></span>' +
-          '<button class="evo-tbtn" id="evoCodexEditSoul"><span>🧬</span>编辑灵魂</button>' +
-          '<button class="evo-tbtn" id="evoCodexRefresh">↻</button>' +
+          '<button class="evo-tbtn" id="evoCodexEditSoul">' + ico("soul") + ' 编辑灵魂</button>' +
+          '<button class="evo-tbtn" id="evoCodexRefresh">' + ico("reset") + '</button>' +
         '</div>' +
         '<div class="evo-codex-body">' +
           '<div class="evo-codex-tree" id="evoCodexTree"></div>' +
@@ -2176,9 +2176,11 @@ function buildCodexSVG(t, prog) {
     s += '<path d="M' + root_.x + ' ' + root_.y + ' C' + root_.x + ' ' + (root_.y + 40) + ' ' + cat.x + ' ' + (cat.y - 50) + ' ' + cat.x + ' ' + cat.y + '" stroke="' + cat.c.s + '" stroke-width="3" fill="none" opacity="0.7"/>';
   });
 
-  // 根：灵魂
-  s += '<g data-node data-kind="soul" data-id="soul" style="cursor:pointer"><circle cx="' + root_.x + '" cy="' + root_.y + '" r="22" fill="' + C.soul.f + '" stroke="' + C.soul.s + '" stroke-width="1.5"/>' +
-    '<text x="' + root_.x + '" y="' + (root_.y + 5) + '" font-size="13" font-weight="600" fill="#fff" text-anchor="middle">🧬</text></g>';
+  // 根：灵魂（内联人形 SVG，替代 emoji）
+  s += '<g data-node data-kind="soul" data-id="soul" style="cursor:pointer">' +
+    '<circle cx="' + root_.x + '" cy="' + root_.y + '" r="22" fill="' + C.soul.f + '" stroke="' + C.soul.s + '" stroke-width="1.5"/>' +
+    '<circle cx="' + root_.x + '" cy="' + (root_.y - 5) + '" r="4.6" fill="#fff"/>' +
+    '<path d="M' + (root_.x - 8.5) + ' ' + (root_.y + 7) + 'c0-4.8 3.8-8 8.5-8s8.5 3.2 8.5 8" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/></g>';
   s += '<text x="' + root_.x + '" y="' + (root_.y + 42) + '" font-size="12" font-weight="600" style="fill:var(--text)" text-anchor="middle">' + esc(t.soul.name || "Agent") + '</text>';
 
   cats.forEach((cat) => {
@@ -2230,9 +2232,10 @@ function renderCodexSide() {
     '<div class="evo-attr-bar"><i style="width:' + Math.round(val) + '%"></i></div>' +
     '<span class="evo-attr-val">' + Math.round(val) + '</span></div>';
 
+  const ACH_ICON = { first_fix: "wrench", ten_skills: "toolbox", soul_stable: "soul", path_chosen: "compass", fifty_skills: "trophy" };
   const ach = (prog.achievements || []).map((x) =>
     '<div class="evo-ach ' + (x.unlocked ? "on" : "off") + '" title="' + esc(x.name) + '">' +
-      '<span class="evo-ach-ico">' + (x.unlocked ? x.icon : "🔒") + '</span>' +
+      '<span class="evo-ach-ico">' + ico(x.unlocked ? (ACH_ICON[x.id] || "trophy") : "lock") + '</span>' +
       '<span class="evo-ach-name">' + esc(x.name) + '</span></div>').join("");
 
   const pathBtns = ["craftsman", "scholar", "companion"].map((p) => {
@@ -2250,7 +2253,7 @@ function renderCodexSide() {
     attrRow("稳健", a.robustness) +
     attrRow("默契", a.rapport) +
     '<div class="evo-sec">灵魂核心</div>' +
-    '<div class="evo-soulcard" data-act="soul"><span class="evo-soul-emoji">' + (t.soul.emoji || "🧬") + '</span>' +
+    '<div class="evo-soulcard" data-act="soul"><span class="evo-soul-emoji">' + ico("soul") + '</span>' +
       '<div><div class="evo-soul-name">' + esc(t.soul.name || "Agent") + '</div>' +
       '<div class="evo-soul-sub">' + esc((t.soul.values && t.soul.values[0]) || "尚未定义灵魂") + '</div>' +
       (t.soul.pendingCount ? '<div class="evo-soul-pend">' + t.soul.pendingCount + ' 项微调待确认</div>' : '') +
@@ -2283,7 +2286,8 @@ function renderEvolutionTimeline(rootArg) {
     row.dataset.id = it.id;
     const d = new Date(it.ts);
     const ds = isNaN(d) ? "" : (d.getMonth() + 1) + "/" + d.getDate() + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-    row.innerHTML = '<div class="evo-tl-dot"></div><div class="evo-tl-body"><div class="evo-tl-top"><span class="evo-ico">' + it.icon + '</span><span class="evo-tl-title">' + esc(it.title) + '</span><span class="evo-tl-time">' + ds + "</span></div>" + (it.sub ? '<div class="evo-tl-sub">' + esc(it.sub) + "</div>" : "") + "</div>";
+    const TL_ICON = { memory: "memory", experience: "bulb", lesson: "warn", skill: "toolbox", soul: "soul" };
+    row.innerHTML = '<div class="evo-tl-dot"></div><div class="evo-tl-body"><div class="evo-tl-top"><span class="evo-ico">' + ico(TL_ICON[it.kind] || "dot") + '</span><span class="evo-tl-title">' + esc(it.title) + '</span><span class="evo-tl-time">' + ds + "</span></div>" + (it.sub ? '<div class="evo-tl-sub">' + esc(it.sub) + "</div>" : "") + "</div>";
     row.onclick = () => openNodeDetail(row.dataset.kind, it.id);
     root.appendChild(row);
   }
@@ -2343,7 +2347,7 @@ function openNodeDetail(kind, id) {
   if (!entry) { modal.style.display = "none"; return; }
   title.textContent = "记忆条目";
   body.innerHTML = '<div class="evo-detail"><div class="evo-d-k">类型</div><div>' + esc(entry.type) + '</div><div class="evo-d-k">主题</div><div>' + esc(entry.topic || "") + '</div><div class="evo-d-k">内容</div><div>' + esc(entry.content) + '</div></div>';
-  const del = document.createElement("button"); del.className = "set-btn danger"; del.textContent = "🗑 删除";
+  const del = document.createElement("button"); del.className = "set-btn danger"; del.innerHTML = ico("trash") + " 删除";
   del.onclick = async () => { await fetch("/api/memory/" + id, { method: "DELETE" }); modal.style.display = "none"; loadEvolutionTree(); };
   foot.appendChild(del);
   modal.style.display = "flex"; replaceIcons();
@@ -2357,7 +2361,7 @@ function openSoulEditor() {
     modal.id = "soulEditorModal";
     modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:70;display:none;align-items:center;justify-content:center";
     modal.innerHTML = '<div class="set-box" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column">' +
-      '<div class="set-head"><span>🧬 编辑 Agent 灵魂</span><button id="soulEditorClose"><i data-ico="close"></i></button></div>' +
+      '<div class="set-head"><span>' + ico("soul") + ' 编辑 Agent 灵魂</span><button id="soulEditorClose"><i data-ico="close"></i></button></div>' +
       '<div class="set-body" id="soulEditorBody" style="overflow-y:auto;padding:12px"></div>' +
       '<div class="set-foot" style="display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;border-top:1px solid var(--border)"><button id="soulSave" class="set-btn" style="background:var(--ok);color:#000">保存</button></div></div>';
     document.body.appendChild(modal);
@@ -2368,18 +2372,17 @@ function openSoulEditor() {
       const patch = {
         name: modal.querySelector("#soulName").value.trim(),
         vibe: modal.querySelector("#soulVibe").value.trim(),
-        emoji: modal.querySelector("#soulEmoji").value.trim(),
         values: get("soulValues"),
         boundaries: get("soulBoundaries"),
         principles: get("soulPrinciples"),
       };
       await fetch("/api/soul", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
-      modal.style.display = "none"; loadEvolutionTree(); toast("✅ 灵魂已更新");
+      modal.style.display = "none"; loadEvolutionTree(); toast("灵魂已更新");
     };
   }
   const body = modal.querySelector("#soulEditorBody");
   const soul = evoData ? evoData.tree.soul : null;
-  const cur = soul || { name: "pan", vibe: "warm", emoji: "🧬", values: [], boundaries: [], principles: [] };
+  const cur = soul || { name: "pan", vibe: "warm", values: [], boundaries: [], principles: [] };
   const taBlock = (id, label, arr) =>
     '<div style="margin-bottom:10px"><div class="set-label">' + label + '</div><div id="' + id + '">' +
     arr.map((x) => '<textarea class="soul-line" rows="2" style="width:100%;margin-bottom:4px">' + esc(x) + "</textarea>").join("") +
@@ -2388,14 +2391,13 @@ function openSoulEditor() {
     '<div style="display:flex;gap:8px;margin-bottom:10px">' +
       '<label style="flex:1">名称<input id="soulName" class="set-input" value="' + esc(cur.name || "") + '"></label>' +
       '<label style="flex:1">风格<input id="soulVibe" class="set-input" value="' + esc(cur.vibe || "") + '"></label>' +
-      '<label style="width:60px">图标<input id="soulEmoji" class="set-input" value="' + esc(cur.emoji || "🧬") + '"></label>' +
     "</div>" +
     taBlock("soulValues", "价值观（决策时优先考虑）", cur.values) +
     taBlock("soulBoundaries", "边界（绝不做的事）", cur.boundaries) +
     taBlock("soulPrinciples", "原则（通用工作准则）", cur.principles) +
     '<div style="margin-top:8px"><div class="set-label">待确认提案（Agent 自动提议，接受后写入上方对应列表）</div><div id="soulProposals">' +
     (cur.proposals && cur.proposals.length ? cur.proposals.map((p) =>
-      '<div class="evo-prop' + (p.status !== "pending" ? " done" : "") + '"><span>' + (p.status === "pending" ? "⏳" : (p.status === "accepted" ? "✓" : "✗")) + " [" + esc(p.target) + "] " + esc(p.content) + (p.reason ? " — " + esc(p.reason) : "") + "</span>" +
+      '<div class="evo-prop' + (p.status !== "pending" ? " done" : "") + '"><span>' + (p.status === "pending" ? "待定" : (p.status === "accepted" ? "✓" : "✗")) + " [" + esc(p.target) + "] " + esc(p.content) + (p.reason ? " — " + esc(p.reason) : "") + "</span>" +
       (p.status === "pending" ? '<span><button class="evo-tbtn" data-acc="' + p.id + '">接受</button><button class="evo-tbtn" data-rej="' + p.id + '">拒绝</button></span>' : "") + "</div>"
     ).join("") : '<div class="evo-empty">暂无提案</div>') + "</div></div>";
 

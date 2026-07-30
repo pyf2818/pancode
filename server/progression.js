@@ -63,11 +63,11 @@ function computeProgression({ soul, memEntries, skills, builtin, path }) {
   }
 
   const achievements = [
-    { id: "first_fix", name: "初次自主修复", icon: "🛠", unlocked: errors.length > 0 || skills.some((s) => s.source === "auto") },
-    { id: "ten_skills", name: "十项绝技", icon: "🌟", unlocked: skillCount >= 10 },
-    { id: "soul_stable", name: "灵魂稳固", icon: "🧬", unlocked: stage.id >= 3 },
-    { id: "path_chosen", name: "选定道路", icon: "🧭", unlocked: !!path },
-    { id: "fifty_skills", name: "宗师之路", icon: "👑", unlocked: skillCount >= 50 },
+    { id: "first_fix", name: "初次自主修复", icon: null, unlocked: errors.length > 0 || skills.some((s) => s.source === "auto") },
+    { id: "ten_skills", name: "十项绝技", icon: null, unlocked: skillCount >= 10 },
+    { id: "soul_stable", name: "灵魂稳固", icon: null, unlocked: stage.id >= 3 },
+    { id: "path_chosen", name: "选定道路", icon: null, unlocked: !!path },
+    { id: "fifty_skills", name: "宗师之路", icon: null, unlocked: skillCount >= 50 },
   ];
 
   // 解锁规则：某些"进阶节点"需满足前置才会点亮（树上显示为虚线锁定态）

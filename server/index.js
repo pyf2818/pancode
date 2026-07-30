@@ -472,24 +472,24 @@ app.get("/api/evolution/tree", (req, res) => {
     // 1) 记忆 / 经验 / 教训（来自 MemoryStore 六类）
     const memEntries = (engine && engine.memory) ? engine.memory.list({ limit: 200 }) : [];
     const memGroups = {
-      memory:   { label: "记忆", icon: "🧠", items: memEntries.filter((e) => e.type === "preference" || e.type === "decision") },
-      experience:{ label: "经验", icon: "📚", items: memEntries.filter((e) => e.type === "lesson" || e.type === "pattern") },
-      lesson:   { label: "教训", icon: "⚠️", items: memEntries.filter((e) => e.type === "error") },
+      memory:   { label: "记忆", icon: null, items: memEntries.filter((e) => e.type === "preference" || e.type === "decision") },
+      experience:{ label: "经验", icon: null, items: memEntries.filter((e) => e.type === "lesson" || e.type === "pattern") },
+      lesson:   { label: "教训", icon: null, items: memEntries.filter((e) => e.type === "error") },
     };
 
     // 2) Skills（内置工作流 / 用户创建 / 工作区沉淀）
     const skills = (engine && engine.skills) ? engine.skills.list({ limit: 200 }) : [];
     const builtin = (engine && engine.skills) ? engine.skills.builtinWorkflows : [];
     const skillNodes = [
-      { label: "内置工作流", icon: "🧩", items: (builtin || []).map((s) => ({ id: "bk-" + s.name, name: s.name, desc: s.description, ts: 0, source: "builtin" })) },
-      { label: "用户创建", icon: "🛠️", items: skills.filter((s) => s.source === "manual" || s.source === "import").map((s) => ({ id: s.id, name: s.name, desc: s.description, ts: s.ts || 0, source: s.source })) },
-      { label: "工作区沉淀", icon: "🌱", items: skills.filter((s) => s.source === "auto").map((s) => ({ id: s.id, name: s.name, desc: s.description, ts: s.ts || 0, source: s.source })) },
+      { label: "内置工作流", icon: null, items: (builtin || []).map((s) => ({ id: "bk-" + s.name, name: s.name, desc: s.description, ts: 0, source: "builtin" })) },
+      { label: "用户创建", icon: null, items: skills.filter((s) => s.source === "manual" || s.source === "import").map((s) => ({ id: s.id, name: s.name, desc: s.description, ts: s.ts || 0, source: s.source })) },
+      { label: "工作区沉淀", icon: null, items: skills.filter((s) => s.source === "auto").map((s) => ({ id: s.id, name: s.name, desc: s.description, ts: s.ts || 0, source: s.source })) },
     ];
 
     // 3) 灵魂（人格 + 待确认提案）
     const pending = (soul.proposals || []).filter((p) => p.status === "pending");
     const soulNode = {
-      label: "灵魂 Soul", icon: soul.emoji || "🧬",
+      label: "灵魂 Soul", icon: null,
       name: soul.name, vibe: soul.vibe,
       values: soul.values, boundaries: soul.boundaries, principles: soul.principles,
       proposals: soul.proposals || [],
@@ -499,10 +499,10 @@ app.get("/api/evolution/tree", (req, res) => {
     // 4) 时间线：把所有带 ts 的节点打平按时间排序
     const timeline = [];
     const push = (kind, icon, title, sub, ts, id) => { if (ts) timeline.push({ kind, icon, title, sub, ts, id }); };
-    memEntries.forEach((e) => push("memory", "🧠", (e.topic || e.type) + "：" + e.content.slice(0, 80), e.type, e.ts, e.id));
-    (builtin || []).forEach((s) => push("skill", "🧩", "内置工作流：" + s.name, "builtin", 0, "bk-" + s.name));
-    skills.forEach((s) => push("skill", "🛠️", "Skill：" + s.name, s.source, s.ts || 0, s.id));
-    (soul.proposals || []).forEach((p) => push("soul", soul.emoji || "🧬", "灵魂微调提案：" + p.content.slice(0, 60), p.status, p.ts, p.id));
+    memEntries.forEach((e) => push("memory", null, (e.topic || e.type) + "：" + e.content.slice(0, 80), e.type, e.ts, e.id));
+    (builtin || []).forEach((s) => push("skill", null, "内置工作流：" + s.name, "builtin", 0, "bk-" + s.name));
+    skills.forEach((s) => push("skill", null, "Skill：" + s.name, s.source, s.ts || 0, s.id));
+    (soul.proposals || []).forEach((p) => push("soul", null, "灵魂微调提案：" + p.content.slice(0, 60), p.status, p.ts, p.id));
     timeline.sort((a, b) => b.ts - a.ts);
 
     // 进度系统：阶段 / 经验值 / 属性 / 成就 / 解锁规则
