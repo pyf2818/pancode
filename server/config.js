@@ -187,5 +187,11 @@ function skillPath(cfg) {
   const key = crypto.createHash("md5").update(wsAbs).digest("hex");
   return path.join(ROOT, ".pancode", "skills", key + ".json");
 }
+/* 项目灵魂(Soul)文件路径 — 与记忆/技能同算法、同工作区哈希 */
+function soulPath(cfg) {
+  const wsAbs = path.resolve(ROOT, (cfg && cfg.workspace) || "workspace");
+  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
+  return path.join(ROOT, ".pancode", "soul", key + ".json");
+}
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, agentSettings, engineMode, publicInfo, memoryPath, skillPath, rulesDir, ROOT, CONFIG_PATH };
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, rulesDir, ROOT, CONFIG_PATH };

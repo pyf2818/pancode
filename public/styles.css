@@ -111,6 +111,54 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 /* 文件树 */
 .ft-item{display:flex;align-items:center;gap:6px;padding:3px 8px 3px 0;cursor:pointer;white-space:nowrap;font-size:13px}
 .ft-item:hover{background:var(--hover)}
+
+/* ---------------- 进化树 ---------------- */
+.evo-tabs{display:flex;gap:4px;padding:6px 12px 8px}
+.evo-tab{flex:1;padding:5px 0;font-size:11px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--text-dim);cursor:pointer;text-align:center}
+.evo-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.evo-toolbar{display:flex;gap:6px;padding:0 12px 8px;align-items:center}
+.evo-tbtn{font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);color:var(--text);cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+.evo-tbtn:hover{border-color:var(--accent)}
+.evo-emoji{font-size:13px}
+.evo-tree{padding:0 10px 14px}
+.evo-node{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;background:var(--bg)}
+.evo-soul{border-color:var(--purple,#9b3fb0);box-shadow:0 0 0 1px rgba(155,63,176,.25)}
+.evo-node-head{display:flex;align-items:center;gap:6px;padding:7px 9px;background:var(--bg3);cursor:pointer;font-size:13px}
+.evo-node-head:hover{background:var(--bg4)}
+.evo-ico{font-size:14px;line-height:1}
+.evo-name{font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.evo-tag{font-size:10px;color:var(--text-dim);background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1px 6px}
+.evo-badge{font-size:10px;color:#fff;background:var(--warn,#b58a00);border-radius:8px;padding:1px 6px}
+.evo-sub{padding:6px 10px 4px}
+.evo-sub b{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px}
+.evo-li{padding:3px 8px;font-size:12px;line-height:1.5;color:var(--text);border-left:2px solid var(--border);margin:3px 0 3px 4px}
+.evo-li.evo-click{cursor:pointer}
+.evo-li.evo-click:hover{background:var(--hover);border-left-color:var(--accent)}
+.evo-empty{padding:8px 10px;font-size:11px;color:var(--text-dim);font-style:italic}
+/* 时间线 */
+.evo-timeline{padding:8px 12px 16px;position:relative}
+.evo-tl-row{display:flex;gap:10px;padding:7px 0;cursor:pointer;position:relative}
+.evo-tl-row:hover .evo-tl-body{background:var(--hover)}
+.evo-tl-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:4px;flex-shrink:0;position:relative;z-index:1}
+.evo-tl-row::before{content:"";position:absolute;left:4px;top:0;bottom:0;width:2px;background:var(--border)}
+.evo-tl-row:first-child::before{top:8px}
+.evo-tl-row:last-child::before{bottom:auto;height:calc(100% - 14px)}
+.evo-tl-body{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:6px 9px}
+.evo-tl-top{display:flex;align-items:center;gap:6px;font-size:12px}
+.evo-tl-title{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.evo-tl-time{font-size:10px;color:var(--text-dim);flex-shrink:0}
+.evo-tl-sub{font-size:11px;color:var(--text-dim);margin-top:2px}
+/* 详情/编辑弹窗 */
+.evo-detail{font-size:13px;line-height:1.6}
+.evo-d-k{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px;margin:8px 0 2px}
+.evo-d-k:first-child{margin-top:0}
+.set-label{font-size:11px;color:var(--text-dim);margin-bottom:4px}
+.set-input{width:100%;padding:5px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font-size:13px}
+.soul-line{width:100%;padding:5px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font-size:12px;resize:vertical;font-family:inherit}
+.evo-prop{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;font-size:12px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:5px;background:var(--bg)}
+.evo-prop.done{opacity:.6}
+.evo-prop>span:first-child{flex:1}
+.evo-prop button{margin-left:4px}
 .ft-item.active{background:var(--active);color:var(--text);font-weight:600}
 .ft-item .ft-mod{margin-left:auto;margin-right:8px;color:var(--warn);font-size:11px;font-weight:700}
 .ft-dir{color:#c09553;display:inline-flex;flex-shrink:0}

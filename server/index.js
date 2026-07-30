@@ -19,6 +19,7 @@ const { TerminalLayer } = require("./terminal");
 const { ping } = require("./llm");
 const { LlmAgent } = require("./agent-llm");
 const { DemoAgent } = require("./agent-demo");
+const { SoulStore } = require("./soul-store");
 const auth = require("./auth");
 const VERSION = (() => { try { return require("../package.json").version; } catch (e) { return "2.3.0"; } })();
 
@@ -35,11 +36,13 @@ function broadcast(ev) {
 
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
-let files = null, git = null, term = null, engine = null;
+let files = null, git = null, term = null, engine = null, soulStore = null;
 
 function buildEngine() {
   const ctx = { emit: broadcast, files, git, term, cfg };
   engine = configMod.engineMode(cfg) === "llm" ? new LlmAgent(ctx) : new DemoAgent(ctx);
+  // 统一灵魂实例：复用引擎内部的 soul（指向同文件），避免双实例内存不一致
+  soulStore = engine && engine.soul ? engine.soul : new SoulStore(configMod.soulPath(cfg));
 }
 
 function mountWorkspace(dir) {
@@ -456,6 +459,96 @@ app.get("/api/evolution", (req, res) => {
     const report = engine.evolution.getReport();
     res.json({ ok: true, report });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- 进化树：分层树 + 时间线（聚合记忆/经验/Skill/灵魂） ---------- */
+app.get("/api/evolution/tree", (req, res) => {
+  try {
+    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
+    const soul = ss.get();
+
+    // 1) 记忆 / 经验 / 教训（来自 MemoryStore 六类）
+    const memEntries = (engine && engine.memory) ? engine.memory.list({ limit: 200 }) : [];
+    const memGroups = {
+      memory:   { label: "记忆", icon: "🧠", items: memEntries.filter((e) => e.type === "preference" || e.type === "decision") },
+      experience:{ label: "经验", icon: "📚", items: memEntries.filter((e) => e.type === "lesson" || e.type === "pattern") },
+      lesson:   { label: "教训", icon: "⚠️", items: memEntries.filter((e) => e.type === "error") },
+    };
+
+    // 2) Skills（内置工作流 / 用户创建 / 工作区沉淀）
+    const skills = (engine && engine.skills) ? engine.skills.list({ limit: 200 }) : [];
+    const builtin = (engine && engine.skills) ? engine.skills.builtinWorkflows : [];
+    const skillNodes = [
+      { label: "内置工作流", icon: "🧩", items: (builtin || []).map((s) => ({ id: "bk-" + s.name, name: s.name, desc: s.description, ts: 0, source: "builtin" })) },
+      { label: "用户创建", icon: "🛠️", items: skills.filter((s) => s.source === "manual" || s.source === "import").map((s) => ({ id: s.id, name: s.name, desc: s.description, ts: s.ts || 0, source: s.source })) },
+      { label: "工作区沉淀", icon: "🌱", items: skills.filter((s) => s.source === "auto").map((s) => ({ id: s.id, name: s.name, desc: s.description, ts: s.ts || 0, source: s.source })) },
+    ];
+
+    // 3) 灵魂（人格 + 待确认提案）
+    const pending = (soul.proposals || []).filter((p) => p.status === "pending");
+    const soulNode = {
+      label: "灵魂 Soul", icon: soul.emoji || "🧬",
+      name: soul.name, vibe: soul.vibe,
+      values: soul.values, boundaries: soul.boundaries, principles: soul.principles,
+      proposals: soul.proposals || [],
+      pendingCount: pending.length,
+    };
+
+    // 4) 时间线：把所有带 ts 的节点打平按时间排序
+    const timeline = [];
+    const push = (kind, icon, title, sub, ts, id) => { if (ts) timeline.push({ kind, icon, title, sub, ts, id }); };
+    memEntries.forEach((e) => push("memory", "🧠", (e.topic || e.type) + "：" + e.content.slice(0, 80), e.type, e.ts, e.id));
+    (builtin || []).forEach((s) => push("skill", "🧩", "内置工作流：" + s.name, "builtin", 0, "bk-" + s.name));
+    skills.forEach((s) => push("skill", "🛠️", "Skill：" + s.name, s.source, s.ts || 0, s.id));
+    (soul.proposals || []).forEach((p) => push("soul", soul.emoji || "🧬", "灵魂微调提案：" + p.content.slice(0, 60), p.status, p.ts, p.id));
+    timeline.sort((a, b) => b.ts - a.ts);
+
+    res.json({
+      ok: true,
+      tree: { soul: soulNode, memory: memGroups, skills: skillNodes },
+      timeline,
+      counts: {
+        memory: memGroups.memory.items.length,
+        experience: memGroups.experience.items.length,
+        lesson: memGroups.lesson.items.length,
+        skills: skills.length + (builtin || []).length,
+        proposals: (soul.proposals || []).length,
+        pending: pending.length,
+      },
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- 灵魂(Soul)读写 + 微调提案确认 ---------- */
+app.get("/api/soul", (req, res) => {
+  try {
+    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
+    res.json({ ok: true, soul: ss.get() });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.put("/api/soul", (req, res) => {
+  try {
+    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
+    const updated = ss.update(req.body || {});
+    res.json({ ok: true, soul: updated });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.post("/api/soul/proposal", (req, res) => {
+  try {
+    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
+    const p = ss.addProposal(req.body || {});
+    if (!p) return res.status(400).json({ ok: false, error: "提案内容不能为空" });
+    res.json({ ok: true, proposal: p });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.put("/api/soul/proposal/:id", (req, res) => {
+  try {
+    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
+    const accept = req.query.accept !== "0" && req.query.accept !== "false";
+    const p = ss.resolveProposal(req.params.id, accept);
+    if (!p) return res.status(404).json({ ok: false, error: "提案不存在" });
+    res.json({ ok: true, proposal: p });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
 /* ---------- 会话沉淀：把有效决策 / 约定沉淀为「项目规则」或「项目记忆」 ---------- */

@@ -50,6 +50,7 @@
     <button class="ab-btn" data-view="search" data-i18n-title="search" title="搜索"><i data-ico="search"></i></button>
     <button class="ab-btn" data-view="scm" data-i18n-title="scm" title="源代码管理"><i data-ico="scm"></i><span id="scmBadge" class="ab-badge" style="display:none">0</span></button>
     <button class="ab-btn" data-view="skills" data-i18n-title="skills" title="Skills 市场"><i data-ico="sparkle"></i></button>
+    <button class="ab-btn" data-view="evolution" title="进化树">🌳</button>
     <button class="ab-btn" data-view="ai" title="Agents Window"><i data-ico="robot"></i></button>
   </div>
 
@@ -85,6 +86,19 @@
       <div id="skillsList" class="skills-list"></div>
       <div class="side-section-head" style="margin-top:12px"><span>工作区 Skills</span></div>
       <div id="localSkillsList" class="skills-list"></div>
+    </div>
+    <div class="side-view" id="view-evolution" style="display:none">
+      <div class="side-title">进化树</div>
+      <div class="evo-tabs">
+        <button class="evo-tab active" data-tab="tree">🌳 树</button>
+        <button class="evo-tab" data-tab="timeline">🕒 时间线</button>
+      </div>
+      <div class="evo-toolbar">
+        <button id="btnEditSoul" class="evo-tbtn" title="编辑 Agent 灵魂"><span class="evo-emoji">🧬</span>编辑灵魂</button>
+        <button id="btnRefreshEvo" class="evo-tbtn" title="刷新">↻</button>
+      </div>
+      <div id="evoTree" class="evo-tree"></div>
+      <div id="evoTimeline" class="evo-timeline" style="display:none"></div>
     </div>
   </div>
 

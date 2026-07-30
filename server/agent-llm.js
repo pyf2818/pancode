@@ -25,6 +25,7 @@ const { AgentBase } = require("./agent-base");
 const { chatStream } = require("./llm");
 const repoMap = require("./repo-map");
 const { MemoryStore } = require("./memory-store");
+const { SoulStore } = require("./soul-store");
 const { ContextRetriever } = require("./context-retriever");
 const { EvolutionEngine } = require("./evolution");
 const { SkillStore } = require("./skill-store");
@@ -243,6 +244,47 @@ class LlmAgent extends AgentBase {
     this.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
     this.contextRetriever = new ContextRetriever(this.memory, this.files);
     this.evolution = new EvolutionEngine(this.memory);
+    const soulDir = path.join(require("./config").ROOT, ".pancode", "soul");
+    this.soul = new SoulStore(path.join(soulDir, wsHash + ".json"));
+  }
+
+  /* ---------- 任务完成后：提议灵魂(Soul)微调（写入待确认区，需用户确认） ---------- */
+  async proposeSoul(llmChatFn, llmCfg, history, taskTopic) {
+    if (!history || history.length < 2) return null;
+    const soul = this.soul.get();
+    const taskSummary = history.slice(-10).map((m) => {
+      if (m.role === "user") return "用户: " + (typeof m.content === "string" ? m.content : "").slice(0, 200);
+      if (m.role === "assistant") return "AI: " + (typeof m.content === "string" ? m.content : "").slice(0, 300);
+      return "";
+    }).filter(Boolean).join("\n");
+
+    const prompt = `你是 Agent 的「灵魂演进器」。基于本次任务，判断是否需要微调 Agent 的灵魂（人格/价值观/边界/原则）。
+当前灵魂：
+- 价值观: ${soul.values.join("; ")}
+- 边界: ${soul.boundaries.join("; ")}
+- 原则: ${soul.principles.join("; ")}
+
+任务过程：
+${taskSummary}
+
+如果本次任务揭示了新的、值得长期遵循的价值观/边界/原则，或某条现有原则需要修正，才输出提案。否则输出"无"。
+输出格式（最多 1 条）：
+[target] 内容 | 理由
+其中 target 只能是 values / boundaries / principles。`;
+
+    try {
+      const r = await llmChatFn(llmCfg, [
+        { role: "system", content: "你负责让 Agent 的灵魂随任务演进。只输出一条提案或'无'，不要解释。" },
+        { role: "user", content: prompt },
+      ]);
+      const text = (r.content || "").trim();
+      if (!text || text === "无") return null;
+      const m = text.match(/^\[(values|boundaries|principles)\]\s*(.+?)\s*\|\s*(.+)$/);
+      if (!m) return null;
+      return this.soul.addProposal({ target: m[1], content: m[2].trim(), reason: m[3].trim() });
+    } catch (e) {
+      return null;
+    }
   }
 
   /* 仓库索引：按需构建 + 文件变更时失效缓存 */
@@ -806,6 +848,10 @@ class LlmAgent extends AgentBase {
           .catch(() => {});
         this.skills.autoExtract(chatStream, this.cfg.llm, this.history, taskTopic)
           .then((sk) => { if (sk) this.emit({ type: "term.line", text: "[Skill] 已自动沉淀: " + sk.name, cls: "tl-info" }); })
+          .catch(() => {});
+        // 灵魂微调提案：任务完成后提议，写入待确认区（不自动覆盖）
+        this.proposeSoul(chatStream, this.cfg.llm, this.history, taskTopic)
+          .then((sp) => { if (sp) this.emit({ type: "term.line", text: "[灵魂] 提议微调（待你确认）：" + sp.content.slice(0, 50), cls: "tl-info" }); })
           .catch(() => {});
         // 记忆归纳：每完成一次任务检查是否需要压缩
         this._consolidateMemory(this.history);
