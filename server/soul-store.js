@@ -53,10 +53,7 @@ class SoulStore {
   }
 
   _save() {
-    try {
-      fs.mkdirSync(path.dirname(this._path), { recursive: true });
-      fs.writeFileSync(this._path, JSON.stringify(this._data, null, 2), "utf8");
-    } catch (e) {}
+    require("./safe-write").saveJson(this._path, this._data);
   }
 
   /* ---------- 读取 ---------- */

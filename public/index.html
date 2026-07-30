@@ -406,6 +406,42 @@
   </div>
 </div>
 
+<!-- ======================= 全局加载遮罩 (B5) ======================= -->
+<div id="bootScreen">
+  <div class="boot-inner">
+    <div class="boot-logo"><i data-ico="robot"></i></div>
+    <div class="boot-title">pancode</div>
+    <div class="boot-spinner"></div>
+    <div class="boot-tip">正在启动工作台…</div>
+  </div>
+</div>
+
+<!-- ======================= 首次引导 (C4) ======================= -->
+<div id="onboardModal" style="display:none">
+  <div class="onboard-box">
+    <div class="onboard-head"><span><i data-ico="sparkle"></i> 欢迎使用 pancode</span><button id="onboardSkip" aria-label="跳过引导"><i data-ico="close"></i></button></div>
+    <div class="onboard-body" id="onboardBody"></div>
+    <div class="onboard-foot">
+      <div class="onboard-dots" id="onboardDots"></div>
+      <div style="display:flex;gap:8px;margin-left:auto">
+        <button id="onboardPrev" class="set-btn" style="background:var(--bg4)">上一步</button>
+        <button id="onboardNext" class="set-btn" style="background:var(--accent);color:#fff">下一步</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 命令面板 (C3) ======================= -->
+<div id="cmdk" style="display:none">
+  <div class="cmdk-box" role="dialog" aria-label="命令面板">
+    <div class="cmdk-input-row">
+      <i data-ico="search" class="cmdk-search-ico"></i>
+      <input id="cmdkInput" class="cmdk-input" placeholder="输入命令或文件名…  (↑↓ 选择 · Enter 执行 · Esc 关闭)" autocomplete="off" aria-label="命令搜索">
+    </div>
+    <div class="cmdk-list" id="cmdkList" role="listbox"></div>
+  </div>
+</div>
+
 <script src="i18n.js"></script>
 <script src="icons.js"></script>
   <script src="/vendor/monaco/vs/loader.js"></script>

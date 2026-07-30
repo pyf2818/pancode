@@ -2178,7 +2178,7 @@ $("authSubmit").onclick = async () => {
       $("authModal").style.display = "none";
       _authRedirected = false;
       toast(authMode === "login" ? "✅ 登录成功" : "✅ 注册成功");
-      startApp();   // 登录后才加载工作区数据并连接 WS
+      startApp(); maybeOnboard();   // 登录后才加载工作区数据并连接 WS，并触发首次引导
     } else {
       $("authStatus").className = "set-status err";
       $("authStatus").textContent = r.error;
@@ -3005,9 +3005,106 @@ async function startApp() {
   if (ws) { try { ws.close(); } catch (e) {} }
   loadSkills(); loadPlan(); connect();
 }
+
+/* ===== B5 全局加载遮罩 ===== */
+function showBoot() { const b = $("bootScreen"); if (b) b.classList.remove("hidden"); }
+function hideBoot() { const b = $("bootScreen"); if (b) b.classList.add("hidden"); }
+
+/* ===== C3 命令面板（Ctrl/⌘+Shift+P） ===== */
+let _cmdkItems = [];
+function buildCmdList() {
+  const acts = [
+    { id: "theme", title: "切换主题（深色 / 浅色）", icon: getTheme() === "light" ? "moon" : "sun", group: "视图", run: () => applyTheme(getTheme() === "light" ? "dark" : "light") },
+    { id: "preview", title: "切换 HTML / Markdown 预览", icon: "eye", group: "视图", run: () => togglePreview() },
+    { id: "evo", title: "打开进化树", icon: "tree", group: "视图", run: () => openEvolutionCodex() },
+    { id: "settings", title: "打开模型设置", icon: "robot", group: "视图", run: () => openSettings() },
+    { id: "logout", title: "退出登录", icon: "close", group: "账户", run: () => { localStorage.removeItem("cw-user-token"); location.reload(); } },
+  ];
+  const files = Object.keys(state.files || {}).sort().map((f) => ({ id: "file:" + f, title: f, icon: "files", group: "打开文件", run: () => openFile(f) }));
+  return acts.concat(files);
+}
+function renderCmdk(filter) {
+  filter = (filter || "").toLowerCase().trim();
+  const list = $("cmdkList");
+  const all = buildCmdList();
+  _cmdkItems = filter ? all.filter((c) => c.title.toLowerCase().includes(filter) || c.id.toLowerCase().includes(filter)) : all;
+  if (!_cmdkItems.length) { list.innerHTML = '<div class="cmdk-empty">无匹配结果</div>'; return; }
+  let html = "", lastGroup = null;
+  _cmdkItems.forEach((c, i) => {
+    if (c.group && c.group !== lastGroup) { html += '<div class="cmdk-group">' + esc(c.group) + '</div>'; lastGroup = c.group; }
+    html += '<div class="cmdk-item' + (i === 0 ? " active" : "") + '" data-i="' + i + '" role="option"><i class="ico" data-ico="' + c.icon + '"></i><span class="cmdk-label">' + esc(c.title) + '</span></div>';
+  });
+  list.innerHTML = html;
+  list.querySelectorAll(".cmdk-item").forEach((el) => {
+    el.onclick = () => runCmdk(parseInt(el.dataset.i));
+    el.onmousemove = () => setCmdkActive(parseInt(el.dataset.i));
+  });
+  replaceIcons(list);
+}
+function setCmdkActive(i) {
+  const items = $("cmdkList").querySelectorAll(".cmdk-item");
+  items.forEach((el, j) => el.classList.toggle("active", j === i));
+}
+function currentCmdkIndex() {
+  const items = $("cmdkList").querySelectorAll(".cmdk-item");
+  for (let i = 0; i < items.length; i++) if (items[i].classList.contains("active")) return i;
+  return 0;
+}
+function runCmdk(i) {
+  const c = _cmdkItems[i]; if (!c) return;
+  $("cmdk").classList.add("hidden");
+  c.run();
+}
+function openCmdk() {
+  $("cmdk").classList.remove("hidden");
+  const inp = $("cmdkInput");
+  inp.value = "";
+  renderCmdk("");
+  setTimeout(() => inp.focus(), 0);
+}
+function closeCmdk() { $("cmdk").classList.add("hidden"); }
+
+/* 命令面板键盘交互 */
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "P" || e.key === "p")) {
+    e.preventDefault(); openCmdk(); return;
+  }
+  if (!$("cmdk") || $("cmdk").classList.contains("hidden")) return;
+  if (e.key === "Escape") { closeCmdk(); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); setCmdkActive((currentCmdkIndex() + 1) % Math.max(_cmdkItems.length, 1)); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); setCmdkActive((currentCmdkIndex() - 1 + _cmdkItems.length) % Math.max(_cmdkItems.length, 1)); }
+  else if (e.key === "Enter") { e.preventDefault(); runCmdk(currentCmdkIndex()); }
+});
+$("cmdkInput").addEventListener("input", (e) => renderCmdk(e.target.value));
+
+/* ===== C4 首次引导 ===== */
+let _obStep = 0;
+const _obSteps = [
+  { title: "这是什么", html: '<h3>pancode · Agent 驱动的自主编程台</h3><ul><li>编辑器直接改代码，<code>Ctrl/⌘+S</code> 真实保存</li><li>文件树支持新建 / 重命名 / 删除</li><li>终端真实执行命令（<code>Ctrl+C</code> 中断）</li><li>Agent 会自己写代码、跑测试、修 bug，并在过程中不断「进化」</li></ul>' },
+  { title: "配置大模型", html: '<h3>让 Agent 真正聪明起来</h3><p id="obModelTip"></p><ul><li>右上角 <code>模型设置</code> 填入 OpenAI 兼容的 <code>Base URL / API Key / 模型名</code></li><li>没有 Key 也能用：内置「演示引擎」开箱即用</li></ul><div class="ob-cta"><button class="set-btn" style="background:var(--accent);color:#fff" onclick="hideOnboarding();openSettings()">去配置模型</button></div>' },
+  { title: "开始对话", html: '<h3>发第一条消息</h3><ul><li>底部输入框描述需求，<code>Enter</code> 发送（<code>Shift+Enter</code> 换行）</li><li>输入 <code>@</code> 引用文件，<code>Ctrl/⌘+Shift+P</code> 打开命令面板</li><li>复杂任务自动生成计划，左侧实时看进度</li></ul>' },
+];
+function renderOnboard() {
+  const s = _obSteps[_obStep];
+  $("onboardBody").innerHTML = s.html;
+  replaceIcons($("onboardBody"));
+  $("onboardDots").innerHTML = _obSteps.map((_, i) => '<i class="' + (i === _obStep ? "on" : "") + '"></i>').join("");
+  $("onboardPrev").style.visibility = _obStep === 0 ? "hidden" : "visible";
+  $("onboardNext").textContent = _obStep === _obSteps.length - 1 ? "开始使用" : "下一步";
+  const tip = $("obModelTip");
+  if (tip) tip.innerHTML = (state.engine && state.engine.mode === "llm") ? "✅ 已检测到 LLM 配置，可以直接对话。" : "⚠️ 当前为演示引擎，Agent 能力有限，建议配置真实 Key。";
+}
+function showOnboarding() { _obStep = 0; renderOnboard(); $("onboardModal").style.display = "flex"; }
+function hideOnboarding() { $("onboardModal").style.display = "none"; localStorage.setItem("cw-onboarded", "1"); }
+function maybeOnboard() { if (!localStorage.getItem("cw-onboarded")) showOnboarding(); }
+$("onboardSkip").onclick = hideOnboarding;
+$("onboardPrev").onclick = () => { if (_obStep > 0) { _obStep--; renderOnboard(); } };
+$("onboardNext").onclick = () => { if (_obStep < _obSteps.length - 1) { _obStep++; renderOnboard(); } else hideOnboarding(); };
+
 bootstrap().then(async () => {
   const loggedIn = await checkAuth();
-  if (loggedIn) startApp();
+  hideBoot();
+  if (loggedIn) { startApp(); maybeOnboard(); }
   else showAuthModal();
-}).catch(() => showAuthModal());
+}).catch(() => { hideBoot(); showAuthModal(); });
 bootMonaco();

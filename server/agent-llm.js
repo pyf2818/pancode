@@ -695,7 +695,7 @@ ${taskSummary}
         }
         const t = this.tool("terminal", "运行终端", args.command);
         this.state(true, "AI 正在执行命令");
-        const r = await this.term.run(args.command, null, { timeout: 90_000, strict: true });
+        const r = await this.term.run(args.command, null, { timeout: 90_000, strict: true, ai: true });
         if (r.blocked) {
           t.body("命令被安全沙箱拦截：" + args.command);
           t.done(false, "已拦截", false);

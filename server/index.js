@@ -58,7 +58,7 @@ function mountWorkspace(dir) {
   WS_DIR = abs;
   files = new FileStore(WS_DIR);
   git = new GitLayer(WS_DIR, files);
-  term = new TerminalLayer(WS_DIR, broadcast);
+  term = new TerminalLayer(WS_DIR, broadcast, path.join(__dirname, "..", ".pancode", "audit"));
   buildEngine();
   files.startWatch(() => {
     broadcast({ type: "fs.sync", files: snapshotFiles() });
@@ -114,17 +114,26 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 /* ---------- 本地鉴权 ---------- */
-const NO_AUTH = new Set(["/api/health", "/api/bootstrap", "/api/state", "/api/version", "/api/raw", "/api/preview/docx", "/api/fs/browse", "/api/models", "/api/auth/register", "/api/auth/login", "/api/auth/status", "/api/skills/all", "/api/skills/market", "/api/plans"]);
-function authed(req) {
-  const h = req.headers["authorization"] || "";
-  const q = (req.query && req.query.token) || "";
-  return (h.startsWith("Bearer ") && h.slice(7) === AUTH_TOKEN) || q === AUTH_TOKEN;
+/* A2：收紧白名单——仅保留本机可匿名访问的引导类端点；业务/敏感端点全部要求登录后的 userToken */
+const NO_AUTH = new Set([
+  "/api/health",        // 健康探测
+  "/api/bootstrap",     // 本机领取访问令牌（绑定 127.0.0.1）
+  "/api/version",       // 版本信息
+  "/api/auth/register", // 注册（首次建账号）
+  "/api/auth/login",    // 登录
+  "/api/auth/status",   // 查询登录态（前端启动判定）
+  "/api/preview/docx",  // 仅预览渲染辅助，不泄露源码正文
+]);
+/* A1：用户会话闸门——仅校验登录后下发的 userToken（auth.verify）；AUTH_TOKEN 仅用于本机 bootstrap 与 WS 环回 */
+function userAuthed(req) {
+  const raw = (req.headers && (req.headers["x-user-token"] || req.headers["authorization"])) || (req.query && req.query.userToken) || "";
+  const tok = raw.startsWith("Bearer ") ? raw.slice(7) : raw;
+  return !!auth.verify(tok);
 }
 app.use((req, res, next) => {
   if (!req.path.startsWith("/api/")) return next();                       // 静态资源不鉴权
-  if (NO_AUTH.has(req.path)) return next();                               // 白名单（只读/预览）
-  if (req.method === "GET" && (req.path === "/api/workspace" || req.path === "/api/settings")) return next();
-  if (!authed(req)) return res.status(401).json({ ok: false, error: "未授权：缺少有效令牌" });
+  if (NO_AUTH.has(req.path)) return next();                               // 白名单（引导类）
+  if (!userAuthed(req)) return res.status(401).json({ ok: false, error: "未授权：请先登录", code: "NO_AUTH" });
   next();
 });
 
@@ -285,6 +294,7 @@ app.get("/api/raw", (req, res) => {
   try {
     const rel = String(req.query.path || "");
     const abs = files.safePath(rel);
+    if (!abs.startsWith(WS_DIR)) return res.status(403).send("拒绝访问该路径");
     const st = fs.statSync(abs);
     if (st.size > PREVIEW_MAX) return res.status(413).send("文件过大");
     const ext = extOf(rel);
@@ -615,11 +625,12 @@ app.post("/api/sediment", (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
-/* 在 WebSocket 握手阶段即校验令牌：无 token 直接销毁 socket，握手无法完成 */
+/* A1：业务 WS 仅接受登录后的 userToken（登录闸门）。AUTH_TOKEN 仅用于本机 bootstrap，不再用于 WS */
 server.on("upgrade", (req, socket, head) => {
   const u = new URL(req.url, "http://localhost");
-  if (u.searchParams.get("token") !== AUTH_TOKEN) { socket.destroy(); return; }
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  const tok = u.searchParams.get("token") || "";
+  if (!auth.verify(tok)) { socket.destroy(); return; }
+  wss.handleUpgrade(req, socket, head, (ws) => { ws._userToken = tok; wss.emit("connection", ws, req); });
 });
 
 function safe(fn, ws) {
@@ -751,6 +762,19 @@ wss.on("connection", (ws) => {
   });
 });
 
+/* A7：清理上次异常退出遗留的原子写临时文件（pancode.config.json.<pid>.tmp），避免根目录残留 */
+function cleanupTmpOrphans() {
+  try {
+    const dir = path.join(__dirname, "..");
+    for (const f of fs.readdirSync(dir)) {
+      if (/^pancode\.config\.json\.\d+\.tmp$/.test(f)) {
+        try { fs.unlinkSync(path.join(dir, f)); console.log("[pancode] 清理残留临时文件:", f); } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+cleanupTmpOrphans();
+
 server.listen(cfg.port, "127.0.0.1", () => {
   const info = configMod.publicInfo(cfg);
   console.log("pancode v" + VERSION + " 已启动: http://localhost:" + cfg.port);
@@ -759,13 +783,27 @@ server.listen(cfg.port, "127.0.0.1", () => {
   console.log("Agent 引擎: " + (info.mode === "llm" ? "真实 LLM（" + info.model + "）" : "内置演示引擎（配置 API Key 后自动切换真实 LLM）"));
 });
 
-/* 优雅关闭：关闭 WS 连接 → 停止文件监听 → 关闭 HTTP，避免强杀导致端口 / 文件锁残留 */
+/* 优雅关闭：中止 Agent → 杀终端子进程 → 关 WS → 停 watch → 关 HTTP，避免孤儿进程 / 端口残留 */
 function shutdown(sig) {
   console.log("\n[pancode] 收到 " + sig + "，正在优雅关闭…");
+  try { if (engine && typeof engine.abort === "function") engine.abort(); } catch (e) {}   // 中止进行中的 Agent 任务
+  try { if (term && typeof term.kill === "function") term.kill(); } catch (e) {}            // 杀掉终端子进程，避免孤儿
   try { for (const c of wss.clients) { try { c.close(); } catch (e) {} } } catch (e) {}
   try { if (files) files.stopWatch(); } catch (e) {}
   try { server.close(() => process.exit(0)); } catch (e) { process.exit(0); }
   setTimeout(() => process.exit(0), 3000).unref();   // 兜底：3s 内未退出则强制退出
 }
+
+/* A3：全局兜底——未捕获的 Promise 拒绝 / 异常不再直接杀死进程，记日志并广播给前端 */
+function logFatal(where, err) {
+  try {
+    const msg = (err && err.stack) ? err.stack : String(err);
+    console.error("[pancode] " + where + ": " + msg);
+    broadcast({ type: "op.error", error: "服务内部异常（" + where + "），已自动恢复；如频繁出现请查看后台日志。" });
+  } catch (e) {}
+}
+process.on("unhandledRejection", (reason) => logFatal("unhandledRejection", reason));
+process.on("uncaughtException", (err) => logFatal("uncaughtException", err));
+
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));

@@ -5,6 +5,8 @@
    - 超时保护 / 输出上限保护（防挂死、防刷屏）
    ============================================================ */
 "use strict";
+const fs = require("fs");
+const path = require("path");
 const { spawn } = require("child_process");
 const { check } = require("./security");
 
@@ -20,9 +22,10 @@ function classify(line) {
 }
 
 class TerminalLayer {
-  constructor(wsDir, emit) {
+  constructor(wsDir, emit, auditDir) {
     this.dir = wsDir;
     this.emit = emit;      // 广播事件
+    this.auditDir = auditDir || null;
     this.current = null;   // 当前运行的子进程
   }
 
@@ -41,6 +44,7 @@ class TerminalLayer {
       return Promise.resolve({ code: -1, out: "", blocked: true, timedOut: false });
     }
     this.emit({ type: "term.cmd", text: displayCmd });
+    if (this.auditDir) this._audit(opts.ai ? "AI" : "user", displayCmd);
     return new Promise((resolve) => {
       let child;
       try {
@@ -84,6 +88,16 @@ class TerminalLayer {
         resolve({ code: -1, out: String(err), timedOut: false });
       });
     });
+  }
+
+  /* A6：命令审计日志——每次真实执行的命令落盘到 .pancode/audit/<日期>.log，可追溯 AI/用户行为 */
+  _audit(source, cmd) {
+    try {
+      fs.mkdirSync(this.auditDir, { recursive: true });
+      const f = path.join(this.auditDir, new Date().toISOString().slice(0, 10) + ".log");
+      const line = new Date().toISOString() + " | " + source + " | " + String(cmd).replace(/\r?\n/g, " ") + "\n";
+      fs.appendFileSync(f, line);
+    } catch (e) {}
   }
 
   /* 中断当前命令（对齐 VS Code 终端 Ctrl+C） */

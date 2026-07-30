@@ -192,10 +192,7 @@ class SkillStore {
   }
 
   _saveLocal() {
-    try {
-      fs.mkdirSync(path.dirname(this._localPath), { recursive: true });
-      fs.writeFileSync(this._localPath, JSON.stringify(this._localSkills, null, 2), "utf8");
-    } catch (e) {}
+    require("./safe-write").saveJson(this._localPath, this._localSkills);
   }
 
   /* ---------- CRUD ---------- */
