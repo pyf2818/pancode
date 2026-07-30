@@ -80,4 +80,13 @@ function hasUsers() {
   return Object.keys(loadUsers()).length > 0;
 }
 
+/* 定时清扫过期会话（避免未登录 / 长期未活动 token 永驻内存，A4） */
+const _sessSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [tok, s] of sessions) {
+    if (!s || now - s.ts > 24 * 60 * 60 * 1000) sessions.delete(tok);
+  }
+}, 10 * 60 * 1000);
+if (_sessSweep && _sessSweep.unref) _sessSweep.unref();
+
 module.exports = { register, login, verify, logout, hasUsers };

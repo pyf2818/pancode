@@ -74,6 +74,17 @@ class FileStore {
     this.onExternalChange = null; // (relPath|null) => void
     this._selfWrites = new Map(); // relPath -> timestamp（忽略自身写入触发的 watch 事件）
     this._debounce = null;
+    // 定时清理 _selfWrites，避免长跑内存只增不减（A4）
+    this._sweepTimer = setInterval(() => this._sweepSelfWrites(), 5000);
+    if (this._sweepTimer && this._sweepTimer.unref) this._sweepTimer.unref();
+  }
+
+  /* 定时清理 _selfWrites 中超过 5s 的条目（防止内存只增不减） */
+  _sweepSelfWrites() {
+    const now = Date.now();
+    for (const [k, t] of this._selfWrites) {
+      if (now - t > 5000) this._selfWrites.delete(k);
+    }
   }
 
   /* 防目录逃逸：任何 rel 路径必须解析到 workspace 内 */
@@ -159,6 +170,7 @@ class FileStore {
     if (abs === path.resolve(this.dir)) throw new Error("不能删除工作区根目录");
     const st = fs.statSync(abs);
     this._selfWrites.set(rel.replace(/\\/g, "/"), Date.now());
+    this._binCache && this._binCache.delete(rel.replace(/\\/g, "/"));
     if (st.isDirectory()) fs.rmSync(abs, { recursive: true });
     else fs.unlinkSync(abs);
   }
@@ -168,7 +180,9 @@ class FileStore {
     if (fs.existsSync(to)) throw new Error("目标已存在: " + relNew);
     fs.mkdirSync(path.dirname(to), { recursive: true });
     this._selfWrites.set(rel.replace(/\\/g, "/"), Date.now());
+    this._binCache && this._binCache.delete(rel.replace(/\\/g, "/"));
     this._selfWrites.set(relNew.replace(/\\/g, "/"), Date.now());
+    this._binCache && this._binCache.delete(relNew.replace(/\\/g, "/"));
     fs.renameSync(from, to);
   }
 
@@ -234,6 +248,7 @@ class FileStore {
   }
 
   stopWatch() {
+    if (this._sweepTimer) { clearInterval(this._sweepTimer); this._sweepTimer = null; }
     for (const w of this.watchers.values()) { try { w.close(); } catch (e) {} }
     this.watchers.clear();
   }
