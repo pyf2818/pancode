@@ -26,6 +26,8 @@ const { chatStream } = require("./llm");
 const repoMap = require("./repo-map");
 const { MemoryStore } = require("./memory-store");
 const { SoulStore } = require("./soul-store");
+const { ProgressionStore } = require("./progression-store");
+const { computeProgression } = require("./progression");
 const { ContextRetriever } = require("./context-retriever");
 const { EvolutionEngine } = require("./evolution");
 const { SkillStore } = require("./skill-store");
@@ -246,6 +248,8 @@ class LlmAgent extends AgentBase {
     this.evolution = new EvolutionEngine(this.memory);
     const soulDir = path.join(require("./config").ROOT, ".pancode", "soul");
     this.soul = new SoulStore(path.join(soulDir, wsHash + ".json"));
+    const progDir = path.join(require("./config").ROOT, ".pancode", "progression");
+    this.progression = new ProgressionStore(path.join(progDir, wsHash + ".json"));
   }
 
   /* ---------- 任务完成后：提议灵魂(Soul)微调（写入待确认区，需用户确认） ---------- */
@@ -306,6 +310,11 @@ ${taskSummary}
   switchConversation(convId) {
     if (this._currentConv && this.history.length) {
       this.conversations.set(this._currentConv, { history: this.history, round: this.round });
+      // LRU 上限 20，防止长跑内存只增不减（A4）
+      if (this.conversations.size > 20) {
+        const oldest = this.conversations.keys().next().value;
+        if (oldest && oldest !== this._currentConv) this.conversations.delete(oldest);
+      }
     }
     this._currentConv = convId || "default";
     const saved = this.conversations.get(this._currentConv);
@@ -454,7 +463,34 @@ ${taskSummary}
       const ov = repoMap.repoOverview(this.files);
       if (ov) parts.push("【仓库结构】\n" + ov);
     }
+    // 进化状态反哺 Agent 行为（第一性：进化必须真实改变行为才算进化）
+    try {
+      const prog = computeProgression({
+        soul: this.soul.get(),
+        memEntries: this.memory.list({ limit: 1000 }),
+        skills: this.skills.list({ limit: 2000 }),
+        builtin: [],
+        path: this.progression.get().path,
+      });
+      const bias = this._evolutionBias(prog);
+      if (bias) parts.push(bias);
+    } catch (e) { /* 进化反哺失败不影响主流程 */ }
     return parts.join("\n\n");
+  }
+
+  /* 把进化状态翻译为 Agent 的行为偏好提示 */
+  _evolutionBias(prog) {
+    if (!prog) return "";
+    const lines = [];
+    const stageName = (prog.stage && prog.stage.name) || "萌芽";
+    lines.push("你当前的进化阶段为「" + stageName + "」（XP " + (prog.xp || 0) + "）。");
+    const p = this.progression.get().path;
+    if (p === "craftsman") lines.push("你的进化路线是【工匠】：交付前更重视质量与边界检查，做完主动自测并说明如何验证。");
+    else if (p === "scholar") lines.push("你的进化路线是【学者】：更重视文档沉淀与知识结构化，把关键决策写入记忆、产出说明文档。");
+    else if (p === "companion") lines.push("你的进化路线是【伙伴】：更重视默契与少打扰，优先理解用户意图，减少不必要的追问。");
+    if (prog.stage && prog.stage.id >= 2) lines.push("（阶段≥2）你可以自主连续执行多步任务，无需每步停下确认。");
+    if (prog.stage && prog.stage.id >= 3) lines.push("（阶段≥3）你可以启用目标驱动模式，持续推进直到目标完成。");
+    return lines.length ? "【Agent 进化状态（影响你的行为偏好）】\n" + lines.join("\n") : "";
   }
 
   /* ---------------- @提及 / 多模态 ---------------- */
@@ -856,10 +892,27 @@ ${taskSummary}
         // 记忆归纳：每完成一次任务检查是否需要压缩
         this._consolidateMemory(this.history);
       }
-    } catch (err) {
-      this.emit({ type: "term.line", text: "[LLM 引擎异常] " + err.message, cls: "tl-err" });
-      await this.say("LLM 调用出错：" + err.message + "\n\n请检查右上角「模型设置」中的 Base URL / API Key / 模型名，或切换到内置演示引擎体验。");
-    } finally {
+  } catch (err) {
+    const msg = (err && err.message ? err.message : String(err)).toLowerCase();
+    let kind = "unknown";
+    let hint = "请检查右上角「模型设置」中的 Base URL / API Key / 模型名，或切换到内置演示引擎体验。";
+    if (err && err.status === 429 || msg.includes("429") || msg.includes("rate") || msg.includes("quota") || msg.includes("too many") || msg.includes("limit reached")) {
+      kind = "quota";
+      hint = "API 配额已耗尽或触发限流。请稍后重试，或在「模型设置」中更换 Key / 降低并发请求。";
+    } else if (msg.includes("econn") || msg.includes("timeout") || msg.includes("network") || msg.includes("fetch failed") || msg.includes("enotfound") || msg.includes("socket") || msg.includes("aborted")) {
+      kind = "network";
+      hint = "网络异常，无法连接模型服务。请检查网络连接与 Base URL 是否正确可用。";
+    } else if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("invalid api key") || msg.includes("incorrect api key") || msg.includes("authentication") || msg.includes("api key")) {
+      kind = "key";
+      hint = "API Key 无效或未授权。请检查「模型设置」中填写的 Key 是否正确。";
+    } else if (msg.includes("404") || (msg.includes("model") && (msg.includes("not found") || msg.includes("does not exist") || msg.includes("not exist")))) {
+      kind = "model";
+      hint = "模型不存在或无访问权限。请确认「模型设置」中填写的模型名是否正确。";
+    }
+    this.emit({ type: "term.line", text: "[LLM 引擎异常] " + (err && err.message || err), cls: "tl-err" });
+    this.emit({ type: "agent.error", kind, message: err && err.message || String(err), hint });
+    await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
+  } finally {
       this.state(false);
       this.emit({ type: "agent.done", round: this.round });
     }

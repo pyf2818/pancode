@@ -8,6 +8,19 @@
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/* B2：状态集中化——把分散的 previewOn/previewZoom/evoData/evoTab 收编为 Store 访问器（既有读写点零改动） */
+(function () {
+  if (!window.Store) return;
+  const map = { previewOn: "preview.on", previewZoom: "preview.zoom", evoData: "evo.data", evoTab: "evo.tab" };
+  Object.keys(map).forEach((name) => {
+    if (Object.getOwnPropertyDescriptor(window, name)) return;
+    Object.defineProperty(window, name, {
+      configurable: true,
+      get() { return window.Store.get(map[name]); },
+      set(v) { window.Store.set(map[name], v); },
+    });
+  });
+})();
 const LANG_NAME = { javascript: "JavaScript", typescript: "TypeScript", markdown: "Markdown", json: "JSON", html: "HTML", css: "CSS", python: "Python", shell: "Shell", yaml: "YAML", plaintext: "Plain Text" };
 
 const state = {
@@ -526,7 +539,7 @@ const MD_CSS =
   "blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid #0a6ebd;background:#f3f7fb;color:#555}" +
   "table{border-collapse:collapse;margin:1em 0}th,td{border:1px solid #ddd;padding:6px 12px;font-size:14px}" +
   "img{max-width:100%}a{color:#0a6ebd;text-decoration:none}a:hover{text-decoration:underline}hr{border:none;border-top:1px solid #eaeaea;margin:1.4em 0}";
-let previewOn = false, previewTimer = null, previewZoom = 1;
+let previewTimer = null;
 function isPreviewable(p) { return PREVIEW_EXTS.has(extOf(p)); }
 
 function renderMarkdown(src) {
@@ -1126,6 +1139,7 @@ function handleEvent(ev) {
       break;
     }
     case "op.error": termLine('<span class="tl-err">[操作失败] ' + esc(ev.error) + "</span>"); break;
+    case "agent.error": showAgentError(ev); break;
     case "file.saved": {
       state.dirty.delete(ev.path);
       if (state.files[ev.path] && models[ev.path]) state.files[ev.path].content = models[ev.path].getValue();
@@ -1320,14 +1334,59 @@ function setRunning(running, label) {
 
 /* ---------------- 本地鉴权 ---------------- */
 const AUTH = { token: "" };
+let _authRedirected = false;   // 防止 401 时反复弹登录窗
+let lastUserText = "";         // C2：记录最后一条用户消息，供错误重试使用
+
+function showAuthModal() {
+  _authRedirected = false;
+  const m = $("authModal"); if (m) m.style.display = "flex";
+  const s = $("authStatus"); if (s) { s.textContent = ""; s.className = "set-status"; }
+}
+
+/* C2：LLM 错误分类卡片 + 一键重试 */
+function showAgentError(ev) {
+  const el = document.createElement("div");
+  el.className = "msg msg-ai evo-err-card";
+  const labels = { quota: "配额耗尽 / 触发限流", network: "网络异常", key: "API Key 无效或未授权", model: "模型不存在", unknown: "未知错误" };
+  const label = labels[ev.kind] || "未知错误";
+  el.innerHTML = '<div class="evo-err-head">' + ico("warn") + " 出错了：" + esc(label) + "</div>" +
+    '<div class="evo-err-msg">' + esc(ev.message || "") + "</div>" +
+    '<div class="evo-err-hint">' + esc(ev.hint || "") + "</div>";
+  if (ev.kind === "quota" || ev.kind === "network") {
+    const btn = document.createElement("button");
+    btn.className = "set-btn primary"; btn.textContent = "重试";
+    btn.onclick = () => { el.remove(); resendLast(); };
+    el.appendChild(btn);
+  }
+  chatStream.appendChild(el);
+  chatStream.scrollTop = chatStream.scrollHeight;
+}
+function resendLast() {
+  if (!lastUserText) { toast("没有可重试的消息"); return; }
+  send({ type: "newchat" });
+  setTimeout(() => send({ type: "chat", text: lastUserText, attachments: [] }), 250);
+}
+
 (function patchFetch() {
   const orig = window.fetch.bind(window);
-  window.fetch = (url, opts) => {
+  window.fetch = async (url, opts) => {
     if (AUTH.token && typeof url === "string" && url.startsWith("/api/")) {
       opts = opts || {};
       opts.headers = Object.assign({}, opts.headers, { Authorization: "Bearer " + AUTH.token });
     }
-    return orig(url, opts);
+    const r = await orig(url, opts);
+    if (r.status === 401) {
+      let body = {};
+      try { body = await r.clone().json(); } catch (e) {}
+      if (body && body.code === "NO_AUTH" && !_authRedirected) {
+        _authRedirected = true;
+        userAuth.token = ""; userAuth.username = "";
+        localStorage.removeItem("cw-user-token");
+        AUTH.token = "";
+        showAuthModal();
+      }
+    }
+    return r;
   };
 })();
 async function bootstrap() {
@@ -1395,11 +1454,12 @@ function processQueue() {
   if (state.running || msgQueue.length === 0) return;
   const { text, attachments } = msgQueue.shift();
   renderQueueBadge();
-  send({ type: "chat", text, attachments });
+  lastUserText = text; send({ type: "chat", text, attachments });
 }
 
 function bindInput() {
   const ta = inputBox.querySelector("#chatInput");
+  let atMenu = null;
   const doSend = () => {
     const v = ta.value.trim();
     if (!v && !pendingAttach.length) return;
@@ -1417,14 +1477,61 @@ function bindInput() {
       renderQueueBadge();
       toast("已加入队列（第 " + msgQueue.length + " 条），Agent 完成后自动执行");
     } else {
-      send({ type: "chat", text, attachments });
+      lastUserText = text; send({ type: "chat", text, attachments });
     }
     if (attachments.length) termLine('<span class="tl-info">[附件] 已随消息发送 ' + attachments.length + " 张图片</span>");
   };
   inputBox.querySelector("#btnSend").onclick = doSend;
   ta.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); }
+    if (e.key === "Enter" && !e.shiftKey) { if (atMenu && atMenu.style.display !== "none") return; e.preventDefault(); doSend(); }
   });
+
+  // C1b：@文件 / @目录 补全（意图→结果闭环提速）
+  atMenu = document.createElement("div");
+  atMenu.className = "at-menu"; atMenu.style.display = "none";
+  document.body.appendChild(atMenu);
+  let atState = null, atItems = [], atIdx = 0;
+  const hideAtMenu = () => { if (atMenu) atMenu.style.display = "none"; atState = null; };
+  const refreshAtActive = () => atMenu.querySelectorAll(".at-item").forEach((el, i) => el.classList.toggle("active", i === atIdx));
+  const pickAtItem = (i) => {
+    const it = atItems[i]; if (!it || !atState) return;
+    const pos = ta.selectionStart, val = ta.value;
+    const insert = "@" + it.kind + ":" + it.path + " ";
+    ta.value = val.slice(0, atState.start) + insert + val.slice(pos);
+    const np = atState.start + insert.length;
+    ta.setSelectionRange(np, np); ta.focus(); hideAtMenu();
+  };
+  const showAtMenu = (items) => {
+    atItems = items; atIdx = 0;
+    if (!items.length) { hideAtMenu(); return; }
+    atMenu.innerHTML = items.map((it, i) => '<div class="at-item' + (i === 0 ? " active" : "") + '" data-i="' + i + '"><span class="at-kind">' + (it.kind === "folder" ? "目录" : "文件") + '</span>' + esc(it.path) + '</div>').join("");
+    atMenu.style.display = "block";
+    const r = ta.getBoundingClientRect();
+    atMenu.style.left = Math.max(8, r.left) + "px";
+    atMenu.style.top = Math.max(8, r.top - atMenu.offsetHeight - 6) + "px";
+    atMenu.querySelectorAll(".at-item").forEach((el) => el.onclick = () => pickAtItem(parseInt(el.dataset.i, 10)));
+  };
+  const onAtInput = () => {
+    const pos = ta.selectionStart, before = ta.value.slice(0, pos);
+    const m = before.match(/(^|\s)@([^\s@]*)$/);
+    if (!m) { hideAtMenu(); return; }
+    let q = m[2], kind = "file";
+    if (q.startsWith("folder:")) { kind = "folder"; q = q.slice(7); }
+    else if (q.startsWith("file:")) { q = q.slice(5); }
+    const pool = Object.keys(state.files).filter((p) => p.toLowerCase().includes(q.toLowerCase())).slice(0, 50);
+    const items = pool.map((p) => ({ kind: "file", path: p }));
+    atState = { start: pos - m[2].length - 1 };
+    showAtMenu(items);
+  };
+  ta.addEventListener("input", onAtInput);
+  ta.addEventListener("keydown", (e) => {
+    if (!atMenu || atMenu.style.display === "none") return;
+    if (e.key === "Escape") hideAtMenu();
+    else if (e.key === "ArrowDown") { e.preventDefault(); atIdx = (atIdx + 1) % atItems.length; refreshAtActive(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); atIdx = (atIdx - 1 + atItems.length) % atItems.length; refreshAtActive(); }
+    else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickAtItem(atIdx); }
+  });
+  document.addEventListener("click", (e) => { if (atMenu && atMenu.style.display !== "none" && !atMenu.contains(e.target) && e.target !== ta) hideAtMenu(); });
 
   // 附件：按钮选择 / 粘贴 / 拖拽
   const fileInput = document.createElement("input");
@@ -2029,17 +2136,21 @@ async function checkAuth() {
     const r = await fetch("/api/auth/status?userToken=" + encodeURIComponent(userAuth.token)).then((x) => x.json());
     if (r.loggedIn) {
       userAuth.username = r.username;
+      AUTH.token = userAuth.token;   // A1：登录态 → 让后续所有 API 请求带上 userToken（登录闸门生效）
       $("tbUserTxt").textContent = r.username;
       $("tbUserBtn").classList.add("logged");
+      return true;
     } else {
       userAuth.token = ""; userAuth.username = "";
+      AUTH.token = "";
       $("tbUserTxt").textContent = "未登录";
       $("tbUserBtn").classList.remove("logged");
+      return false;
     }
-  } catch (e) { /* 静默 */ }
+  } catch (e) { return false; }
 }
 
-$("tbUserBtn").onclick = () => { $("authModal").style.display = "flex"; $("authStatus").textContent = ""; };
+$("tbUserBtn").onclick = () => showAuthModal();
 $("authClose").onclick = () => ($("authModal").style.display = "none");
 // 登录弹窗只点 X 关闭，点击外部不关闭
 
@@ -2060,11 +2171,14 @@ $("authSubmit").onclick = async () => {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: u, password: p }) }).then((x) => x.json());
     if (r.ok) {
       userAuth.token = r.token; userAuth.username = r.username;
+      AUTH.token = r.token;   // A1：登录成功 → 后续请求带 userToken（登录闸门生效）
       localStorage.setItem("cw-user-token", r.token);
       $("tbUserTxt").textContent = r.username;
       $("tbUserBtn").classList.add("logged");
       $("authModal").style.display = "none";
+      _authRedirected = false;
       toast(authMode === "login" ? "✅ 登录成功" : "✅ 注册成功");
+      startApp();   // 登录后才加载工作区数据并连接 WS
     } else {
       $("authStatus").className = "set-status err";
       $("authStatus").textContent = r.error;
@@ -2088,8 +2202,7 @@ async function loadSkills() {
 }
 
 /* ---------------- 进化树（记忆/经验/教训/Skills/灵魂 + 时间线） ---------------- */
-let evoData = null;
-let evoTab = "tree";
+// [B2] evoData / evoTab 不再用 let 声明——已通过顶部 Store 访问器接管，读写走 window.Store
 
 async function loadEvolutionTree() {
   try {
@@ -2339,7 +2452,7 @@ function openNodeDetail(kind, id) {
   if (!modal) {
     modal = document.createElement("div");
     modal.id = "evoDetailModal";
-    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:90;display:none;align-items:center;justify-content:center";
+    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:var(--z-overlay);display:none;align-items:center;justify-content:center";
     modal.innerHTML = '<div class="set-box" style="max-width:520px;max-height:80vh;display:flex;flex-direction:column">' +
       '<div class="set-head"><span id="evoDetailTitle"></span><button id="evoDetailClose"><i data-ico="close"></i></button></div>' +
       '<div class="set-body" id="evoDetailBody" style="overflow-y:auto"></div>' +
@@ -2457,7 +2570,7 @@ function openSoulEditor() {
   if (!modal) {
     modal = document.createElement("div");
     modal.id = "soulEditorModal";
-    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:90;display:none;align-items:center;justify-content:center";
+    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:var(--z-overlay);display:none;align-items:center;justify-content:center";
     modal.innerHTML = '<div class="set-box" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column">' +
       '<div class="set-head"><span>' + ico("soul") + ' 编辑 Agent 灵魂</span><button id="soulEditorClose"><i data-ico="close"></i></button></div>' +
       '<div class="set-body" id="soulEditorBody" style="overflow-y:auto;padding:12px"></div>' +
@@ -2588,7 +2701,7 @@ function showSkillDetail(skill) {
   if (!modal) {
     modal = document.createElement("div");
     modal.id = "skillDetailModal";
-    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:60;display:none;align-items:center;justify-content:center";
+    modal.style.cssText = "position:fixed;inset:0;background:#000000aa;z-index:var(--z-overlay);display:none;align-items:center;justify-content:center";
     modal.innerHTML = '<div class="set-box" style="max-width:560px;max-height:80vh;display:flex;flex-direction:column">' +
       '<div class="set-head"><span id="skillDetailTitle"></span><button id="skillDetailClose"><i data-ico="close"></i></button></div>' +
       '<div class="set-body" id="skillDetailBody" style="overflow-y:auto"></div>' +
@@ -2795,6 +2908,19 @@ function renderPlan(plan) {
   });
   html += '<div class="plan-progress"><span>' + done + '/' + total + '</span><div class="plan-progress-bar"><div class="plan-progress-fill" style="width:' + pct + '%"></div></div><span>' + pct + '%</span></div>';
   if (active) { active.innerHTML = html; replaceIcons(active); }
+  // C1a：同步常驻进度条（计划进行中显示，完成则隐藏）
+  const sticky = $("planSticky");
+  if (sticky) {
+    if (!plan || plan.status === "completed") sticky.hidden = true;
+    else {
+      sticky.hidden = false;
+      sticky.innerHTML = '<span class="ps-title">' + ico("tasklist") + '计划进度</span>' +
+        '<span class="ps-count">' + done + '/' + total + '</span>' +
+        '<div class="ps-bar"><div class="ps-fill" style="width:' + pct + '%"></div></div>' +
+        '<span class="ps-pct">' + pct + '%</span>';
+      replaceIcons(sticky);
+    }
+  }
 }
 
 async function loadPlan() {
@@ -2874,6 +3000,14 @@ mountShared();
 restoreConv();
 initConvObserver();
 bindInput();
-checkAuth();
-bootstrap().finally(() => { loadSkills(); loadPlan(); connect(); });
+/* A1：登录成为闸门——先领取本机令牌，再判定登录态；未登录只显示登录/注册，不加载工作区数据、不连 WS */
+async function startApp() {
+  if (ws) { try { ws.close(); } catch (e) {} }
+  loadSkills(); loadPlan(); connect();
+}
+bootstrap().then(async () => {
+  const loggedIn = await checkAuth();
+  if (loggedIn) startApp();
+  else showAuthModal();
+}).catch(() => showAuthModal());
 bootMonaco();
