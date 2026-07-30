@@ -32,6 +32,12 @@ const { ContextRetriever } = require("./context-retriever");
 const { EvolutionEngine } = require("./evolution");
 const { SkillStore } = require("./skill-store");
 const { PlanStore } = require("./plan-store");
+const safeWrite = require("./safe-write");
+
+/* C6 会话持久化参数 */
+const CONV_MAX = 20;          // 最多保留 20 个对话（与内存 LRU 上限一致）
+const CONV_MAX_MSGS = 80;     // 单个对话落盘时最多保留最近 80 条消息
+const CONV_SAVE_DEBOUNCE = 600; // 落盘防抖（ms）
 
 /* OpenAI 兼容工具定义：供 LLM 做 function calling（ReAct 工具调用循环） */
 const TOOLS = [
@@ -250,6 +256,111 @@ class LlmAgent extends AgentBase {
     this.soul = new SoulStore(path.join(soulDir, wsHash + ".json"));
     const progDir = path.join(require("./config").ROOT, ".pancode", "progression");
     this.progression = new ProgressionStore(path.join(progDir, wsHash + ".json"));
+
+    /* C6：会话上下文磁盘持久化（跨进程重启恢复 AI 记忆） */
+    const convDir = path.join(require("./config").ROOT, ".pancode", "conversations");
+    this._convPath = path.join(convDir, wsHash + ".json");
+    this._convSaveTimer = null;
+    this._loadConversations();
+  }
+
+  /* ---------------- C6：会话上下文落盘 / 恢复 ---------------- */
+
+  /* 启动时从磁盘恢复全部对话上下文，并激活上次活跃对话 */
+  _loadConversations() {
+    try {
+      if (!fs.existsSync(this._convPath)) return;
+      const raw = JSON.parse(fs.readFileSync(this._convPath, "utf8"));
+      const list = Array.isArray(raw && raw.conversations) ? raw.conversations : [];
+      for (const c of list) {
+        if (!c || !c.id || !Array.isArray(c.history)) continue;
+        this.conversations.set(String(c.id), {
+          history: c.history,
+          round: Number(c.round) || 0,
+          ts: Number(c.ts) || Date.now(),
+        });
+      }
+      // 恢复上次活跃对话为当前上下文
+      const cur = raw && raw.current ? String(raw.current) : "";
+      if (cur && this.conversations.has(cur)) {
+        const saved = this.conversations.get(cur);
+        this._currentConv = cur;
+        this.history = saved.history;
+        this.round = saved.round;
+      }
+      if (list.length) {
+        console.log("[pancode] 已恢复 " + list.length + " 个对话上下文" +
+          (this.history.length ? "（当前 " + this.history.length + " 条消息）" : ""));
+      }
+    } catch (e) {
+      console.warn("[pancode] 会话上下文恢复失败:", e.message);
+    }
+  }
+
+  /* 把当前 history 快照回 conversations Map（不落盘） */
+  _snapshotCurrent() {
+    if (!this._currentConv) return;
+    this.conversations.set(this._currentConv, {
+      history: this.history,
+      round: this.round,
+      ts: Date.now(),
+    });
+  }
+
+  /* 防抖落盘：序列化时裁剪单会话消息数与总会话数，避免文件无限膨胀 */
+  _persistConversations() {
+    clearTimeout(this._convSaveTimer);
+    this._convSaveTimer = setTimeout(() => {
+      try {
+        const entries = [...this.conversations.entries()].slice(-CONV_MAX);
+        const conversations = entries.map(([id, v]) => ({
+          id,
+          round: v.round || 0,
+          ts: v.ts || Date.now(),
+          history: Array.isArray(v.history) ? v.history.slice(-CONV_MAX_MSGS) : [],
+        })).filter((c) => c.history.length);
+        safeWrite.saveJson(this._convPath, {
+          v: 1,
+          updated: Date.now(),
+          current: this._currentConv || "default",
+          conversations,
+        });
+      } catch (e) {
+        console.warn("[pancode] 会话上下文落盘失败:", e.message);
+      }
+    }, CONV_SAVE_DEBOUNCE);
+    if (this._convSaveTimer.unref) this._convSaveTimer.unref();
+  }
+
+  /* 快照 + 落盘（对外统一入口） */
+  saveConversations() {
+    this._snapshotCurrent();
+    this._persistConversations();
+  }
+
+  /* 进程退出前同步刷盘：防抖定时器来不及触发时兜底 */
+  flushConversations() {
+    clearTimeout(this._convSaveTimer);
+    this._convSaveTimer = null;
+    try {
+      this._snapshotCurrent();
+      const entries = [...this.conversations.entries()].slice(-CONV_MAX);
+      const conversations = entries.map(([id, v]) => ({
+        id,
+        round: v.round || 0,
+        ts: v.ts || Date.now(),
+        history: Array.isArray(v.history) ? v.history.slice(-CONV_MAX_MSGS) : [],
+      })).filter((c) => c.history.length);
+      if (!conversations.length) return;
+      safeWrite.atomicWrite(this._convPath, JSON.stringify({
+        v: 1,
+        updated: Date.now(),
+        current: this._currentConv || "default",
+        conversations,
+      }, null, 2));
+    } catch (e) {
+      console.warn("[pancode] 会话上下文刷盘失败:", e.message);
+    }
   }
 
   /* ---------- 任务完成后：提议灵魂(Soul)微调（写入待确认区，需用户确认） ---------- */
@@ -308,19 +419,30 @@ ${taskSummary}
 
   /* ---------------- 多对话管理 ---------------- */
   switchConversation(convId) {
+    const next = convId || "default";
+    if (next === this._currentConv) return;   // 同一对话，无需切换（避免误清空）
     if (this._currentConv && this.history.length) {
-      this.conversations.set(this._currentConv, { history: this.history, round: this.round });
+      this._snapshotCurrent();
       // LRU 上限 20，防止长跑内存只增不减（A4）
-      if (this.conversations.size > 20) {
+      if (this.conversations.size > CONV_MAX) {
         const oldest = this.conversations.keys().next().value;
         if (oldest && oldest !== this._currentConv) this.conversations.delete(oldest);
       }
     }
-    this._currentConv = convId || "default";
+    this._currentConv = next;
     const saved = this.conversations.get(this._currentConv);
     this.history = saved ? saved.history : [];
     this.round = saved ? saved.round : 0;
     this._abort = false;
+    this._persistConversations();   // C6：切换即落盘，进程被强杀也不丢
+  }
+
+  /* 删除某个对话的服务端上下文（前端删除会话时同步调用） */
+  dropConversation(convId) {
+    if (!convId) return;
+    this.conversations.delete(String(convId));
+    if (this._currentConv === String(convId)) { this.history = []; this.round = 0; }
+    this._persistConversations();
   }
 
   abort() {
@@ -914,6 +1036,7 @@ ${taskSummary}
     await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
   } finally {
       this.state(false);
+      this.saveConversations();   // C6：每轮对话结束落盘，重启后可恢复 AI 上下文
       this.emit({ type: "agent.done", round: this.round });
     }
   }

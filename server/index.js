@@ -718,6 +718,7 @@ wss.on("connection", (ws) => {
           git.discardAll();
           engine.round = 0;
           if (engine.history) engine.history = [];
+          if (typeof engine.saveConversations === "function") engine.saveConversations();
           broadcast({ type: "fs.sync", files: snapshotFiles() });
           engine.pushChanges(false);
           broadcast({ type: "term.line", text: "[pancode] 工作区已恢复到基线状态", cls: "tl-info" });
@@ -729,13 +730,34 @@ wss.on("connection", (ws) => {
       case "newchat":
         safe(() => {
           if (typeof engine.switchConversation === "function" && m.convId) {
-            engine.switchConversation(m.convId);
-          } else {
-            engine.round = 0;
-            if (engine.history) engine.history = [];
+            engine.switchConversation(String(m.convId));
           }
+          // newchat 语义 = 该会话上下文清空（新建会话本就为空；重试场景同 ID 也需清空）
+          engine.round = 0;
+          if (engine.history) engine.history = [];
+          if (typeof engine.saveConversations === "function") engine.saveConversations();
           broadcast({ type: "agent.reset" });
           broadcast({ type: "term.line", text: "[pancode] 已开始新对话，AI 上下文已清空（文件改动保留）", cls: "tl-info" });
+        }, ws);
+        break;
+
+      /* C6：切换对话 — 把服务端 AI 上下文同步到前端选中的会话 */
+      case "switchConv":
+        safe(() => {
+          if (typeof engine.switchConversation === "function" && m.convId) {
+            engine.switchConversation(String(m.convId));
+            const n = engine.history ? engine.history.length : 0;
+            ws.send(JSON.stringify({ type: "conv.switched", convId: String(m.convId), messages: n }));
+          }
+        }, ws);
+        break;
+
+      /* C6：删除对话 — 同步清理服务端上下文，避免残留占用 */
+      case "dropConv":
+        safe(() => {
+          if (typeof engine.dropConversation === "function" && m.convId) {
+            engine.dropConversation(String(m.convId));
+          }
         }, ws);
         break;
 
@@ -787,6 +809,7 @@ server.listen(cfg.port, "127.0.0.1", () => {
 function shutdown(sig) {
   console.log("\n[pancode] 收到 " + sig + "，正在优雅关闭…");
   try { if (engine && typeof engine.abort === "function") engine.abort(); } catch (e) {}   // 中止进行中的 Agent 任务
+  try { if (engine && typeof engine.flushConversations === "function") engine.flushConversations(); } catch (e) {}  // C6：同步刷盘会话上下文
   try { if (term && typeof term.kill === "function") term.kill(); } catch (e) {}            // 杀掉终端子进程，避免孤儿
   try { for (const c of wss.clients) { try { c.close(); } catch (e) {} } } catch (e) {}
   try { if (files) files.stopWatch(); } catch (e) {}

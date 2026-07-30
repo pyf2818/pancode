@@ -109,9 +109,22 @@
 **问题**：`app.js` 2879 行单文件、106 个函数，全局 `state` + 散落的 `previewOn/previewZoom/evoData/models` 等，"改一处忘另一处"频发。
 **方案**：引入轻量集中 store（不必上框架）：一个 `Store` 模块 + 订阅，UI 按域订阅。先收编预览/进化树/聊天三块状态。
 
-### B3. app.js 渐进模块化 【P2】
+### B3. app.js 渐进模块化 【P2】✅ 已完成
 **问题**：2879 行单文件难维护、难协作。
 **方案**：按域拆分（chat / files / preview / evolution / settings / terminal），ES module 或 IIFE 命名空间。**渐进式**，不一次性重写。
+
+**落地**：采用「经典脚本 + 全局命名空间」（非 ESM——被抽模块含顶层事件绑定，需加载即执行）。
+`public/js/` 新增 6 个模块，`app.js` 3110 → 1945 行（-37%）：
+| 模块 | 内容 |
+|---|---|
+| `core.js` | 全局 `$` / `esc`，最先加载 |
+| `evolution-codex.js` | 进化图鉴：树/SVG/时间线/节点详情/灵魂编辑 |
+| `settings.js` | 模型设置、Agent 设置、工作流、沉淀、打开文件夹、欢迎语 |
+| `skill-market.js` | Skill 市场列表/详情/导入/删除 |
+| `cmdk.js` | 命令面板（Ctrl/⌘+Shift+P） |
+| `onboard.js` | 首次引导 |
+
+`index.html` 按依赖顺序在 `app.js` 之前注入。纯搬运，**零行为变更**。
 
 ### B4. 浅色主题完整性审计 【P1】
 **问题**：SVG 内多处硬编码颜色（`fill="#fff"`、`#1a8c6e`、`#eef0f2`），浅色下部分元素对比度不足或不可读。
@@ -150,9 +163,20 @@
 - 让 `path` 影响 Agent 系统提示词偏向（工匠→更重质量检查、学者→更重文档沉淀）；
 - 让进化阶段解锁能力（如阶段≥2 才允许 auto 模式、阶段≥3 解锁 Goal 持续执行）。
 
-### C6. 工作区会话持久化 【P2】
-**问题**：切换工作区后打开的 tab、终端历史是否保留？
-**方案**：会话级持久化（每个工作区记忆其打开的文件、滚动位置、终端历史）。
+### C6. 工作区会话持久化 【P2】✅ 已完成
+**问题**：前端 localStorage 只存了聊天 **DOM 快照**，刷新后"看得见历史但 AI 不记得"；服务端 `conversations` 是纯内存 Map，进程重启即全丢。
+
+**落地**：
+1. **服务端落盘**（`agent-llm.js`）：`conversations` Map 持久化到 `.pancode/conversations/<wsHash>.json`。
+   - 构造时 `_loadConversations()` 恢复全部对话 + 上次活跃对话；
+   - 每轮对话结束（`handleChat` 的 `finally`）、切换会话、`newchat`、`reset` 时落盘；
+   - 写入走 `safe-write.saveJson`（原子写 + 按路径串行），600ms 防抖；
+   - 裁剪策略：最多 20 个对话 × 每对话最近 80 条消息，防文件膨胀；
+   - `SIGINT/SIGTERM` 优雅关闭时 `flushConversations()` **同步刷盘**，防抖来不及也不丢。
+2. **前后端会话对齐**（`app.js`）：`send()` 统一为 `chat` / `newchat` 自动注入 `convId`；`openConv` 发 `switchConv`、`deleteConv` 发 `dropConv`；WS `onopen`（含断线重连）自动同步当前 `convId`。
+3. **协议补全**（`index.js`）：新增 `switchConv`（回 `conv.switched`，带恢复的消息条数）与 `dropConv`；`switchConversation` 加同 ID 幂等保护。
+
+**效果**：刷新 / 重启服务后，选中任一历史会话，AI 上下文一并恢复；前端终端提示「已恢复 AI 上下文（N 条消息）」。
 
 ---
 
@@ -184,3 +208,16 @@
 - **第一阶段（地基）**：A1+A2+A3+A4+B1+C2 —— 修安全与稳定命门，1~2 天。
 - **第二阶段（闭环）**：C1+C5+B2 —— 让价值闭环提速且进化真实生效。
 - **第三阶段（打磨）**：A5~A8+B3~B5+C3+C4+C6 —— 体验质感与可维护性。
+
+---
+
+## 完成状态
+
+全部 19 项已落地：
+
+| 阶段 | 条目 | 状态 |
+|---|---|---|
+| 第一阶段（地基） | A1 登录闸门 / A2 路径穿越 / A3 全局兜底 / A4 内存治理 / B1 首屏 / C2 引导 | ✅ |
+| 第二阶段（闭环） | C1 闭环提速 / C5 进化反哺 Agent / B2 状态集中化 | ✅ |
+| 第三阶段（打磨） | A5 并发安全 / A6 审计 / A7 限流 / A8 CORS+校验 / B4 视觉一致 / B5 加载动效 a11y / C3 命令面板 / C4 首次引导 | ✅ |
+| 收尾（P2 补完） | **B3 app.js 模块化** / **C6 会话持久化** | ✅ |
