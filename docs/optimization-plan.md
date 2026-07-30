@@ -178,6 +178,32 @@
 
 **效果**：刷新 / 重启服务后，选中任一历史会话，AI 上下文一并恢复；前端终端提示「已恢复 AI 上下文（N 条消息）」。
 
+### C7. 聊天 UX 增强 【P2】✅ 已完成
+**问题**：聊天交互细节缺失——历史消息难复用、发出内容复制麻烦、模式切换无快捷键、上下文占用不透明、Skill 市场展示噪音、工作流"补充文档"图标缺失、还原工作区一键即回退无二次确认。
+
+**落地（commit 9e8e22b）**：
+1. **历史消息复用**（`app.js`）：输入框 ↑/↓ 浏览当前会话已发消息并填入；↓ 回到最新时清空；`sentUserMsgs[convId]` 按会话缓冲。
+2. **消息快捷复制**：已发/收到消息悬停出现复制按钮（`addMsgCopyBtn`，`navigator.clipboard` + `execCommand` 兜底）。
+3. **模式快捷键**：`Ctrl/Cmd+.` 切换 Editor（正常）↔ Agents（agent）模式并 toast；说明写入 `settings.js` 欢迎语。
+4. **上下文实时显示**（`refreshCtx`）：底部条显示「N 条消息 · Xk/Mk tokens（Y%）」，与后端 `context.usage` 对齐，流式增长用 `content.length/4` 估算。
+5. **Skill 市场去噪**（`skill-market.js`）：移除 3 处"引用 N 次"展示，保留"引用到对话"动作。
+6. **工作流图标修复**（`icons.js`）：补 `md`（文档）/ `copy`（复制）图标，修复"补充文档"因 `icon:"md"` 无图标而空白。
+7. **还原工作区二次确认**：`btnReset` 改为自定义 `showConfirm` 弹窗（列未保存文件数），确认后才执行。
+
+### C8. 会话级工作态隔离 【P2】✅ 已完成
+**问题**：C6 只隔离了聊天历史。计划、实时终端日志、文件改动三块仍是**全局共享**——多会话下 A 会话做的事会串到 B 会话的面板里，且无法按会话分别审视"这次会话到底改了什么"。
+
+**落地（commit 8282ca2）**：
+1. **维度统一为 convId**：计划 `PlanStore`（`plan-store.js`）`create/getActive/recent/formatForContext` 全接口加 `convId` 过滤；旧无 `convId` 数据首次访问归并当前会话不丢。
+2. **文件改动按会话快照**（`agent-llm.js`）：`convChanges[convId]` 存该会话完成任务时的 `git.changes()` 快照；`_snapshotCurrent` / `_persistConversations` / `flushConversations` 序列化带 `changes`，`_loadConversations` 恢复，`dropConversation` 清理。
+3. **实时终端按会话缓冲**（`app.js`）：`termBuffers[convId]` 缓冲终端日志；`termLine/termPrompt` 改写写入对应缓冲；切换会话仅切换显示内容（共享同一个 OS shell）。
+4. **前后端联动**（`index.js`）：`GET /api/plans` 支持 `?convId`；`POST /api/plans` 补 `convId: engine._currentConv`；`switchConv` 推送该会话 changes；`reset/newchat` 仅清空当前会话 changes（不回退文件）。
+
+**关键约束 —— 不物理回退**：
+- 切换会话 / 清空会话记录：**只切换"显示哪份改动快照/终端日志"，绝不执行 `git checkout` / `git reset`**。
+- 唯一会物理回退的是「还原工作区」按钮（`reset` → `git.discardAll`，`git.js:92` 的 `checkout -- .` + `clean -fd`），且带二次确认弹窗（C7-7）。
+- 因此多会话并排时，每份会话看到的是自己当次的改动清单，互不影响工作区真实文件。
+
 ---
 
 ## 优先级总览与路线图
@@ -221,3 +247,10 @@
 | 第二阶段（闭环） | C1 闭环提速 / C5 进化反哺 Agent / B2 状态集中化 | ✅ |
 | 第三阶段（打磨） | A5 并发安全 / A6 审计 / A7 限流 / A8 CORS+校验 / B4 视觉一致 / B5 加载动效 a11y / C3 命令面板 / C4 首次引导 | ✅ |
 | 收尾（P2 补完） | **B3 app.js 模块化** / **C6 会话持久化** | ✅ |
+
+### 增量增强（v2.3.x，在 19 项方案外追加）
+
+| 提交 | 条目 | 内容 | 状态 |
+|---|---|---|---|
+| `9e8e22b` | **C7 聊天 UX 增强** | 历史 ↑/↓ 复用、消息快捷复制、`Ctrl/⌘+.` 切模式、上下文实时条、Skill 去"引用 N 次"、工作流图标修复、还原二次确认 | ✅ |
+| `8282ca2` | **C8 会话级工作态隔离** | 计划/终端/文件改动按 convId 隔离显示、跨重启保留、**不物理回退** | ✅ |
