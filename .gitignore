@@ -31,3 +31,7 @@ Thumbs.db
 # PanCode internal
 .pancode/
 scripts/verify_*.js
+
+# AI 工具本地产物（会话记忆 / 规则缓存，不入库）
+.omc/
+.workbuddy/
