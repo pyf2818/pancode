@@ -442,6 +442,19 @@
   </div>
 </div>
 
+<!-- ======================= 通用确认弹窗（还原工作区等危险操作） ======================= -->
+<div id="confirmModal" style="display:none">
+  <div class="confirm-box" role="alertdialog" aria-modal="true">
+    <div class="confirm-icon"><i data-ico="warn"></i></div>
+    <div class="confirm-title" id="confirmTitle"></div>
+    <div class="confirm-msg" id="confirmMsg"></div>
+    <div class="confirm-actions">
+      <button id="confirmCancel" class="set-btn" style="background:var(--bg4)">取消</button>
+      <button id="confirmOk" class="set-btn danger" style="background:var(--err);color:#fff">确认还原</button>
+    </div>
+  </div>
+</div>
+
 <script src="i18n.js"></script>
 <script src="icons.js"></script>
   <script src="/vendor/monaco/vs/loader.js"></script>

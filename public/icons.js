@@ -98,6 +98,10 @@
     clock: `<circle cx="8" cy="8" r="5.6" ${S}/><path d="M8 4.6V8l2.6 1.6" ${S}/>`,
     /* 锁定：挂锁 */
     lock: `<rect x="3.6" y="7" width="8.8" height="6.4" rx="1.2" ${S}/><path d="M5.4 7V5.4a2.6 2.6 0 0 1 5.2 0V7" ${S}/><circle cx="8" cy="10" r="1.1" fill="currentColor" stroke="none"/>`,
+    /* 复制 */
+    copy: `<rect x="5.5" y="5.5" width="7.5" height="7.5" rx="1.3" ${S}/><path d="M10.5 5.2V3.6a1 1 0 0 0-1-1H3.6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1.6" ${S}/>`,
+    /* Markdown / 文档（工作流「补充文档」用） */
+    md: `<path d="M4 2.5h5.4l2.6 2.6v8.4H4z" ${S}/><path d="M9.4 2.5V5h2.6" ${S}/><path d="M5.6 8.2h5M5.6 10.4h5M5.6 6.2h3" ${S}/>`,
   };
 
   /* 文件类型徽标：圆角方块 + 字母，参考 VS Code seti 风格 */

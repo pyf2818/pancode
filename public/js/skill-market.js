@@ -65,7 +65,6 @@ function makeSkillEl(s, sourceType) {
     '<div class="skill-ic" style="background:' + catColor + '">' + esc((s.name || "S")[0]) + '</div>' +
     '<div class="skill-meta"><div class="skill-name">' + esc(s.name) + srcTag + '</div>' +
     '<div class="skill-desc">' + esc(s.description || "无描述") + '</div></div>' +
-    '<span class="skill-use">引用 ' + (s.useCount || 0) + '</span>' +
     '<div class="skill-actions">' +
     '<button class="skill-view" title="查看详情">查看</button>' +
     '<button class="skill-ref" title="引用到对话">引用</button>' +
@@ -100,7 +99,6 @@ function showSkillDetail(skill) {
   body += "<div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px\">";
   body += "<span style=\"font-size:10px;padding:2px 8px;border-radius:8px;background:" + catColor + "22;color:" + catColor + ";border:1px solid " + catColor + "44\">" + esc(skill.category || "other") + "</span>";
   if (skill.tags && skill.tags.length) skill.tags.forEach((t) => { body += "<span style=\"font-size:10px;padding:2px 6px;border-radius:8px;background:var(--bg4);color:var(--text-dim)\">" + esc(t) + "</span>"; });
-  body += "<span style=\"font-size:10px;padding:2px 6px;border-radius:8px;background:var(--bg4);color:var(--text-dim)\">引用 " + (skill.useCount || 0) + " 次</span>";
   body += "</div>";
   body += "<label style=\"display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px\">触发关键词</label><input id=\"sdTrigger\" type=\"text\" value=\"" + esc(skill.trigger || "") + "\" style=\"width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:8px\">";
   body += "<label style=\"display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px\">内容（Markdown）</label>";
@@ -196,8 +194,7 @@ function renderSkillPop() {
         const catColor = CAT_COLORS[s.category] || "#808080";
         el.innerHTML =
           '<span class="ci-skill-opt-cat" style="background:' + catColor + '">' + esc(s.category || "other") + '</span>' +
-          '<span class="ci-skill-opt-name" title="' + esc(s.description || "") + '">' + esc(s.name) + '</span>' +
-          (s.useCount ? '<span class="ci-skill-opt-src">引用 ' + s.useCount + '</span>' : '');
+          '<span class="ci-skill-opt-name" title="' + esc(s.description || "") + '">' + esc(s.name) + '</span>';
         el.onclick = () => insertSkillToChat(s);
         listWrap.appendChild(el);
         shown++;

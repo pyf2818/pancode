@@ -842,7 +842,12 @@ const blocks = {};
 let answerBlock = null;   // 跨轮聚合的最终回答气泡（一次任务 = 一个气泡）
 let thinkCount = 0;       // 本次任务的思考步序号
 let lastThink = null;     // 当前正在流式输出的思考块（用于自动折叠上一个）
-function scrollChat() { chatStream.scrollTop = chatStream.scrollHeight; }
+function scrollChat() {
+  chatStream.scrollTop = chatStream.scrollHeight;
+  // 每次消息变化都触发上下文实时刷新（rAF 节流，避免流式输出时频繁重排）
+  if (_ctxRaf) return;
+  _ctxRaf = requestAnimationFrame(() => { _ctxRaf = null; refreshCtx(); });
+}
 
 function mdLite(s) {
   let h = esc(s);
@@ -1003,7 +1008,22 @@ function addUserMsg(text) {
   const el = document.createElement("div");
   el.className = "msg msg-user";
   el.textContent = text;
+  addMsgCopyBtn(el, text);
   chatStream.appendChild(el); scrollChat();
+}
+
+/* 给消息气泡加「快捷复制」按钮（用户发出的消息 / AI 回复均可复制） */
+function addMsgCopyBtn(el, text) {
+  const btn = document.createElement("button");
+  btn.className = "msg-copy";
+  btn.title = "复制消息";
+  btn.innerHTML = ico("copy");
+  btn.addEventListener("click", () => {
+    const done = () => { const old = btn.innerHTML; btn.innerHTML = "✓"; setTimeout(() => (btn.innerHTML = old), 1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    else fallbackCopy(text, done);
+  });
+  el.appendChild(btn);
 }
 
 function colorizeDiffText(text) {
@@ -1115,6 +1135,7 @@ function handleEvent(ev) {
       if (!state.booted) {
         state.booted = true;
         welcome();
+        refreshCtx();   // 上下文条从会话开始即实时可见
       }
       // 无打开标签时，自动打开 README 或第一个文件
       if (state.monacoReady && !state.openTabs.length) {
@@ -1203,6 +1224,12 @@ function handleEvent(ev) {
     case "msg.end": {
       const b = blocks[ev.id]; if (!b) break;
       b.el.classList.remove("type-caret"); scrollChat();
+      // 给 AI 回复加「复制全部」按钮（气泡在流式渲染中会被 innerHTML 覆盖，故在结束时挂载）
+      const row = b.el.closest(".msg-row");
+      if (row && !row.querySelector(".msg-copy")) {
+        const full = htmlToMarkdown(b.el).trim() || b.el.textContent.trim();
+        addMsgCopyBtn(row, full);
+      }
       break;
     }
 
@@ -1272,12 +1299,13 @@ function handleEvent(ev) {
       break;
     }
 
-    case "agent.done": state.round = ev.round; answerBlock = null; thinkCount = 0; lastThink = null; break;
-    case "agent.reset": state.round = 0; answerBlock = null; thinkCount = 0; lastThink = null; break;
+    case "agent.done": state.round = ev.round; answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx(); break;
+    case "agent.reset": state.round = 0; answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx(); break;
 
     /* C6：服务端确认会话上下文已切换 */
     case "conv.switched":
       if (ev.messages > 0) termLine('<span class="tl-info">[会话] 已恢复 AI 上下文（' + ev.messages + ' 条消息）</span>');
+      refreshCtx();
       break;
 
     case "plan.created": renderPlan(ev.plan); break;
@@ -1289,22 +1317,44 @@ function handleEvent(ev) {
 }
 
 /* ---------------- Agent 设置同步 / 上下文预算条 ---------------- */
+let ctxServer = null;   // 服务端实测用量 { used, budget }，优先作为真实值
+let _ctxRaf = null;
 function applyAgentSettings(a) {
   if (!a) return;
   state.agent = a;
   const sel = inputBox.querySelector("#ciPerm");
   if (sel && a.permissions && a.permissions.mode) sel.value = a.permissions.mode;
 }
-function updateCtxBar(used, budget) {
+/* 客户端估算：与服务端 _estTokens 同口径（content.length / 4），用于流式输出时的真实实时预览 */
+function estTokensFromDom() {
+  let chars = 0;
+  chatStream.querySelectorAll(".msg-user, .msg-ai").forEach((n) => { chars += (n.textContent || "").length; });
+  return Math.ceil(chars / 4);
+}
+/* 上下文真实实时显示：消息条数 + token 用量，随聊天即时刷新 */
+function refreshCtx() {
   const wrap = inputBox.querySelector("#ctxBarWrap");
-  if (!wrap || !budget) return;
+  if (!wrap) return;
+  const msgCount = chatStream.querySelectorAll(".msg-user, .msg-ai").length;
+  let used, budget, fromServer = false;
+  if (ctxServer && ctxServer.budget) { used = ctxServer.used; budget = ctxServer.budget; fromServer = true; }
+  else { used = estTokensFromDom(); budget = 1000000; }
   const pct = Math.min(100, Math.round((used / budget) * 100));
   wrap.style.display = "flex";
   const fill = wrap.querySelector("#ctxBarFill");
   fill.style.width = pct + "%";
   fill.className = pct >= 85 ? "warn" : pct >= 60 ? "mid" : "";
-  wrap.querySelector("#ctxBarTxt").textContent = "上下文 " + pct + "%（约 " + (used > 1000 ? (used / 1000).toFixed(1) + "k" : used) + " / " + Math.round(budget / 1000) + "k tokens" + (pct >= 85 ? "，即将自动压缩" : "") + "）";
-  wrap.title = "上下文用量估算；超过 85% 时自动摘要压缩早期消息";
+  const usedK = used > 1000 ? (used / 1000).toFixed(1) + "k" : used;
+  const budK = Math.round(budget / 1000);
+  wrap.querySelector("#ctxBarTxt").textContent =
+    "上下文 " + msgCount + " 条消息 · " + usedK + "/" + budK + "k tokens（" + pct + "%" +
+    (fromServer ? "" : "，估算") + (pct >= 85 ? "，即将自动压缩" : "") + "）";
+  wrap.title = "上下文用量" + (fromServer ? "（服务端实测）" : "（本地估算，服务端会校正）") + "；超过 85% 时自动摘要压缩早期消息";
+}
+/* 服务端 context.usage 事件 → 存储实测值并刷新 */
+function updateCtxBar(used, budget) {
+  ctxServer = { used, budget };
+  refreshCtx();
 }
 
 /* ---------------- Agent 状态 ---------------- */
@@ -1443,6 +1493,8 @@ function addAttachFile(file) {
 /* ---------------- 输入事件 + 消息排队 ---------------- */
 let activeSkill = null;
 const msgQueue = [];  // 消息队列
+const sentHistory = {};   // 各会话的已发消息历史，供 ↑/↓ 浏览：{ convId: [text, ...] }
+let histNav = -1;         // 历史浏览指针，-1 表示正在正常编辑（不在浏览历史）
 
 function renderQueueBadge() {
   let badge = inputBox.querySelector("#ciQueueBadge");
@@ -1474,6 +1526,11 @@ function bindInput() {
     const v = ta.value.trim();
     if (!v && !pendingAttach.length) return;
     ta.value = "";
+    // 记录到当前会话的发送历史，供 ↑/↓ 浏览回填
+    const curConv = (typeof convId !== "undefined" && convId) || "default";
+    (sentHistory[curConv] = sentHistory[curConv] || []);
+    if (v) sentHistory[curConv].push(v);
+    histNav = -1;
     const attachments = pendingAttach.splice(0, pendingAttach.length).map((a) => ({ src: a.src, name: a.name }));
     renderChips();
     let text = v || "（请分析所附图片）";
@@ -1522,6 +1579,7 @@ function bindInput() {
     atMenu.querySelectorAll(".at-item").forEach((el) => el.onclick = () => pickAtItem(parseInt(el.dataset.i, 10)));
   };
   const onAtInput = () => {
+    histNav = -1;   // 用户手动编辑即退出历史浏览
     const pos = ta.selectionStart, before = ta.value.slice(0, pos);
     const m = before.match(/(^|\s)@([^\s@]*)$/);
     if (!m) { hideAtMenu(); return; }
@@ -1534,12 +1592,36 @@ function bindInput() {
     showAtMenu(items);
   };
   ta.addEventListener("input", onAtInput);
+
+  // 上下键浏览当前会话已发消息：↑ 更旧 / ↓ 更新（回到最新后继续 ↓ 清空输入框）
+  const navHistory = (dir) => {
+    const curConv = (typeof convId !== "undefined" && convId) || "default";
+    const h = sentHistory[curConv] || [];
+    if (!h.length) return;
+    if (histNav === -1) {
+      if (dir < 0) return;          // 已在最新，没有更新的
+      histNav = h.length - 1;       // 从最近一条开始
+    } else {
+      histNav += dir;
+    }
+    if (histNav < 0) { histNav = -1; ta.value = ""; ta.focus(); return; }   // 越过最新 → 清空
+    if (histNav >= h.length) { histNav = h.length - 1; return; }            // 夹在最早一条
+    ta.value = h[histNav];
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  };
+
   ta.addEventListener("keydown", (e) => {
-    if (!atMenu || atMenu.style.display === "none") return;
-    if (e.key === "Escape") hideAtMenu();
-    else if (e.key === "ArrowDown") { e.preventDefault(); atIdx = (atIdx + 1) % atItems.length; refreshAtActive(); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); atIdx = (atIdx - 1 + atItems.length) % atItems.length; refreshAtActive(); }
-    else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickAtItem(atIdx); }
+    if (atMenu && atMenu.style.display !== "none") {
+      // @ 文件/目录 补全菜单导航
+      if (e.key === "Escape") hideAtMenu();
+      else if (e.key === "ArrowDown") { e.preventDefault(); atIdx = (atIdx + 1) % atItems.length; refreshAtActive(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); atIdx = (atIdx - 1 + atItems.length) % atItems.length; refreshAtActive(); }
+      else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickAtItem(atIdx); }
+      return;
+    }
+    // 历史消息浏览（@ 菜单未打开时）
+    if (e.key === "ArrowUp") { e.preventDefault(); navHistory(1); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); navHistory(-1); }
   });
   document.addEventListener("click", (e) => { if (atMenu && atMenu.style.display !== "none" && !atMenu.contains(e.target) && e.target !== ta) hideAtMenu(); });
 
@@ -1681,6 +1763,7 @@ function openConv(id) {
   for (const k in blocks) delete blocks[k];
   answerBlock = null; thinkCount = 0; lastThink = null;
   scrollChat();
+  refreshCtx();
   renderConvList();
   replaceIcons();
 }
@@ -1711,6 +1794,7 @@ function startNewConv(announce) {
     el.innerHTML = mdLite("已开始 **新对话**。上一轮上下文已清空，随时描述你的下一个任务。");
     chatStream.appendChild(el);
     scrollChat();
+    refreshCtx();
   }
   renderConvList();
 }
@@ -1737,17 +1821,42 @@ function newConversation() {
 }
 $("agNewTask").onclick = newConversation;
 $("agExport").onclick = exportConversation;
+
+/* 通用确认弹窗：用于还原工作区等危险操作，让用户二次确认 */
+function showConfirm(title, msg, onOk) {
+  const m = $("confirmModal");
+  if (!m) { if (confirm(msg.replace(/<[^>]+>/g, ""))) onOk(); return; }
+  $("confirmTitle").textContent = title;
+  $("confirmMsg").innerHTML = msg;
+  replaceIcons(m);
+  m.style.display = "flex";
+  const ok = $("confirmOk"), cancel = $("confirmCancel");
+  const cleanup = () => { m.style.display = "none"; ok.onclick = null; cancel.onclick = null; };
+  ok.onclick = () => { cleanup(); onOk(); };
+  cancel.onclick = cleanup;
+}
 $("btnReset").onclick = () => {
-  if (state.running) return;
-  if (confirm("将丢弃全部更改，恢复到 Git/快照基线。未保存的编辑也会丢失，确定？")) {
-    state.dirty.clear();
-    send({ type: "reset" });
-  }
+  if (state.running) { toast("Agent 正在运行，请先停止再还原"); return; }
+  const n = state.dirty ? state.dirty.size : 0;
+  showConfirm("还原工作区",
+    "将丢弃全部未保存的更改" + (n ? "（当前有 <b>" + n + "</b> 个文件存在未保存编辑）" : "") +
+    "，并恢复到 Git / 快照基线。<br><b style=\"color:var(--err)\">此操作不可撤销</b>，确定要继续吗？",
+    () => {
+      if (state.dirty) state.dirty.clear();
+      send({ type: "reset" });
+      toast("工作区已开始还原");
+    });
 };
 
 /* ---------------- 全局快捷键 ---------------- */
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveActiveFile(); }
+  else if ((e.ctrlKey || e.metaKey) && (e.key === "." || e.code === "Period")) {
+    e.preventDefault();
+    const target = state.mode === "editor" ? "agents" : "editor";
+    switchMode(target);
+    toast("已切换至 " + (target === "editor" ? "编辑器" : "Agents") + " 窗口（Ctrl/Cmd + . 切换）");
+  }
 });
 
 

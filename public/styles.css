@@ -881,3 +881,28 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
   .boot-spinner{animation:none;border-top-color:var(--accent-hi)}
   .evo-pulse,.evo-draw,.evo-pop{animation:none!important}
 }
+
+/* ============ 上下文实时用量条 ============ */
+#ctxBarWrap{display:none;align-items:center;gap:7px;width:100%;font-size:11px;color:var(--text-dim);padding:3px 0 5px;margin-top:2px}
+#ctxBarFill{height:4px;flex:0 0 auto;min-width:4px;background:var(--accent);border-radius:3px;transition:width .25s ease}
+#ctxBarFill.mid{background:#d9a400}
+#ctxBarFill.warn{background:var(--err)}
+#ctxBarTxt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto}
+
+/* ============ 消息气泡快捷复制按钮 ============ */
+.msg-user{position:relative}
+.msg-row{position:relative}
+.msg-copy{position:absolute;top:4px;right:6px;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border:none;background:var(--bg4);color:var(--text-dim);border-radius:5px;cursor:pointer;opacity:0;transition:opacity .15s,background .15s;padding:0;z-index:2}
+.msg-user:hover .msg-copy,.msg-row:hover .msg-copy{opacity:1}
+.msg-copy:hover{background:var(--accent);color:#fff}
+.msg-copy .ico{width:13px;height:13px}
+
+/* ============ 通用确认弹窗 ============ */
+#confirmModal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:var(--z-overlay);display:none;align-items:center;justify-content:center}
+.confirm-box{background:var(--bg);border:1px solid var(--border);border-radius:10px;max-width:380px;width:calc(100% - 40px);padding:18px 20px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+.confirm-icon{color:var(--err);margin-bottom:6px}
+.confirm-icon .ico{width:26px;height:26px}
+.confirm-title{font-size:15px;font-weight:600;margin-bottom:8px;color:var(--text)}
+.confirm-msg{font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:16px}
+.confirm-msg b{color:var(--text)}
+.confirm-actions{display:flex;gap:10px;justify-content:flex-end}
