@@ -13,6 +13,34 @@ const { check } = require("./security");
 const MAX_OUT = 200 * 1024;   // 单次命令最多聚合 200KB 输出
 const DEFAULT_TIMEOUT = 60_000;
 
+/* Windows 专用：修复继承破碎环境导致的 spawn(shell:true) 失败（退出码 3221225794）。
+   子进程环境若 ComSpec 为空 / PATH 为 Git Bash 的 unix 风格，CreateProcess 初始化环境失败。
+   构造干净 env，并优先探测真实 cmd.exe 路径兜底。 */
+function _sanitizeEnv() {
+  const env = Object.assign({}, process.env);
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.WINDIR || "C:\\Windows";
+  // 1) 补齐 ComSpec
+  if (!env.ComSpec || !/\.exe$/i.test(env.ComSpec)) {
+    const candidates = [
+      path.join(systemRoot, "system32", "cmd.exe"),
+      path.join(systemRoot, "System32", "cmd.exe"),
+      "C:\\Windows\\System32\\cmd.exe",
+    ];
+    for (const c of candidates) { try { if (fs.existsSync(c)) { env.ComSpec = c; break; } } catch (e) {} }
+  }
+  // 2) PATH 若为 unix 风格（含 /c/ 前缀或冒号多路径），前置 Windows 系统目录，避免 CreateProcess 找不到 cmd
+  const p = env.PATH || "";
+  const unixish = /(^|:)\.{0,2}\/[a-zA-Z]/.test(p) || p.indexOf(":\\") < 0 && p.indexOf(":") >= 0 && !p.startsWith("%");
+  if (unixish || !env.PATH) {
+    const winPath = systemRoot + "\\system32;" + systemRoot + ";" + systemRoot + "\\System32\\Wbem;";
+    env.PATH = winPath + (env.PATH ? p.replace(/:/g, ";") : "");
+  }
+  // 3) 兜底 SystemRoot 大小写统一
+  if (!env.SystemRoot && env.SYSTEMROOT) env.SystemRoot = env.SYSTEMROOT;
+  if (!env.SYSTEMROOT && env.SystemRoot) env.SYSTEMROOT = env.SystemRoot;
+  return env;
+}
+
 function classify(line) {
   if (/\u2713|PASS|passed/.test(line)) return "tl-ok";
   if (/\u2717|FAIL|failed|Error|error:|Exception/.test(line)) return "tl-err";
@@ -47,10 +75,11 @@ class TerminalLayer {
     if (this.auditDir) this._audit(opts.ai ? "AI" : "user", displayCmd);
     return new Promise((resolve) => {
       let child;
+      const env = _sanitizeEnv();   // Windows 环境兜底：修复 ComSpec 缺失 / unix 风格 PATH
       try {
         child = argv
-          ? spawn(argv[0], argv.slice(1), { cwd: this.dir })
-          : spawn(displayCmd, { cwd: this.dir, shell: true });
+          ? spawn(argv[0], argv.slice(1), { cwd: this.dir, env })
+          : spawn(displayCmd, { cwd: this.dir, shell: true, env });
       } catch (err) {
         this.emit({ type: "term.line", text: String(err), cls: "tl-err" });
         return resolve({ code: -1, out: String(err), timedOut: false });

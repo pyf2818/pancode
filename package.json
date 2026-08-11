@@ -10,7 +10,9 @@
     "dist": "electron-builder --win nsis",
     "smoke": "node scripts/smoke-test.js",
     "test:fileops": "node scripts/fileops-test.js",
-    "test": "node scripts/smoke-test.js && node scripts/fileops-test.js"
+    "test:verify": "node scripts/_verify_render.js && node scripts/_verify_repo_map.js && node scripts/_verify_tools.js && node scripts/_verify_agentflow.js",
+    "test:integration": "node scripts/integration-runner.js",
+    "test": "npm run test:verify && node scripts/smoke-test.js && node scripts/fileops-test.js && npm run test:integration"
   },
   "build": {
     "appId": "com.pancode.app",

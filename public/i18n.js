@@ -103,7 +103,7 @@ const LANGS = {
     noChangesAgent: "Agent 修改代码后，文件与 Diff 会显示在这里。",
     // 预览
     preview: "预览",
-    autoRefresh: "保存时自动刷新",
+    autoRefresh: "编辑时实时刷新",
     // 弹窗
     close: "关闭",
     confirm: "确定",
@@ -229,7 +229,7 @@ const LANGS = {
     changesPanel: "Changes",
     noChangesAgent: "Files and diffs will appear here after Agent modifies code.",
     preview: "Preview",
-    autoRefresh: "Auto refresh on save",
+    autoRefresh: "Real-time on edit",
     close: "Close",
     confirm: "OK",
     cancel: "Cancel",

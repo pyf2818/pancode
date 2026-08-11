@@ -34,7 +34,14 @@ function fail(s) { console.error("[fileops] FAIL: " + s); process.exit(1); }
   log("health OK, engine=" + health.engine.mode);
 
   const WebSocket = require("ws");
-  const ws = new WebSocket("ws://localhost:" + PORT);
+  /* A2 升级后 WS 需 userToken（bootstrap token 已不再用于业务 WS） */
+  const tokRes = await fetch("http://localhost:" + PORT + "/api/auth/register", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "_fileops_" + Date.now(), password: "test1234" }),
+  }).then((r) => r.json());
+  const token = tokRes && tokRes.token;
+  if (!token) fail("注册测试用户失败: " + JSON.stringify(tokRes));
+  const ws = new WebSocket("ws://localhost:" + PORT + "?token=" + encodeURIComponent(token));
   let files = {};
   const waiters = [];
   ws.on("message", (raw) => {

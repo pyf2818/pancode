@@ -1,19 +1,24 @@
 /* 端到端验证：连上真实运行的 pancode 服务，先发 newchat，再发一条会触发工具调用的对话，
    收集事件，确认不再出现 "TOOLS is not defined"，且能正常收到 agent.done / tool 事件。 */
-const http = require("http");
 const WebSocket = require("ws");
 
-function getToken() {
-  return new Promise((res, rej) => {
-    http.get("http://127.0.0.1:8766/api/bootstrap", (r) => {
-      let d = ""; r.on("data", (c) => (d += c)); r.on("end", () => { try { res(JSON.parse(d).token); } catch (e) { rej(e); } });
-    }).on("error", rej);
+/* A2 认证升级后 WS 仅接受登录后的 userToken —— 注册临时用户获取 */
+const PORT = process.env.PANCODE_TEST_PORT || 8766;
+async function getToken() {
+  const r = await fetch("http://127.0.0.1:" + PORT + "/api/auth/register", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "_verify_ws_" + Date.now(), password: "test1234" }),
   });
+  const j = await r.json();
+  if (!j || !j.token) throw new Error("注册失败: " + ((j && j.error) || "unknown"));
+  return j.token;
 }
 
 (async () => {
-  const token = await getToken();
-  const ws = new WebSocket("ws://127.0.0.1:8766/?token=" + encodeURIComponent(token));
+  let token;
+  try { token = await getToken(); }
+  catch (e) { console.error("FAIL: " + e.message + "（需先 npm start 后运行本脚本）"); process.exit(1); }
+  const ws = new WebSocket("ws://127.0.0.1:" + PORT + "/?token=" + encodeURIComponent(token));
   const seen = { types: {}, error: null, toolCalls: 0, gotReset: false, gotDone: false, content: "" };
   const log = [];
 

@@ -272,7 +272,11 @@ function getModel(path) {
         if (isDirty) state.dirty.add(path); else state.dirty.delete(path);
         renderTabs(); renderTree();
       }
-      if (previewOn && isPreviewable(path)) schedulePreview();
+      if (previewOn && isPreviewable(path) && path === state.activeFile) schedulePreview();
+      // 绑定滚动同步（避免重复绑）
+      if (previewOn && models[path] && !models[path]._previewScrollBound) {
+        models[path]._previewScrollBound = true;
+      }
     });
     models[path] = m;
   }
@@ -589,6 +593,35 @@ function applyPreviewZoom() {
   if (txt) txt.textContent = Math.round(previewZoom * 100) + "%";
 }
 
+/* 预览滚动同步：编辑器和 iframe 双向跟随，requestAnimationFrame 节流 */
+let _previewScrollRAF = null;
+function _schedulePreviewScrollSync() {
+  if (_previewScrollRAF) return;
+  _previewScrollRAF = requestAnimationFrame(() => {
+    _previewScrollRAF = null;
+    if (!previewOn) return;
+    const frame = $("hpFrame");
+    if (!frame || !frame.contentWindow) return;
+    // 编辑器 -> 预览（按高度比例）
+    try {
+      const ratio = editor.getScrollTop() / Math.max(1, editor.getScrollHeight() - editor.getContainerDomNode().clientHeight);
+      const target = ratio * (frame.contentDocument?.body?.scrollHeight || 1000);
+      frame.contentWindow.scrollTo(0, target);
+    } catch (_) {}
+    // 预览 -> 编辑器（取 iframe 滚动位置）
+    try {
+      const sy = frame.contentWindow?.scrollY ?? 0;
+      if (sy > 0) editor.setScrollTop(sy);
+    } catch (_) {}
+  });
+}
+function _attachPreviewScrollListeners() {
+  // 编辑器滚动时触发同步
+  if (editor) {
+    editor.onDidScrollChange(() => _schedulePreviewScrollSync());
+  }
+}
+
 function renderPreview() {
   const path = state.activeFile;
   const frame = $("hpFrame");
@@ -600,6 +633,9 @@ function renderPreview() {
     frame.srcdoc = "<!DOCTYPE html><html><head><meta charset='utf-8'><style>" + MD_CSS + "</style></head><body class='md-body'>" + renderMarkdown(val) + "</body></html>";
   }
   frame.style.zoom = previewZoom;
+  frame.style.marginTop = "0"; // 每次重绘重置滚动偏移
+  // 文件切换后，同步到编辑器顶部
+  _attachPreviewScrollListeners();
 }
 function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 350); }
 
@@ -862,6 +898,15 @@ function scrollChat() {
   _ctxRaf = requestAnimationFrame(() => { _ctxRaf = null; refreshCtx(); });
 }
 
+/* 追加任务内容块：若最终回答气泡已出现，则插到它之前，保证「思考/工具在前、最终结论在最后」 */
+function appendChatBlock(el) {
+  if (answerBlock && answerBlock.row && answerBlock.row.parentNode === chatStream) {
+    chatStream.insertBefore(el, answerBlock.row);
+  } else {
+    chatStream.appendChild(el);
+  }
+}
+
 function mdLite(s) {
   let h = esc(s);
   h = h.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, l, c) => "<pre>" + c.trim() + "</pre>");
@@ -1113,7 +1158,7 @@ function renderApproval(ev) {
       '<button class="btn-approve" data-id="' + esc(ev.id) + '">' + ico("check") + " 批准</button>" +
       '<button class="btn-reject" data-id="' + esc(ev.id) + '">' + ico("close") + " 拒绝</button>" +
     "</div>";
-  chatStream.appendChild(el); scrollChat();
+  appendChatBlock(el); scrollChat();
   const statusEl = el.querySelector(".t-status");
   const lock = () => el.querySelectorAll(".approval-actions button").forEach((b) => (b.disabled = true));
   el.querySelector(".btn-approve").onclick = () => {
@@ -1190,7 +1235,7 @@ function handleEvent(ev) {
       el.className = "think-block open live";
       el.innerHTML = '<div class="think-head">' + ico("bulb") + '<span class="tk-label">思考中…（第 ' + thinkCount + ' 步）</span><span class="chev">' + ico("chevR") + '</span></div><div class="think-body"></div>';
       el.querySelector(".think-head").onclick = () => el.classList.toggle("open");
-      chatStream.appendChild(el); scrollChat();
+      appendChatBlock(el); scrollChat();
       const body = el.querySelector(".think-body");
       body.classList.add("type-caret");
       blocks[ev.id] = { el, body, buf: "", step: thinkCount };
@@ -1225,7 +1270,7 @@ function handleEvent(ev) {
       el.className = "msg msg-ai type-caret";
       row.appendChild(el);
       chatStream.appendChild(row); scrollChat();
-      answerBlock = { el, buf: "" };
+      answerBlock = { el, row, buf: "" };
       blocks[ev.id] = answerBlock;
       break;
     }
@@ -1253,7 +1298,7 @@ function handleEvent(ev) {
         '<span class="t-name">' + esc(ev.name) + '</span><span class="t-target">' + esc(ev.target) + "</span>" +
         '<span class="t-status running">' + ico("spin") + "执行中</span></div><div class=\"tool-body\"></div>";
       el.querySelector(".tool-head").onclick = () => el.classList.toggle("open");
-      chatStream.appendChild(el); scrollChat();
+      appendChatBlock(el); scrollChat();
       blocks[ev.id] = { el };
       break;
     }
@@ -1307,7 +1352,7 @@ function handleEvent(ev) {
         });
         el.innerHTML = inner;
         el.querySelectorAll(".cs-file").forEach((f) => (f.onclick = () => showDiff(f.dataset.p)));
-        chatStream.appendChild(el); scrollChat();
+        appendChatBlock(el); scrollChat();
       }
       break;
     }

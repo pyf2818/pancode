@@ -113,6 +113,21 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
 
+/* A8：CORS 收紧——本地优先工具只允许同源或本机回环访问，拒绝跨站请求（防 CSRF 式滥用） */
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin) return next();                               // 非浏览器（curl/同源）放行
+  let host;
+  try { host = new URL(origin).host; } catch (e) { return res.status(403).json({ ok: false, error: "非法 Origin" }); }
+  const loopback = /^(127\.0\.0\.1|localhost|\[::1\])/.test(host);
+  if (!loopback) return res.status(403).json({ ok: false, error: "跨站请求被拒绝" });
+  res.setHeader("Access-Control-Allow-Origin", origin);     // 本机 Origin 反射
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,x-user-token");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 /* ---------- 本地鉴权 ---------- */
 /* A2：收紧白名单——仅保留本机可匿名访问的引导类端点；业务/敏感端点全部要求登录后的 userToken */
 const NO_AUTH = new Set([

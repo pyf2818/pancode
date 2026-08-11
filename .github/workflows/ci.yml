@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify scripts (render / repo_map / tools / agentflow / ws / sediment)
+        run: npm run test:verify
+
+      - name: Smoke test (Agent 闭环端到端)
+        run: npm run smoke
+
+      - name: File ops test (CRUD 全链路)
+        run: npm run test:fileops

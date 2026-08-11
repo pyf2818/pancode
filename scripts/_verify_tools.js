@@ -6,9 +6,16 @@ const path = require("path");
 let toolsSeen = null;
 let rounds = 0;
 
+/* 当前 TOOLS 全集（随 Phase 2 扩容，保持与 agent-llm.js 同步） */
+const EXPECT_TOOLS = [
+  "list_files", "read_file", "write_file", "delete_file",
+  "search_code", "run_command", "repo_map", "search_symbol",
+  "search_memory", "create_skill", "create_plan", "update_plan",
+].sort();
+
 const mockLlm = {
   async chatStream(cfg, messages, tools, cb) {
-    toolsSeen = tools; // 关键断言点：tools 必须已定义且为 6 个函数
+    toolsSeen = tools; // 关键断言点：tools 必须已定义且为 12 个函数
     if (rounds === 0) {
       rounds = 1;
       if (cb && cb.onReasoning) cb.onReasoning("思考：需要先读文件");
@@ -70,10 +77,9 @@ const { LlmAgent } = require(path.join(__dirname, "..", "server", "agent-llm.js"
   const errs = [];
   if (!Array.isArray(toolsSeen)) errs.push("TOOLS 未定义或非数组");
   else {
-    if (toolsSeen.length !== 6) errs.push("TOOLS 数量应为 6，实际 " + toolsSeen.length);
+    if (toolsSeen.length !== EXPECT_TOOLS.length) errs.push("TOOLS 数量应为 " + EXPECT_TOOLS.length + "，实际 " + toolsSeen.length);
     const names = toolsSeen.map((t) => t.function && t.function.name).sort();
-    const expect = ["delete_file", "list_files", "read_file", "run_command", "search_code", "write_file"].sort();
-    if (JSON.stringify(names) !== JSON.stringify(expect)) errs.push("TOOLS 名称不符: " + names.join(","));
+    if (JSON.stringify(names) !== JSON.stringify(EXPECT_TOOLS)) errs.push("TOOLS 名称不符: " + names.join(","));
     // 校验 schema 形态
     for (const t of toolsSeen) {
       if (t.type !== "function" || !t.function || !t.function.parameters) errs.push("工具 schema 形态错误: " + t.function && t.function.name);
