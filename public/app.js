@@ -34,6 +34,7 @@ const state = {
   engine: null,         // { mode, model, ... }
   agent: null,          // { permissions, persona, rules, context, memory }
   project: "workspace",
+  workspace: null,      // 当前工作区绝对路径（hello 事件设置）
 };
 let editor = null, diffEditor = null;
 const models = {};
@@ -860,7 +861,7 @@ $("diffClose").onclick = () => {
 };
 
 /* ---------------- 终端渲染 ---------------- */
-const termBuffers = {};   // convId -> [每条 "div.tl" 的 outerHTML]：终端日志按会话分别记录与显示
+let termBuffers = {};   // convId -> [每条 "div.tl" 的 outerHTML]：终端日志按会话分别记录与显示（let：切工作区时整组重置）
 function termLine(html) {
   const lines = $("termLines");
   const div = document.createElement("div");
@@ -1180,6 +1181,14 @@ function handleEvent(ev) {
     case "hello": {
       state.round = ev.round || 0;
       state.project = ev.project || "workspace";
+      /* 工作区切换检测：路径变化时按新工作区重载对话（隔离存储） */
+      if (ev.workspace && ev.workspace !== state.workspace) {
+        const prevWs = state.workspace;
+        state.workspace = ev.workspace;
+        if (prevWs) reloadConvForWs();   // 非首次：切换工作区需重载会话列表与 active
+      } else if (ev.workspace) {
+        state.workspace = ev.workspace;
+      }
       $("projName").textContent = state.project.toUpperCase();
       document.querySelector(".tb-project").textContent = state.project;
       if (ev.workspace) $("btnOpenFolder").title = "当前工作区: " + ev.workspace + "（点击打开其他文件夹）";
@@ -1742,16 +1751,26 @@ function bindInput() {
 }
 
 /* ---------------- 会话历史（本地持久化，跨刷新保留） ---------------- */
-const CONV_LS = "cw-conv-v1";
-const CONV_ACTIVE_LS = "cw-conv-active";
+/* 会话存储 key：按工作区隔离（切换项目后对话列表/active 各自独立，互不串扰）。
+   用工作区路径做哈希后缀，localStorage 里保留各项目独立的一份。 */
+const CONV_LS_BASE = "cw-conv-v1";
+const CONV_ACTIVE_BASE = "cw-conv-active";
+function _wsHash() {
+  const ws = state.workspace || "default";
+  let h = 0;
+  for (let i = 0; i < ws.length; i++) h = (h * 31 + ws.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+function convListKey() { return CONV_LS_BASE + ":" + _wsHash(); }
+function convActiveKey() { return CONV_ACTIVE_BASE + ":" + _wsHash(); }
 let convId = null;
 let convObs = null;
 
 function loadConvList() {
-  try { return JSON.parse(localStorage.getItem(CONV_LS)) || []; } catch (e) { return []; }
+  try { return JSON.parse(localStorage.getItem(convListKey())) || []; } catch (e) { return []; }
 }
 function saveConvList(list) {
-  try { localStorage.setItem(CONV_LS, JSON.stringify(list)); } catch (e) {}
+  try { localStorage.setItem(convListKey(), JSON.stringify(list)); } catch (e) {}
 }
 function genConvId() { return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
@@ -1815,7 +1834,7 @@ function renderConvList() {
 function openConv(id) {
   if (id === convId) return;
   convId = id;
-  localStorage.setItem(CONV_ACTIVE_LS, id);
+  localStorage.setItem(convActiveKey(), id);
   send({ type: "switchConv", convId: id });   // C6：同步切换服务端 AI 上下文
   const c = loadConvList().find((x) => x.id === id);
   chatStream.innerHTML = c && c.dom ? c.dom : "";
@@ -1843,7 +1862,7 @@ function deleteConv(id) {
 
 function startNewConv(announce) {
   convId = genConvId();
-  localStorage.setItem(CONV_ACTIVE_LS, convId);
+  localStorage.setItem(convActiveKey(), convId);
   const list = loadConvList();
   list.unshift({ id: convId, title: "新对话", ts: Date.now(), dom: "" });
   saveConvList(list);
@@ -1864,9 +1883,38 @@ function startNewConv(announce) {
   renderConvList();
 }
 
+/* 切换工作区时按新工作区重载对话（隔离存储）：
+   清空当前 DOM / 终端 / 状态，从新工作区 key 恢复会话或开新对话，并同步服务端会话。 */
+function reloadConvForWs() {
+  for (const k in blocks) delete blocks[k];
+  answerBlock = null; thinkCount = 0; lastThink = null;
+  chatStream.innerHTML = "";
+  termBuffers = {};
+  $("termLines").innerHTML = "";
+  clearPlanPanel();
+  const id = localStorage.getItem(convActiveKey());
+  const c = id && loadConvList().find((x) => x.id === id);
+  if (!c) { startNewConv(false); }
+  else {
+    convId = id;
+    chatStream.innerHTML = c.dom || "";
+    if (c.term) termBuffers[convId] = [c.term];
+    swapTerm(convId);
+    for (const k in blocks) delete blocks[k];
+    answerBlock = null; thinkCount = 0; lastThink = null;
+    scrollChat();
+    loadPlan(convId);
+  }
+  renderConvList();
+  replaceIcons();
+  refreshCtx();
+  // 同步服务端：切换工作区后引擎已重建（新会话），通知前端跟随
+  if (ws && ws.readyState === 1 && convId) send({ type: "switchConv", convId: convId });
+}
+
 /* 启动时恢复上次会话（历史跨刷新保留） */
 function restoreConv() {
-  convId = localStorage.getItem(CONV_ACTIVE_LS);
+  convId = localStorage.getItem(convActiveKey());
   const list = loadConvList();
   const c = convId && list.find((x) => x.id === convId);
   if (!c) { startNewConv(false); return; }

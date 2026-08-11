@@ -4,6 +4,7 @@
    - 不是 Git 仓库 / 未安装 git：自动降级为启动时内存快照
    ============================================================ */
 "use strict";
+const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
 
 class GitLayer {
@@ -25,8 +26,11 @@ class GitLayer {
 
   _init() {
     try {
+      // 仅当 workspace 自身是 git 仓库根（而非其上级仓库的子目录）才算可用——
+      // 否则会误把父仓库的 status/changes 当作 workspace 的（子目录被 .gitignore 忽略时尤其致命）。
       const inside = this._git(["rev-parse", "--is-inside-work-tree"]).trim();
-      if (inside === "true") {
+      const top = inside === "true" ? this._git(["rev-parse", "--show-toplevel"]).trim() : "";
+      if (inside === "true" && path.resolve(top) === path.resolve(this.dir)) {
         this.available = true;
         try { this.branch = this._git(["rev-parse", "--abbrev-ref", "HEAD"]).trim(); }
         catch (e) { this.branch = "main"; }
