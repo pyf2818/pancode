@@ -1822,6 +1822,7 @@ function handleEvent(ev) {
     case "plan.updated": if (!ev.convId || ev.convId === convId) renderPlan(ev.plan); break;
 
     case "agent.settings": applyAgentSettings(ev.agent); break;
+    case "mcp.servers": if (typeof window.onMcpServers === "function") window.onMcpServers(ev.servers); break;
     case "context.usage": updateCtxBar(ev.used, ev.budget); break;
   }
 }

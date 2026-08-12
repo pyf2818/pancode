@@ -196,6 +196,7 @@ async function openAgentSettings() {
       $("agmPathAider").value = paths.aider || "";
     } catch (e) {}
   } catch (e) { $("agmStatus").className = "set-status err"; $("agmStatus").textContent = "读取设置失败: " + e.message; }
+  try { await refreshMcp(); } catch (e) {}
 }
 function agmSyncPromptVis() {
   $("agmPromptRow").style.display = $("agmPersona").value === "custom" ? "block" : "none";
@@ -239,6 +240,100 @@ $("agmSave").onclick = async () => {
     } else { st.className = "set-status err"; st.textContent = "保存失败: " + r.error; }
   } catch (e) { st.className = "set-status err"; st.textContent = "请求异常: " + e.message; }
 };
+
+/* ---------------- MCP 外部工具服务器管理 ---------------- */
+let mcpServers = [];   // 当前编辑中的 server 配置数组（本地副本，保存后才落地后端）
+let mcpStatuses = [];  // 各 server 的实时连接状态（来自后端广播 / 拉取），仅用于显示徽标
+let mcpEditIndex = -1; // 正在编辑的下标；-1 表示新增
+function mcpSanitizeName(n) { return String(n || "").replace(/[^a-zA-Z0-9_]/g, "_"); }
+function mcpStatusBadge(status) {
+  const map = { ready: ["ok", "已连接"], connecting: ["warn", "连接中"], error: ["err", "错误"], exited: ["err", "已退出"], disabled: ["dim", "已禁用"], pending: ["dim", "待连接"], idle: ["dim", "空闲"] };
+  const m = map[status] || ["dim", status || "未知"];
+  return '<span class="mcp-badge ' + m[0] + '">' + m[1] + "</span>";
+}
+
+async function refreshMcp() {
+  try {
+    const r = await fetch("/api/mcp").then((x) => x.json());
+    mcpServers = (r && r.configured) || [];
+    mcpStatuses = (r && r.servers) || [];
+    renderMcpList();
+  } catch (e) {}
+}
+
+function renderMcpList() {
+  const box = $("mcpServerList");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!mcpServers.length) {
+    box.innerHTML = '<div class="scm-empty">尚未配置任何 MCP 服务器</div>';
+    return;
+  }
+  mcpServers.forEach((s, i) => {
+    const st = mcpStatuses.find((x) => x.name === mcpSanitizeName(s.name)) || {};
+    const tools = (st.tools || []).map((t) => esc(t.name)).join(", ") || "（无工具 / 尚未就绪）";
+    const row = document.createElement("div");
+    row.className = "mcp-server-row";
+    const cmd = s.command + (Array.isArray(s.args) && s.args.length ? " " + s.args.join(" ") : "");
+    let head = '<div class="mcp-server-head"><span class="mcp-name">' + esc(s.name) + "</span>" + mcpStatusBadge(st.status);
+    if (st.error) head += '<span class="mcp-err" title="' + esc(st.error) + '">!</span>';
+    head += "</div>";
+    row.innerHTML = head +
+      '<div class="mcp-server-cmd">' + esc(cmd) + "</div>" +
+      '<div class="mcp-server-tools">工具: ' + tools + "</div>" +
+      '<div class="mcp-server-actions"><button class="btn-mini" data-i="' + i + '">编辑</button><button class="btn-mini danger" data-d="' + i + '">删除</button></div>';
+    row.querySelector("[data-i]").onclick = () => mcpOpenEdit(i);
+    row.querySelector("[data-d]").onclick = () => { mcpServers.splice(i, 1); renderMcpList(); };
+    box.appendChild(row);
+  });
+}
+
+function mcpOpenAdd() {
+  mcpEditIndex = -1;
+  $("mcpName").value = ""; $("mcpCommand").value = ""; $("mcpArgs").value = ""; $("mcpEnv").value = ""; $("mcpEnabled").checked = true;
+  $("mcpFormHint").textContent = "新增服务器"; $("mcpFormSave").textContent = "添加";
+  $("mcpForm").style.display = "block";
+}
+function mcpOpenEdit(i) {
+  const s = mcpServers[i]; if (!s) return;
+  mcpEditIndex = i;
+  $("mcpName").value = s.name || ""; $("mcpCommand").value = s.command || "";
+  $("mcpArgs").value = Array.isArray(s.args) ? s.args.join(" ") : (s.args || "");
+  $("mcpEnv").value = Object.entries(s.env || {}).map(([k, v]) => k + "=" + v).join("\n");
+  $("mcpEnabled").checked = s.enabled !== false;
+  $("mcpFormHint").textContent = "编辑: " + s.name; $("mcpFormSave").textContent = "更新";
+  $("mcpForm").style.display = "block";
+}
+function mcpFormSave() {
+  const name = $("mcpName").value.trim();
+  const command = $("mcpCommand").value.trim();
+  if (!name || !command) { $("mcpFormHint").textContent = "名称和命令必填"; return; }
+  const args = $("mcpArgs").value.trim().split(/\s+/).filter(Boolean);
+  const env = {};
+  $("mcpEnv").value.split("\n").map((l) => l.trim()).filter(Boolean).forEach((l) => { const k = l.indexOf("="); if (k > 0) env[l.slice(0, k)] = l.slice(k + 1); });
+  const entry = { name, command, args, env, enabled: $("mcpEnabled").checked };
+  if (mcpEditIndex >= 0) mcpServers[mcpEditIndex] = entry; else mcpServers.push(entry);
+  mcpEditIndex = -1;
+  $("mcpForm").style.display = "none";
+  renderMcpList();
+}
+async function mcpSave() {
+  try {
+    const r = await fetch("/api/mcp", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "save", servers: mcpServers }),
+    }).then((x) => x.json());
+    if (r.ok) { toast("MCP 配置已保存，正在连接…"); mcpStatuses = r.servers || []; renderMcpList(); }
+    else toast("保存失败: " + (r.error || ""));
+  } catch (e) { toast("请求异常: " + e.message); }
+}
+
+$("mcpAdd").onclick = mcpOpenAdd;
+$("mcpFormCancel").onclick = () => ($("mcpForm").style.display = "none");
+$("mcpFormSave").onclick = mcpFormSave;
+$("mcpSave").onclick = mcpSave;
+// 供后端 mcp.servers 广播调用：仅更新状态徽标，不覆盖本地编辑副本
+window.onMcpServers = function (servers) { mcpStatuses = servers || []; renderMcpList(); };
 
 /* ---------------- 工作流模板（目标驱动 /goal 式） ---------------- */
 const WORKFLOWS = [

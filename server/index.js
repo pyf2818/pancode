@@ -30,6 +30,11 @@ const VERSION = (() => { try { return require("../package.json").version; } catc
 
 const cfg = configMod.load();
 
+/* ---------- MCP 管理器（外部工具服务器，零依赖 stdio JSON-RPC） ---------- */
+const { initMcpManager } = require("./mcp");
+const mcpManager = initMcpManager(cfg);
+mcpManager.onStatus = () => { try { broadcast({ type: "mcp.servers", servers: mcpManager.statusList() }); } catch (e) {} };
+
 /* 本地访问令牌：REST/WS 鉴权用。绑定 127.0.0.1 后仅本机可达；可用 PANCODE_TOKEN 固定 */
 const AUTH_TOKEN = process.env.PANCODE_TOKEN || crypto.randomBytes(18).toString("hex");
 
@@ -438,6 +443,23 @@ app.post("/api/agent-settings", (req, res) => {
     configMod.saveAgentSettings(cfg, req.body || {});
     broadcast({ type: "agent.settings", agent: configMod.agentSettings(cfg) });
     res.json({ ok: true, agent: configMod.agentSettings(cfg) });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* MCP 服务器管理（外部工具）：
+   GET  → 当前所有 server 的连接状态 + 已发现工具
+   POST {action:"save", servers:[...]} → 持久化配置并重新对账连接
+   POST {action:"reconnect"}           → 仅重新对账（不改动配置） */
+app.get("/api/mcp", (req, res) => res.json({ ok: true, servers: mcpManager.statusList(), configured: (cfg.mcp && Array.isArray(cfg.mcp.servers)) ? cfg.mcp.servers : [] }));
+app.post("/api/mcp", (req, res) => {
+  const body = req.body || {};
+  const action = body.action || "save";
+  try {
+    if (action === "save") {
+      configMod.saveMcpServers(cfg, { servers: Array.isArray(body.servers) ? body.servers : [] });
+    }
+    mcpManager.sync();
+    res.json({ ok: true, servers: mcpManager.statusList() });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
@@ -922,6 +944,8 @@ server.listen(cfg.port, "127.0.0.1", () => {
   console.log("workspace: " + WS_DIR);
   console.log("Git: " + (git.info().git ? "已启用（基线 = HEAD）" : "未启用（基线 = 启动快照）"));
   console.log("Agent 引擎: " + (info.mode === "llm" ? "真实 LLM（" + info.model + "）" : "内置演示引擎（配置 API Key 后自动切换真实 LLM）"));
+  // 启动已启用的 MCP 服务器（非阻塞：按服务器响应速度异步就绪，不影响主流程）
+  try { mcpManager.connectAll(); } catch (e) { console.warn("[mcp] 初始化失败:", e.message); }
 });
 
 /* 优雅关闭：中止 Agent → 杀终端子进程 → 关 WS → 停 watch → 关 HTTP，避免孤儿进程 / 端口残留 */
@@ -930,6 +954,7 @@ function shutdown(sig) {
   try { if (engine && typeof engine.abort === "function") engine.abort(); } catch (e) {}   // 中止进行中的 Agent 任务
   try { if (engine && typeof engine.flushConversations === "function") engine.flushConversations(); } catch (e) {}  // C6：同步刷盘会话上下文
   try { if (term && typeof term.closeAll === "function") term.closeAll(); } catch (e) {}      // 杀掉全部终端子进程，避免孤儿
+  try { if (mcpManager) mcpManager.disconnectAll(); } catch (e) {}   // 关闭全部 MCP 子进程，避免孤儿
   try { for (const c of wss.clients) { try { c.close(); } catch (e) {} } } catch (e) {}
   try { if (files) files.stopWatch(); } catch (e) {}
   try { server.close(() => process.exit(0)); } catch (e) { process.exit(0); }

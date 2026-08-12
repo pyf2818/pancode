@@ -329,6 +329,29 @@
           <label>Aider<input id="agmPathAider" type="text" placeholder="aider 绝对路径（留空自动探测）" spellcheck="false"></label>
         </div>
       </div>
+      <div class="agm-mcp">
+        <div class="agm-sec-title">MCP 外部工具服务器</div>
+        <div class="agm-mcp-tip">MCP（Model Context Protocol）让你接入本地/第三方的工具服务器（如文件系统、数据库、API 网关）。每个 server 以<b>你当前的系统权限</b>运行，请仅添加可信来源。配置后，server 暴露的工具会自动作为 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 提供给 Agent。</div>
+        <div class="agm-mcp-list" id="mcpServerList"></div>
+        <div class="agm-mcp-form" id="mcpForm" style="display:none">
+          <div class="agm-path-grid">
+            <label>名称<input id="mcpName" type="text" placeholder="如 filesystem" spellcheck="false"></label>
+            <label>命令<input id="mcpCommand" type="text" placeholder="如 npx 或绝对路径" spellcheck="false"></label>
+          </div>
+          <label>参数（空格分隔，可选）<input id="mcpArgs" type="text" placeholder="如 -y @modelcontextprotocol/server-filesystem /workspace" spellcheck="false"></label>
+          <label>环境变量（每行 KEY=VALUE，可选）<textarea id="mcpEnv" rows="2" spellcheck="false" placeholder="API_KEY=xxx"></textarea></label>
+          <label class="agm-check"><input type="checkbox" id="mcpEnabled" checked>启用（取消勾选则不启动该 server）</label>
+          <div class="set-actions">
+            <span class="agm-hint" id="mcpFormHint"></span>
+            <button id="mcpFormCancel" class="btn-ghost">取消</button>
+            <button id="mcpFormSave" class="btn-main">添加</button>
+          </div>
+        </div>
+        <div class="agm-mcp-actions">
+          <button id="mcpAdd" class="btn-ghost">+ 添加 MCP 服务器</button>
+          <button id="mcpSave" class="btn-main">保存 MCP 配置</button>
+        </div>
+      </div>
       <div class="set-status" id="agmStatus"></div>
       <div class="set-actions">
         <span class="agm-hint">保存后立即广播到所有窗口，对下一条消息生效</span>

@@ -54,6 +54,12 @@ const DEFAULTS = {
   agents: {
     paths: { claude: "", codex: "", gemini: "", aider: "" },  // 各 Agent 可执行文件绝对路径
   },
+  // —— MCP（Model Context Protocol）外部工具服务器 ——
+  // 每个 server：{ name, command, args[], env{}, enabled, cwd? }
+  // 仅本地优先开发工具使用；server 以用户当前权限运行，请仅添加可信来源。
+  mcp: {
+    servers: [],
+  },
 };
 
 function readJsonSafe(p) {
@@ -174,6 +180,29 @@ function agentSettings(cfg) {
   };
 }
 
+/* 持久化 MCP 服务器配置（写入 pancode.config.json 的 mcp.servers）。
+   patch.servers 为完整数组（增删改由前端提交整表），我们做基本清洗：
+   仅保留含 name + command 的条目，sanitize name，enabled 默认 true。 */
+function saveMcpServers(cfg, patch) {
+  const incoming = (patch && Array.isArray(patch.servers)) ? patch.servers : [];
+  const clean = incoming
+    .filter((s) => s && typeof s.name === "string" && s.name.trim() && typeof s.command === "string" && s.command.trim())
+    .map((s) => ({
+      name: s.name.trim(),
+      command: s.command.trim(),
+      args: Array.isArray(s.args) ? s.args.map(String) : (typeof s.args === "string" ? s.args.split(/\s+/).filter(Boolean) : []),
+      env: (s.env && typeof s.env === "object") ? s.env : {},
+      enabled: s.enabled !== false,
+      cwd: typeof s.cwd === "string" ? s.cwd : undefined,
+    }));
+  cfg.mcp = cfg.mcp || { servers: [] };
+  cfg.mcp.servers = clean;
+  const onDisk = readJsonSafe(CONFIG_PATH) || {};
+  onDisk.mcp = { servers: clean };
+  writeJsonSafe(CONFIG_PATH, onDisk);
+  return cfg;
+}
+
 /* 持久化本地 Agent CLI 全局路径（仅非敏感配置，写入 pancode.config.json） */
 function saveAgentPaths(cfg, patch) {
   const p = (patch && patch.paths) || {};
@@ -235,4 +264,4 @@ function progressionPath(cfg) {
   return path.join(ROOT, ".pancode", "progression", key + ".json");
 }
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveAgentPaths, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveAgentPaths, saveMcpServers, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };

@@ -30,6 +30,7 @@ const { SoulStore } = require("./soul-store");
 const { ProgressionStore } = require("./progression-store");
 const { AI_TERM_TAB } = require("./terminal");
 const { computeProgression } = require("./progression");
+const { getMcpManager } = require("./mcp");
 const { ContextRetriever } = require("./context-retriever");
 const { EvolutionEngine } = require("./evolution");
 const { SkillStore } = require("./skill-store");
@@ -794,11 +795,32 @@ ${taskSummary}
 
   /* ---------- 工具实现 ---------- */
   async execTool(name, args) {
-    // 规划模式：拦截一切会改动工作区 / 执行命令的工具（仅允许阅读、检索、规划）
-    if (this.cfg.planMode && MUTATING_TOOLS.has(name)) {
+    const isMcp = name.startsWith("mcp__");
+    // 规划模式：拦截一切会改动工作区 / 执行命令的工具，以及所有外部 MCP 工具
+    // （MCP 工具可能改动外部服务/文件系统，规划态一律不调用，待切回执行模式）
+    if (this.cfg.planMode && (MUTATING_TOOLS.has(name) || isMcp)) {
       const t = this.tool("edit", "规划模式·已拦截", name);
       t.done(false, "规划模式禁止修改", false);
-      return "你当前处于「规划模式」：只能阅读、检索代码，并用 create_plan 输出实施计划；不能修改文件或执行命令。请等待用户审阅计划并切回「执行模式」后，改动才会真正落地。";
+      return "你当前处于「规划模式」：只能阅读、检索代码，并用 create_plan 输出实施计划；不能修改文件、执行命令或调用外部 MCP 工具。请等待用户审阅计划并切回「执行模式」后，改动才会真正落地。";
+    }
+    // 外部 MCP 工具：按 mcp__<server>__<tool> 路由到对应 MCP 客户端
+    if (isMcp) {
+      const mgr = getMcpManager();
+      const t = this.tool("tool", "MCP 工具调用", name);
+      if (!mgr) { t.done(false, "MCP 未启用"); return "错误：MCP 管理器未初始化。"; }
+      try {
+        const res = await mgr.callTool(name, args);
+        const content = (res && Array.isArray(res.content))
+          ? res.content.map((c) => (c.type === "text" ? c.text : JSON.stringify(c))).join("\n")
+          : JSON.stringify(res || {});
+        if (res && res.isError) { t.done(false, "MCP 工具返回错误"); return "MCP 工具错误: " + content; }
+        t.body(content);
+        t.done(true, "MCP 返回");
+        return content || "(空结果)";
+      } catch (e) {
+        t.done(false, "MCP 调用失败");
+        return "MCP 调用失败: " + e.message;
+      }
     }
     switch (name) {
       case "list_files": {
@@ -1034,7 +1056,10 @@ ${taskSummary}
     if (this.cfg.planMode) {
       messages.push({ role: "system", content: "【规划模式已开启】你当前只能阅读、检索代码，并用 create_plan 输出实施计划。严禁调用 write_file / apply_edit / delete_file / run_command 等任何会改动工作区或执行命令的工具。完成计划后请停止，等待用户审阅并切回执行模式。" });
     }
-    const activeTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
+    // 外部 MCP 工具：从管理器取当前已连接的工具定义；规划模式下不暴露（避免改动外部服务）
+    const mcpDefs = (!this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
+    const baseTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
+    const activeTools = baseTools.concat(mcpDefs);
     for (const h of this.history) messages.push(h);
 
     let rounds = 0;
