@@ -33,6 +33,7 @@ const state = {
   booted: false,
   engine: null,         // { mode, model, ... }
   agent: null,          // { permissions, persona, rules, context, memory }
+  planMode: false,      // 规划模式：仅只读/规划，禁止修改文件与执行命令
   project: "workspace",
   workspace: null,      // 当前工作区绝对路径（hello 事件设置）
   lsp: null,            // 后端下发的 LSP 能力清单（hello 事件设置）
@@ -74,6 +75,7 @@ inputBox.innerHTML =
   '<textarea id="chatInput" rows="2" placeholder="向 AI 描述你的任务；支持 @file:路径 / @folder:路径 引用，可粘贴或拖入图片…"></textarea>' +
   '<div class="ci-bottom">' +
     '<button id="btnAttach" class="ci-tool" title="添加图片附件（也可直接粘贴 / 拖拽）">' + ico("filePlus") + "</button>" +
+    '<button id="btnPlanMode" class="ci-tool ci-plan" title="规划模式：仅可读 / 检索 / 规划，禁止修改文件或执行命令">规划</button>' +
     '<select id="ciPerm" class="ci-perm" title="Agent 权限模式">' +
       '<option value="ask">权限：逐项确认</option>' +
       '<option value="semi">权限：半自动</option>' +
@@ -1832,6 +1834,13 @@ function applyAgentSettings(a) {
   state.agent = a;
   const sel = inputBox.querySelector("#ciPerm");
   if (sel && a.permissions && a.permissions.mode) sel.value = a.permissions.mode;
+  setPlanModeUI(!!(a.planMode));
+}
+/* 规划模式 UI 同步：切换按钮高亮 + 记录状态（不在此处打印提示，避免每次同步都刷屏） */
+function setPlanModeUI(on) {
+  const btn = inputBox.querySelector("#btnPlanMode");
+  if (btn) btn.classList.toggle("on", on);
+  state.planMode = on;
 }
 /* 客户端估算：与服务端 _estTokens 同口径（content.length / 4），用于流式输出时的真实实时预览 */
 function estTokensFromDom() {
@@ -2167,6 +2176,19 @@ function bindInput() {
       const label = { ask: "逐项确认", semi: "半自动（安全操作放行，写入仍确认）", auto: "全自动（高危仍会拦截）" }[mode] || mode;
       termLine('<span class="tl-info">[Agent] 权限模式 → ' + label + "</span>");
     } catch (err) { termLine('<span class="tl-err">[Agent] 权限切换失败: ' + esc(err.message) + "</span>"); }
+  };
+  // 规划模式开关：开启后 Agent 仅可读/检索/规划，禁止任何写文件或执行命令
+  inputBox.querySelector("#btnPlanMode").onclick = async () => {
+    const on = !state.planMode;
+    try {
+      await fetch("/api/agent-settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ planMode: on }),
+      });
+      setPlanModeUI(on);
+      toast(on ? "规划模式已开启：Agent 仅规划，不改动文件" : "已切回执行模式");
+      termLine('<span class="tl-info">[规划模式] ' + (on ? "已开启：Agent 只可阅读/检索/规划，禁止修改文件或执行命令，待你审阅计划后切回执行" : "已关闭：Agent 可正常修改文件与执行命令") + "</span>");
+    } catch (err) { termLine('<span class="tl-err">[规划模式] 切换失败: ' + esc(err.message) + "</span>"); }
   };
 
   // Skill 选择器

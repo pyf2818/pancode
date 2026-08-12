@@ -579,6 +579,8 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .ci-tool .ico{width:13px;height:13px}
 .ci-perm{background:var(--bg2);border:1px solid var(--border);color:var(--text-dim);font-size:11px;border-radius:6px;padding:2px 4px;outline:none;cursor:pointer;max-width:130px}
 .ci-perm:hover{color:var(--text);border-color:var(--accent)}
+.ci-plan.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.ci-plan.on:hover{background:var(--accent);color:#fff}
 #ciChips{display:none;flex-wrap:wrap;gap:6px;margin-bottom:6px}
 .ci-chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:11px;color:var(--text-dim);max-width:200px}
 .ci-chip img{width:26px;height:26px;object-fit:cover;border-radius:4px;flex-shrink:0}

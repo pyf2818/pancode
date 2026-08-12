@@ -30,6 +30,7 @@ const DEFAULTS = {
     allow: [],            // 免确认规则（命令子串/正则，或文件 glob），semi/auto 模式生效
     deny: [],             // 强制拦截（命令子串/正则，或文件 glob），所有模式生效
   },
+  planMode: false,        // 规划模式：开启后 Agent 仅可读/检索/规划，禁止任何写文件/执行命令，待用户批准再切回执行
   persona: {
     active: "default",    // default | fullstack | frontend | backend | custom
     systemPrompt: "",     // 自定义人格覆盖（非空时优先于预设）
@@ -148,9 +149,11 @@ function saveAgentSettings(cfg, patch) {
     if (typeof p.context.autoCompact === "boolean") cfg.context.autoCompact = p.context.autoCompact;
   }
   if (p.memory && typeof p.memory.enabled === "boolean") cfg.memory.enabled = p.memory.enabled;
+  if (typeof p.planMode === "boolean") cfg.planMode = p.planMode;
 
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
   onDisk.permissions = cfg.permissions;
+  onDisk.planMode = cfg.planMode;
   onDisk.persona = cfg.persona;
   onDisk.rules = cfg.rules;
   onDisk.context = cfg.context;
@@ -163,6 +166,7 @@ function saveAgentSettings(cfg, patch) {
 function agentSettings(cfg) {
   return {
     permissions: cfg.permissions,
+    planMode: cfg.planMode,
     persona: cfg.persona,
     rules: cfg.rules,
     context: cfg.context,

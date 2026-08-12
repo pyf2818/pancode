@@ -221,6 +221,9 @@ const TOOLS = [
   },
 ];
 
+/* 规划模式（planMode）下禁止 Agent 调用的"会改动工作区 / 执行命令"工具 */
+const MUTATING_TOOLS = new Set(["write_file", "apply_edit", "delete_file", "run_command"]);
+
 /* 运行环境提示：注入 SYSTEM_PROMPT，避免 agent 用错平台的 shell 语法
    （Windows cmd 无 `&` 后台符 / grep / cat，用 start /B、findstr、type；路径分隔符为 \） */
 const PLATFORM_HINT = process.platform === "win32"
@@ -791,6 +794,12 @@ ${taskSummary}
 
   /* ---------- 工具实现 ---------- */
   async execTool(name, args) {
+    // 规划模式：拦截一切会改动工作区 / 执行命令的工具（仅允许阅读、检索、规划）
+    if (this.cfg.planMode && MUTATING_TOOLS.has(name)) {
+      const t = this.tool("edit", "规划模式·已拦截", name);
+      t.done(false, "规划模式禁止修改", false);
+      return "你当前处于「规划模式」：只能阅读、检索代码，并用 create_plan 输出实施计划；不能修改文件或执行命令。请等待用户审阅计划并切回「执行模式」后，改动才会真正落地。";
+    }
     switch (name) {
       case "list_files": {
         const t = this.tool("read", "列出文件", "workspace/");
@@ -1021,6 +1030,11 @@ ${taskSummary}
     const messages = [{ role: "system", content: SYSTEM_PROMPT }];
     if (aug) messages.push({ role: "system", content: aug });
     if (smartCtx) messages.push({ role: "system", content: smartCtx });
+    // 规划模式：注入只读约束指令，并从可见工具集中移除所有会改动工作区的工具
+    if (this.cfg.planMode) {
+      messages.push({ role: "system", content: "【规划模式已开启】你当前只能阅读、检索代码，并用 create_plan 输出实施计划。严禁调用 write_file / apply_edit / delete_file / run_command 等任何会改动工作区或执行命令的工具。完成计划后请停止，等待用户审阅并切回执行模式。" });
+    }
+    const activeTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
     for (const h of this.history) messages.push(h);
 
     let rounds = 0;
@@ -1037,7 +1051,7 @@ ${taskSummary}
         let r = null, llmErr = null;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            r = await chatStream(this.cfg.llm, messages, TOOLS, {
+            r = await chatStream(this.cfg.llm, messages, activeTools, {
               onReasoning: (d) => { if (!tk) tk = this.thinkStart(); tk.delta(d); },
               onContent: (d) => {
                 if (tk) { tk.end(); tk = null; }
