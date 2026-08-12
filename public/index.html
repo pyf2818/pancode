@@ -64,6 +64,12 @@
         </span>
       </div>
       <div id="fileTree"></div>
+      <div class="side-section agent-section">
+        <div class="side-section-head"><span data-i18n="localAgents">本地 Agent</span>
+          <span class="side-actions"><button id="btnAgentRefresh" title="重新检测本地 Agent"><i data-ico="reset"></i></button></span>
+        </div>
+        <div id="agentDetectList" class="agent-list"></div>
+      </div>
     </div>
     <div class="side-view" id="view-search" style="display:none">
       <div class="side-title" data-i18n="search">搜索</div>
@@ -71,7 +77,7 @@
         <button id="searchModeKw" class="sm-btn active" data-i18n="kwSearch">关键词</button>
         <button id="searchModeSem" class="sm-btn" data-i18n="semSearch">语义</button>
       </div>
-      <div class="search-box"><input id="searchInput" type="text" placeholder="在所有文件中搜索…" spellcheck="false"></div>
+      <div class="search-box"><input id="searchInput" type="text" placeholder="在所有文件中搜索…" data-i18n-ph="searchPlaceholder" spellcheck="false"></div>
       <div id="semBar" class="sem-bar" style="display:none">
         <button id="btnBuildIndex" class="sem-build"><i data-ico="memory"></i><span data-i18n="buildIndex">构建索引</span></button>
         <span id="semStatus" class="sem-status"></span>
@@ -81,7 +87,7 @@
     <div class="side-view" id="view-scm" style="display:none">
       <div class="side-title" data-i18n="scm">源代码管理</div>
       <div class="side-section-head" id="scmHead">更改 (0)</div>
-      <div id="scmList"><div class="scm-empty">暂无更改。当 AI 修改代码后，改动会出现在这里。</div></div>
+      <div id="scmList"><div class="scm-empty" data-i18n="noChanges">暂无更改。当 AI 修改代码后，改动会出现在这里。</div></div>
     </div>
     <div class="side-view" id="view-skills" style="display:none">
       <div class="side-title" data-i18n="skillMarket">Skills 市场</div>
@@ -127,8 +133,8 @@
     <div id="panelResizer" class="resizer resizer-h" title="拖动调整终端高度"></div>
     <div id="bottomPanel">
       <div class="bp-tabs">
-        <span class="bp-tab"><i data-ico="terminal"></i>终端</span>
-        <span class="bp-tab-hint">真实执行 — AI 与你都可以在这里运行命令</span>
+        <span class="bp-tab" data-i18n="terminal"><i data-ico="terminal"></i>终端</span>
+        <span class="bp-tab-hint" data-i18n="terminalHint">真实执行 — AI 与你都可以在这里运行命令</span>
         <button id="bpToggle" title="折叠/展开面板"><i data-ico="chevD"></i></button>
       </div>
       <div id="terminalSlotEditor" class="terminal-slot"></div>
@@ -182,9 +188,9 @@
         </div>
       </div>
     </div>
-    <div class="ag-side-title" style="margin-top:20px">任务计划</div>
-    <div id="agPlanBox" class="ag-plan-box">
-      <div id="agPlanEmpty" class="scm-empty">Agent 面对复杂任务时会自动创建计划，实时跟进进度。</div>
+    <div class="ag-side-title" style="margin-top:20px" data-i18n="taskPlan">任务计划</div>
+      <div id="agPlanBox" class="ag-plan-box">
+      <div id="agPlanEmpty" class="scm-empty" data-i18n="planEmpty">Agent 面对复杂任务时会自动创建计划，实时跟进进度。</div>
       <div id="agPlanActive" style="display:none"></div>
     </div>
   </aside>
@@ -216,7 +222,7 @@
     </section>
     <section class="ag-panel ag-panel-grow">
       <div class="ag-panel-title"><span class="cp-title"><i data-ico="diff"></i>本次改动</span><span id="agChangeCount" class="ag-panel-hint">0 个文件</span></div>
-      <div id="agChangedFiles"><div class="scm-empty">Agent 修改代码后，文件与 Diff 会显示在这里。</div></div>
+      <div id="agChangedFiles"><div class="scm-empty" data-i18n="noChangesAgent">Agent 修改代码后，文件与 Diff 会显示在这里。</div></div>
     </section>
   </aside>
 </div>

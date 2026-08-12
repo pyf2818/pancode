@@ -21,6 +21,7 @@ const { LlmAgent } = require("./agent-llm");
 const { DemoAgent } = require("./agent-demo");
 const { LspManager } = require("./lsp-bridge");
 const codeIndex = require("./code-index");
+const agents = require("./agents");
 const { SoulStore } = require("./soul-store");
 const { ProgressionStore } = require("./progression-store");
 const { computeProgression } = require("./progression");
@@ -144,6 +145,8 @@ const NO_AUTH = new Set([
   "/api/index/status",  // 本地代码索引状态查询（本地优先工具，与 health 同级）
   "/api/index/build",   // 本地代码索引构建
   "/api/index/search",  // 本地代码索引检索
+  "/api/agents/detect", // 本机已安装 Agent 检测（本地优先工具，与 health 同级）
+  "/api/agents/launch", // 本机一键启动 Agent（仅运行用户已安装的 CLI，不泄露源码）
 ]);
 /* A1：用户会话闸门——仅校验登录后下发的 userToken（auth.verify）；AUTH_TOKEN 仅用于本机 bootstrap 与 WS 环回 */
 function userAuthed(req) {
@@ -662,6 +665,19 @@ app.post("/api/index/search", async (req, res) => {
 app.get("/api/index/status", (req, res) => {
   const idx = codeIndex.getIndex(WS_DIR);
   res.json({ ok: true, built: !!idx, meta: idx ? idx.meta : null });
+});
+
+/* ---------- 本地 Agent 检测与一键调用 ---------- */
+app.get("/api/agents/detect", (req, res) => {
+  try {
+    res.json({ ok: true, agents: agents.detectAgents() });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.post("/api/agents/launch", (req, res) => {
+  const cmd = req.body && req.body.cmd;
+  if (!cmd) return res.status(400).json({ ok: false, error: "缺少 cmd" });
+  const r = agents.launchAgent(cmd, WS_DIR);
+  res.json(r.ok ? { ok: true } : { ok: false, error: r.error });
 });
 
 /* ---------- WebSocket ---------- */

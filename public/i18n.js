@@ -17,6 +17,7 @@ const LANGS = {
     // 活动栏
     explorer: "资源管理器",
     search: "搜索",
+    searchPlaceholder: "在所有文件中搜索…",
     scm: "源代码管理",
     skills: "Skills",
     // 文件树
@@ -141,6 +142,25 @@ const LANGS = {
     files: "个文件",
     steps: "步",
     lines: "行",
+    // 语义检索
+    kwSearch: "关键词",
+    semSearch: "语义",
+    buildIndex: "构建索引",
+    buildIndexing: "正在构建索引…",
+    rebuildIndex: "重建索引",
+    indexBuilt: "已构建",
+    // 语言切换
+    langToggle: "EN",
+    // 本地 Agent 检测（侧边栏）
+    agentWindow: "Agents 窗口",
+    localAgents: "本地 Agent",
+    agentInstalled: "已安装",
+    agentNotInstalled: "未安装",
+    launchAgent: "一键调用",
+    agentDetecting: "正在检测本机 Agent…",
+    agentDetectHint: "检测到本机已安装的 AI 编程 Agent，点击即在终端启动并进入当前工作区",
+    agentLaunchFail: "启动失败，请手动在终端运行：",
+    agentNone: "未检测到本机已安装的 Agent（可安装 Claude Code / Codex 后在此一键调用）",
   },
   en: {
     modelSettings: "Model Settings",
@@ -153,6 +173,7 @@ const LANGS = {
     openFolder: "Open Folder",
     explorer: "Explorer",
     search: "Search",
+    searchPlaceholder: "Search in all files…",
     scm: "Source Control",
     skills: "Skills",
     newFile: "New File",
@@ -262,6 +283,25 @@ const LANGS = {
     files: " files",
     steps: " steps",
     lines: " lines",
+    // 语义检索
+    kwSearch: "Keyword",
+    semSearch: "Semantic",
+    buildIndex: "Build Index",
+    buildIndexing: "Building index…",
+    rebuildIndex: "Rebuild Index",
+    indexBuilt: "Built",
+    // 语言切换
+    langToggle: "中",
+    // 本地 Agent 检测（侧边栏）
+    agentWindow: "Agents Window",
+    localAgents: "Local Agents",
+    agentInstalled: "Installed",
+    agentNotInstalled: "Not installed",
+    launchAgent: "Launch",
+    agentDetecting: "Detecting local agents…",
+    agentDetectHint: "Detected local AI coding agents. Click to launch in terminal at the current workspace",
+    agentLaunchFail: "Launch failed, run manually in terminal: ",
+    agentNone: "No local agents detected (install Claude Code / Codex to launch them here)",
   },
 };
 
@@ -275,6 +315,10 @@ function setLang(lang) {
   currentLang = lang;
   localStorage.setItem("cw-lang", lang);
   applyI18n();
+  // 切换语言后重渲染动态区域（文件树 / 会话列表），使文案同步；历史聊天消息不翻译
+  if (typeof renderTree === "function") { try { renderTree(); } catch (e) {} }
+  if (typeof renderConvList === "function") { try { renderConvList(); } catch (e) {} }
+  if (typeof window.refreshSidebar && typeof window.refreshSidebar === "function") { try { window.refreshSidebar(); } catch (e) {} }
 }
 
 function applyI18n() {
@@ -295,3 +339,6 @@ function applyI18n() {
 
 // 全局暴露，供 app.js 使用
 window.LANGS = LANGS;
+window.t = t;
+window.setLang = setLang;
+window.applyI18n = applyI18n;

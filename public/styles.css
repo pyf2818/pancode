@@ -326,6 +326,23 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .scm-empty{padding:10px 14px;font-size:12px;color:var(--text-dim);line-height:1.6}
 .stat-add{color:var(--ok)}.stat-del{color:var(--err)}
 
+/* ============ 本地 Agent 检测 ============ */
+.agent-section{margin-top:10px;border-top:1px solid var(--border);padding-top:6px}
+.agent-list{display:flex;flex-direction:column;gap:6px;padding:4px 8px 10px}
+.agent-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 8px;border:1px solid var(--border);border-radius:7px;background:var(--bg2)}
+.agent-item.missing{opacity:.5}
+.agent-meta{display:flex;align-items:center;gap:8px;font-size:12px;min-width:0}
+.agent-meta b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-badge{font-size:10px;padding:1px 7px;border-radius:10px;background:var(--bg3);color:var(--text-dim);border:1px solid var(--border);white-space:nowrap}
+.agent-badge.ok{background:rgba(80,200,120,.15);color:var(--ok);border-color:rgba(80,200,120,.4)}
+.agent-launch{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 9px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;white-space:nowrap}
+.agent-launch:hover{filter:brightness(1.1)}
+.agent-launch svg{width:12px;height:12px}
+.agent-empty{padding:8px 10px;font-size:12px;color:var(--text-dim);line-height:1.5}
+.agent-detecting{display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:12px;color:var(--text-dim)}
+.agent-spin{width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:agentSpin .7s linear infinite}
+@keyframes agentSpin{to{transform:rotate(360deg)}}
+
 /* ============ 拖拽分隔条 ============ */
 .resizer{position:relative;flex-shrink:0;z-index:var(--z-resizer)}
 .resizer-v{width:5px;margin-left:-2px;cursor:col-resize;background:transparent}

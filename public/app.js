@@ -163,23 +163,23 @@ function showCtxMenu(e, path, isDir) {
   const menu = $("ctxMenu");
   const items = isDir
     ? [
-        { label: "在此目录新建文件", ic: "filePlus", fn: () => promptNewFile(path + "/") },
-        { label: "删除目录", ic: "trash", danger: true, fn: () => { if (confirm("确定删除目录 " + path + " 及其全部内容？")) send({ type: "file.delete", path }); } },
+        { key: "newFileHere", ic: "filePlus", fn: () => promptNewFile(path + "/") },
+        { key: "deleteDir", ic: "trash", danger: true, fn: () => { if (confirm(t("deleteDirConfirm") + " " + path + "？")) send({ type: "file.delete", path }); } },
       ]
     : [
-        { label: "打开", ic: "files", fn: () => openFile(path) },
-        { label: "重命名", ic: "edit", fn: () => {
-            const np = prompt("重命名为（相对路径）：", path);
+        { key: "open", ic: "files", fn: () => openFile(path) },
+        { key: "rename", ic: "edit", fn: () => {
+            const np = prompt(t("renamePrompt"), path);
             if (np && np !== path) send({ type: "file.rename", path, newPath: np });
           } },
-        { label: "查看 Diff", ic: "diff", fn: () => showDiff(path) },
-        { label: "删除", ic: "trash", danger: true, fn: () => { if (confirm("确定删除 " + path + "？")) send({ type: "file.delete", path }); } },
+        { key: "viewDiff", ic: "diff", fn: () => showDiff(path) },
+        { key: "delete", ic: "trash", danger: true, fn: () => { if (confirm(t("deleteConfirm") + " " + path + "？")) send({ type: "file.delete", path }); } },
       ];
   menu.innerHTML = "";
   items.forEach((it) => {
     const d = document.createElement("div");
     d.className = "ctx-item" + (it.danger ? " danger" : "");
-    d.innerHTML = ico(it.ic) + esc(it.label);
+    d.innerHTML = ico(it.ic) + esc(t(it.key));
     d.onclick = () => { hideCtxMenu(); it.fn(); };
     menu.appendChild(d);
   });
@@ -924,6 +924,49 @@ function renderSearchResults(query, results) {
     });
   });
 }
+
+/* ---------------- 本地 Agent 检测与一键调用 ---------------- */
+function refreshAgents() {
+  const list = $("agentDetectList");
+  if (!list) return;
+  list.innerHTML = '<div class="agent-detecting"><span class="agent-spin"></span>' + esc(t("agentDetecting")) + "</div>";
+  fetch("/api/agents/detect")
+    .then((r) => r.json())
+    .then((j) => {
+      if (!j.ok || !j.agents || !j.agents.length) { list.innerHTML = '<div class="agent-empty">' + esc(t("agentNone")) + "</div>"; return; }
+      list.innerHTML = "";
+      j.agents.forEach((a) => {
+        const el = document.createElement("div");
+        el.className = "agent-item" + (a.installed ? " installed" : " missing");
+        const badge = a.installed
+          ? '<span class="agent-badge ok">' + esc(t("agentInstalled")) + "</span>"
+          : '<span class="agent-badge">' + esc(t("agentNotInstalled")) + "</span>";
+        const btn = a.installed
+          ? '<button class="agent-launch" data-cmd="' + esc(a.cmd) + '">' + ico("play") + esc(t("launchAgent")) + "</button>"
+          : "";
+        el.innerHTML = '<div class="agent-meta"><b>' + esc(a.name) + "</b>" + badge + "</div>" + btn;
+        list.appendChild(el);
+      });
+      list.querySelectorAll(".agent-launch").forEach((b) => {
+        b.onclick = () => launchAgent(b.dataset.cmd);
+      });
+    })
+    .catch((e) => { list.innerHTML = '<div class="agent-empty">' + esc(e.message) + "</div>"; });
+}
+function launchAgent(cmd) {
+  fetch("/api/agents/launch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cmd }),
+  })
+    .then((r) => r.json())
+    .then((j) => {
+      if (j.ok) toast(t("launchAgent") + "： " + cmd);
+      else toast(t("agentLaunchFail") + cmd);
+    })
+    .catch((e) => toast(t("agentLaunchFail") + cmd));
+}
+$("btnAgentRefresh").onclick = refreshAgents;
 
 /* ---------------- 活动栏 ---------------- */
 document.querySelectorAll(".ab-btn").forEach((btn) => {
@@ -1727,12 +1770,16 @@ function updateCtxBar(used, budget) {
 /* ---------------- Agent 状态 ---------------- */
 function setRunning(running, label) {
   state.running = running;
-  const txt = label || (running ? "AI 运行中" : "AI 空闲");
+  const txt = label || (running ? t("running") : t("aiIdle"));
+  // 防御：agSessMeta 等元素可能被 renderConvList 重写覆盖，必须判空，否则 WS 事件触发时整页抛错
   const tb = $("tbAgentState");
-  tb.className = "agent-state " + (running ? "running" : "idle");
-  tb.innerHTML = '<span class="dot"></span>' + esc(txt);
-  $("sbAgentTxt").textContent = txt;
-  $("agSessMeta").textContent = (running ? "运行中" : "已就绪") + " · " + state.project;
+  if (tb) {
+    tb.className = "agent-state " + (running ? "running" : "idle");
+    tb.innerHTML = '<span class="dot"></span>' + esc(txt);
+  }
+  const sb = $("sbAgentTxt"); if (sb) sb.textContent = txt;
+  const meta = $("agSessMeta");
+  if (meta) meta.textContent = (running ? t("running") : t("ready")) + " · " + (state.project || "");
   const live = document.querySelector(".ag-live-dot");
   if (live) live.classList.toggle("running", running);
   const liveTxt = $("agLiveTxt"); if (liveTxt) liveTxt.textContent = txt;
@@ -1740,11 +1787,11 @@ function setRunning(running, label) {
   if (btn) {
     btn.disabled = running;
     if (running) {
-      btn.innerHTML = ico("stop") + "停止";
+      btn.innerHTML = ico("stop") + t("stop");
       btn.classList.add("stop-mode");
       btn.onclick = () => { send({ type: "term.kill" }); send({ type: "newchat" }); };
     } else {
-      btn.innerHTML = ico("send") + "发送";
+      btn.innerHTML = ico("send") + t("send");
       btn.classList.remove("stop-mode");
       // Agent 空闲时自动处理队列
       if (msgQueue.length > 0) setTimeout(processQueue, 500);
@@ -2442,22 +2489,11 @@ const _origHandleEvent = handleEvent;
     LANG_BTN.onclick=function(){
       var cur=localStorage.getItem("cw-lang")||"zh";
       var nxt=cur==="zh"?"en":"zh";
-      localStorage.setItem("cw-lang",nxt);
-      var ls=window.LANGS;
-      if(!ls)return;
-      document.querySelectorAll("[data-i18n]").forEach(function(el){
-        var tx=ls[nxt]?ls[nxt][el.dataset.i18n]:null;
-        if(!tx)tx=ls.zh?ls.zh[el.dataset.i18n]:null;
-        if(tx)el.textContent=tx;
-      });
-      document.querySelectorAll("[data-i18n-title]").forEach(function(el){
-        var tx=ls[nxt]?ls[nxt][el.dataset.i18nTitle]:null;
-        if(!tx)tx=ls.zh?ls.zh[el.dataset.i18nTitle]:null;
-        if(tx)el.title=tx;
-      });
+      if(typeof setLang==="function") setLang(nxt);
     };
+    // 初始按持久化语言应用一次（默认 zh 时静态 HTML 已为中文，无需处理）
     var cur=localStorage.getItem("cw-lang")||"zh";
-    if(cur!=="zh")LANG_BTN.onclick();
+    if(cur!=="zh" && typeof setLang==="function") setLang(cur);
   }
 })();
 
@@ -2469,6 +2505,7 @@ initResizers();
 replaceIcons();
 mountShared();
 restoreConv();
+refreshAgents();
 initConvObserver();
 bindInput();
 /* A1：登录成为闸门——先领取本机令牌，再判定登录态；未登录只显示登录/注册，不加载工作区数据、不连 WS */
