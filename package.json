@@ -12,7 +12,11 @@
     "test:fileops": "node scripts/fileops-test.js",
     "test:verify": "node scripts/_verify_render.js && node scripts/_verify_repo_map.js && node scripts/_verify_tools.js && node scripts/_verify_agentflow.js",
     "test:integration": "node scripts/integration-runner.js",
-    "test": "npm run test:verify && node scripts/smoke-test.js && node scripts/fileops-test.js && npm run test:integration"
+    "test:lsp": "node scripts/test-lsp.js",
+    "test:code-index": "node scripts/test-code-index.js",
+    "test:patch": "node scripts/test-patch.js",
+    "verify:ui": "node scripts/verify-ui.js",
+    "test": "npm run test:verify && node scripts/smoke-test.js && node scripts/fileops-test.js && npm run test:integration && npm run test:patch && npm run test:lsp && npm run test:code-index"
   },
   "build": {
     "appId": "com.pancode.app",
@@ -46,6 +50,7 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "40.9.3",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "playwright": "^1.62.1"
   }
 }

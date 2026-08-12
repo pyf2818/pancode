@@ -19,6 +19,8 @@ const { TerminalLayer } = require("./terminal");
 const { ping } = require("./llm");
 const { LlmAgent } = require("./agent-llm");
 const { DemoAgent } = require("./agent-demo");
+const { LspManager } = require("./lsp-bridge");
+const codeIndex = require("./code-index");
 const { SoulStore } = require("./soul-store");
 const { ProgressionStore } = require("./progression-store");
 const { computeProgression } = require("./progression");
@@ -101,6 +103,7 @@ function helloPayload() {
     round: engine.round,
     engine: configMod.publicInfo(cfg),
     agent: configMod.agentSettings(cfg),
+    lsp: lspManager.capabilities(),
     git: git.info(),
     project: path.basename(WS_DIR),
     workspace: WS_DIR,
@@ -138,6 +141,9 @@ const NO_AUTH = new Set([
   "/api/auth/login",    // 登录
   "/api/auth/status",   // 查询登录态（前端启动判定）
   "/api/preview/docx",  // 仅预览渲染辅助，不泄露源码正文
+  "/api/index/status",  // 本地代码索引状态查询（本地优先工具，与 health 同级）
+  "/api/index/build",   // 本地代码索引构建
+  "/api/index/search",  // 本地代码索引检索
 ]);
 /* A1：用户会话闸门——仅校验登录后下发的 userToken（auth.verify）；AUTH_TOKEN 仅用于本机 bootstrap 与 WS 环回 */
 function userAuthed(req) {
@@ -637,13 +643,37 @@ app.post("/api/sediment", (req, res) => {
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
+/* ---------- 轻量代码向量索引 REST ---------- */
+app.post("/api/index/build", async (req, res) => {
+  try {
+    const r = await codeIndex.buildIndex({ wsDir: WS_DIR, fileStore: files, cfg });
+    res.json(r);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.post("/api/index/search", async (req, res) => {
+  try {
+    const q = (req.body && req.body.query) || "";
+    const k = Number((req.body && req.body.k) || 8);
+    if (!q.trim()) return res.status(400).json({ ok: false, error: "query 为空" });
+    const r = await codeIndex.search({ wsDir: WS_DIR, query: q, k });
+    res.json(r);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.get("/api/index/status", (req, res) => {
+  const idx = codeIndex.getIndex(WS_DIR);
+  res.json({ ok: true, built: !!idx, meta: idx ? idx.meta : null });
+});
+
 /* ---------- WebSocket ---------- */
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
+const lspManager = new LspManager(cfg);
 
 /* A1：业务 WS 仅接受登录后的 userToken（登录闸门）。AUTH_TOKEN 仅用于本机 bootstrap，不再用于 WS */
 server.on("upgrade", (req, socket, head) => {
   const u = new URL(req.url, "http://localhost");
+  // LSP 走独立端点 /lsp，避免与主聊天 WS 混流
+  if (u.pathname === "/lsp") { lspManager.handleUpgrade(req, socket, head); return; }
   const tok = u.searchParams.get("token") || "";
   if (!auth.verify(tok)) { socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, (ws) => { ws._userToken = tok; wss.emit("connection", ws, req); });

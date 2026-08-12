@@ -23,6 +23,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { AgentBase } = require("./agent-base");
 const { chatStream } = require("./llm");
+const codeIndex = require("./code-index");
 const repoMap = require("./repo-map");
 const { MemoryStore } = require("./memory-store");
 const { SoulStore } = require("./soul-store");
@@ -114,7 +115,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "search_code",
-      description: "在工作区所有文件内容中搜索关键词 / 正则，返回匹配的行。用于定位代码。",
+      description: "检索工作区代码（语义向量检索优先，未建索引时自动退化为关键词搜索）。用于定位相关函数/类/逻辑片段。query 用自然语言或关键词描述要找的代码。",
       parameters: {
         type: "object",
         properties: { query: { type: "string", description: "搜索关键词或正则" } },
@@ -875,12 +876,26 @@ ${taskSummary}
         } catch (e) { t.done(false, "删除失败"); return "错误: " + e.message; }
       }
       case "search_code": {
-        const t = this.tool("read", "全文搜索", args.query);
-        const rs = this.files.search(args.query, 50);
-        const txt = rs.map((r) => r.path + ":" + r.line + ": " + r.text.trim()).join("\n");
-        t.body(txt || "无结果");
-        t.done(true, rs.length + " 处匹配");
-        return txt || "无结果";
+        const t = this.tool("read", "代码检索", args.query);
+        // 优先用向量/BM25 语义索引；未构建则退化为关键词全文搜索
+        let txt;
+        try {
+          const sem = await codeIndex.search({ wsDir: this.files.dir, query: args.query, k: 12 });
+          if (sem && sem.ok && sem.results.length) {
+            txt = `[语义检索 · ${sem.mode} · ${sem.count} 结果]\n` + sem.results
+              .map((r) => `■ ${r.path} (${r.startLine}-${r.endLine}) ${r.title}\n${r.snippet}`)
+              .join("\n\n");
+          }
+        } catch (e) { /* 索引不可用，走兜底 */ }
+        if (!txt) {
+          const rs = this.files.search(args.query, 50);
+          txt = rs.map((r) => r.path + ":" + r.line + ": " + r.text.trim()).join("\n");
+          if (txt) txt = "[关键词搜索 · " + rs.length + " 处匹配]\n" + txt;
+          else txt = "（无索引也未匹配到关键词）";
+        }
+        t.body(txt);
+        t.done(true, "检索完成");
+        return txt;
       }
       case "run_command": {
         const gate = await this._gate("run_command", { command: args.command }, "high");

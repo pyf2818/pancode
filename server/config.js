@@ -37,6 +37,18 @@ const DEFAULTS = {
   rules: { enabled: true },        // 是否加载 .pancode/rules 作为强制约束
   context: { budgetTokens: 1000000, autoCompact: true }, // 上下文预算 1M tokens
   memory: { enabled: true },       // auto memory（会话中沉淀记忆）
+  // —— 真实 LSP 桥接（按需 spawn 语言服务器，详见 server/lsp-bridge.js）——
+  lsp: {
+    enabled: true,
+    servers: {},                   // 留空则用 lsp-bridge 内置默认（python 等）
+  },
+  // —— 轻量代码向量索引（可插拔 embedding；未配置则 BM25 词法兜底）——
+  embedding: {
+    endpoint: "",                  // OpenAI 兼容 /v1/embeddings，例如 https://api.openai.com/v1
+    apiKey: "",
+    model: "text-embedding-3-small",
+    dim: 1536,
+  },
 };
 
 function readJsonSafe(p) {

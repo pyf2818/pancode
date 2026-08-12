@@ -35,6 +35,8 @@ const state = {
   agent: null,          // { permissions, persona, rules, context, memory }
   project: "workspace",
   workspace: null,      // 当前工作区绝对路径（hello 事件设置）
+  lsp: null,            // 后端下发的 LSP 能力清单（hello 事件设置）
+  lspClients: {},       // 语言 -> LspClient 实例（按需懒加载）
 };
 let editor = null, diffEditor = null;
 const models = {};
@@ -274,14 +276,55 @@ function getModel(path) {
         renderTabs(); renderTree();
       }
       if (previewOn && isPreviewable(path) && path === state.activeFile) schedulePreview();
+      lspChange(path);   // 编辑后防抖通知语言服务器（实时诊断/补全）
       // 绑定滚动同步（避免重复绑）
       if (previewOn && models[path] && !models[path]._previewScrollBound) {
         models[path]._previewScrollBound = true;
       }
     });
     models[path] = m;
+    lspOpen(path, m, f.lang);   // 该语言启用 LSP 时，把文档交给真实语言服务器（诊断/补全/跳转）
   }
   return models[path];
+}
+
+/* ---------- 真实 LSP 客户端调度（按语言懒加载，单客户端复用多文档） ---------- */
+function lspLangEnabled(lang) {
+  return !!(state.lsp && state.lsp.enabled && state.lsp.servers && state.lsp.servers[lang] && state.lsp.servers[lang].enabled);
+}
+function lspRootUri() { return "file:///" + (state.workspace || "").replace(/\\/g, "/"); }
+function lspEnsureClient(lang) {
+  if (!lspLangEnabled(lang)) return null;
+  if (state.lspClients[lang]) return state.lspClients[lang];
+  if (typeof LspClient === "undefined") return null;
+  const client = new LspClient({ language: lang, rootUri: lspRootUri(), getToken: () => AUTH.token });
+  client.connect();
+  state.lspClients[lang] = client;
+  return client;
+}
+function lspOpen(relPath, model, lang) {
+  const client = lspEnsureClient(lang);
+  if (!client || client.models.has(relPath)) return;
+  client.openModel(relPath, model);
+}
+const _lspChangeTimers = {};
+function lspChange(relPath) {
+  const t = _lspChangeTimers[relPath]; if (t) clearTimeout(t);
+  _lspChangeTimers[relPath] = setTimeout(() => {
+    for (const lang in state.lspClients) {
+      if (state.lspClients[lang].models.has(relPath)) { state.lspClients[lang].changeModel(relPath); break; }
+    }
+  }, 400);
+}
+function lspClose(relPath) {
+  for (const lang in state.lspClients) {
+    if (state.lspClients[lang].models.has(relPath)) { state.lspClients[lang].closeModel(relPath); break; }
+  }
+}
+function lspDisposeAll() {
+  for (const lang in state.lspClients) { try { state.lspClients[lang].dispose(); } catch (e) {} }
+  state.lspClients = {};
+  for (const k in _lspChangeTimers) clearTimeout(_lspChangeTimers[k]);
 }
 
 function saveActiveFile() {
@@ -1240,7 +1283,7 @@ function syncFiles(files) {
   // 同步 model 内容（跳过用户正在编辑的脏文件）
   if (state.monacoReady) {
     for (const p in models) {
-      if (!files[p]) { models[p].dispose(); delete models[p]; state.dirty.delete(p); continue; }
+      if (!files[p]) { models[p].dispose(); delete models[p]; state.dirty.delete(p); lspClose(p); continue; }
       if (files[p].binary) continue; // 二进制占位 model 不同步内容
       if (!state.dirty.has(p) && models[p].getValue() !== files[p].content) models[p].setValue(files[p].content);
     }
@@ -1310,6 +1353,7 @@ function handleEvent(ev) {
       if (ev.workspace && ev.workspace !== state.workspace) {
         const prevWs = state.workspace;
         state.workspace = ev.workspace;
+        lspDisposeAll();                 // 工作区变了，file:// 根随之改变，旧 LSP 会话失效
         if (prevWs) reloadConvForWs();   // 非首次：切换工作区需重载会话列表与 active
       } else if (ev.workspace) {
         state.workspace = ev.workspace;
@@ -1322,6 +1366,7 @@ function handleEvent(ev) {
       if (ev.git) $("sbBranch").textContent = ev.git.git ? ev.git.branch : "无 Git（快照基线）";
       if (ev.engine) applyEngineInfo(ev.engine);
       if (ev.agent) applyAgentSettings(ev.agent);
+      if (ev.lsp) state.lsp = ev.lsp;
       syncFiles(ev.files);
       setRunning(ev.running, null);
       if (!state.booted) {
@@ -1460,7 +1505,7 @@ function handleEvent(ev) {
     case "file.changed": {
       if (ev.deleted) {
         delete state.files[ev.path];
-        if (models[ev.path]) { models[ev.path].dispose(); delete models[ev.path]; }
+        if (models[ev.path]) { models[ev.path].dispose(); delete models[ev.path]; lspClose(ev.path); }
         state.dirty.delete(ev.path);
         state.openTabs = state.openTabs.filter((p) => p !== ev.path);
       } else {

@@ -31,6 +31,10 @@ Thumbs.db
 # PanCode internal
 .pancode/
 scripts/verify_*.js
+scripts/_verify_out/
+
+# 第三方 AI 工具本地产物（Claude Code 等配置，不入库）
+.claude/
 
 # AI 工具本地产物（会话记忆 / 规则缓存，不入库）
 .omc/
