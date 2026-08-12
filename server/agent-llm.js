@@ -507,6 +507,7 @@ ${taskSummary}
     for (const p of applied) {
       this.fileChanged(p);                 // 触发前端编辑器内容刷新
       this.emit({ type: "editor.open", path: p });
+      codeIndex.queueFileUpdate(this.files.dir, p); // 增量刷新语义索引
     }
     this.pushChanges(false);               // 更新 SCM / 状态栏改动数
     return applied;
@@ -855,6 +856,7 @@ ${taskSummary}
         try {
           const before = isNew ? "" : this.files.read(args.path);
           this.files.write(args.path, args.content);
+          codeIndex.queueFileUpdate(this.files.dir, args.path); // 增量刷新语义索引
           this.fileChanged(args.path);
           this.pushChanges(false);
           const st = require("./agent-base").diffStat(before, args.content);
@@ -901,6 +903,7 @@ ${taskSummary}
         const t = this.tool("edit", "删除文件", args.path);
         try {
           this.files.remove(args.path);
+          codeIndex.removeFile(this.files.dir, args.path); // 同步移除语义索引分块
           this.fileChanged(args.path);
           this.pushChanges(false);
           t.done(true, "已删除");

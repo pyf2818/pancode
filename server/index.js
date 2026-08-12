@@ -782,6 +782,7 @@ wss.on("connection", (ws) => {
       case "file.save":
         safe(() => {
           files.write(m.path, String(m.content));
+          codeIndex.queueFileUpdate(WS_DIR, m.path);
           engine.fileChanged(m.path);
           engine.pushChanges(false);
           broadcast({ type: "file.saved", path: m.path });
@@ -790,6 +791,7 @@ wss.on("connection", (ws) => {
       case "file.create":
         safe(() => {
           files.create(m.path, m.content || "");
+          codeIndex.queueFileUpdate(WS_DIR, m.path);
           engine.fileChanged(m.path);
           engine.pushChanges(false);
           broadcast({ type: "fs.sync", files: snapshotFiles() });
@@ -798,6 +800,7 @@ wss.on("connection", (ws) => {
       case "file.delete":
         safe(() => {
           files.remove(m.path);
+          codeIndex.removeFile(WS_DIR, m.path);
           engine.pushChanges(false);
           broadcast({ type: "fs.sync", files: snapshotFiles() });
         }, ws);
@@ -805,6 +808,8 @@ wss.on("connection", (ws) => {
       case "file.rename":
         safe(() => {
           files.rename(m.path, m.newPath);
+          codeIndex.removeFile(WS_DIR, m.path);
+          codeIndex.queueFileUpdate(WS_DIR, m.newPath);
           engine.pushChanges(false);
           broadcast({ type: "fs.sync", files: snapshotFiles(), renamed: { from: m.path, to: m.newPath } });
         }, ws);

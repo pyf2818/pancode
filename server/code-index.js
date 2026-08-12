@@ -152,6 +152,10 @@ function wsIndexFile(wsAbs) {
 function metaOf(wsAbs) { return { ws: wsAbs, builtAt: Date.now(), useVector: false, count: 0 }; }
 
 const _cache = new Map();   // wsHash -> { meta, chunks }
+let _lastCfg = null;         // 最近一次 buildIndex 使用的 cfg（供增量重嵌时取 embedding 配置）
+
+/* 增量更新防抖队列：多次写同一工作区在空闲窗口内合并为一次重算 + 持久化 */
+const _queue = new Map();   // wsKey -> { wsDir, rels:Set, timer }
 
 function loadFromDisk(file) {
   try {
@@ -198,7 +202,10 @@ async function buildIndex({ wsDir, fileStore, cfg }) {
       useVector = true;
     }
   }
-  const meta = { ws: wsAbs, builtAt: Date.now(), useVector, count: chunks.length };
+  const embCfg = cfg && cfg.embedding && cfg.embedding.endpoint
+    ? { endpoint: cfg.embedding.endpoint, model: cfg.embedding.model || "text-embedding-3-small" }
+    : null;
+  const meta = { ws: wsAbs, builtAt: Date.now(), useVector, count: chunks.length, embedding: embCfg };
   const payload = { meta, chunks };
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -206,6 +213,7 @@ async function buildIndex({ wsDir, fileStore, cfg }) {
   } catch (e) { console.warn("[code-index] 持久化失败:", e.message); }
   const key = crypto.createHash("md5").update(wsAbs).digest("hex");
   _cache.set(key, payload);
+  _lastCfg = cfg || _lastCfg;
   return { ok: true, count: chunks.length, useVector, file };
 }
 
@@ -253,4 +261,88 @@ async function search({ wsDir, query, k = 8 }) {
   };
 }
 
-module.exports = { buildIndex, search, getIndex, chunkFile, langOfFile, metaOf };
+/* ---------- 增量更新（编辑/新增/删除单文件，免全量重建） ---------- */
+function wsKeyOf(wsDir) { return crypto.createHash("md5").update(path.resolve(wsDir)).digest("hex"); }
+
+function readSafe(rel, wsDir) {
+  const abs = path.join(path.resolve(wsDir), rel);
+  try {
+    const st = fs.statSync(abs);
+    if (st.size > MAX_FILE_BYTES) return null;
+    const ext = rel.split(".").pop().toLowerCase();
+    if (!LANG_BY_EXT[ext]) return null;
+    return fs.readFileSync(abs, "utf8");
+  } catch (e) { return null; }
+}
+
+async function flushUpdate(wsDir, rels) {
+  const wsAbs = path.resolve(wsDir);
+  const key = wsKeyOf(wsAbs);
+  let payload = _cache.has(key) ? _cache.get(key) : loadFromDisk(wsIndexFile(wsAbs));
+  if (!payload || !payload.chunks) return { ok: false, reason: "no-index" };
+  const relSet = new Set(rels.map((r) => String(r).replace(/\\/g, "/")));
+  // 旧分块中移除这些文件，待重新分块后并入
+  let next = payload.chunks.filter((c) => !relSet.has(c.path));
+  const newChunks = [];
+  for (const rel of relSet) {
+    const content = readSafe(rel, wsDir);
+    if (content == null) continue; // 文件不存在 / 非代码 / 超大 → 视为删除，不并入
+    for (const c of chunkFile(rel, content)) newChunks.push(c);
+  }
+  next = next.concat(newChunks);
+  payload.chunks = next;
+  payload.meta = payload.meta || {};
+  payload.meta.count = next.length;
+  payload.meta.builtAt = Date.now();
+  // vector 模式：仅对本次新增（无 vec）的分块补嵌
+  if (payload.meta.useVector) {
+    const toEmbed = newChunks.filter((c) => !c.vec);
+    if (toEmbed.length) {
+      const emb = _lastCfg && _lastCfg.embedding ? _lastCfg.embedding : (payload.meta.embedding || null);
+      if (emb && emb.endpoint) {
+        const vecs = await embed(toEmbed.map((c) => c.text), { embedding: emb });
+        if (vecs && vecs.length === toEmbed.length) toEmbed.forEach((c, i) => (c.vec = vecs[i]));
+      }
+    }
+  }
+  try {
+    fs.mkdirSync(path.dirname(wsIndexFile(wsAbs)), { recursive: true });
+    fs.writeFileSync(wsIndexFile(wsAbs), JSON.stringify(payload), "utf8");
+  } catch (e) { console.warn("[code-index] 增量持久化失败:", e.message); }
+  _cache.set(key, payload);
+  return { ok: true, count: next.length };
+}
+
+/* 队列式（防抖）增量更新：多次写合并为一次重算 */
+function queueFileUpdate(wsDir, rel) {
+  const key = wsKeyOf(wsDir);
+  let ent = _queue.get(key);
+  if (!ent) { ent = { wsDir, rels: new Set(), timer: null }; _queue.set(key, ent); }
+  ent.rels.add(String(rel).replace(/\\/g, "/"));
+  if (ent.timer) clearTimeout(ent.timer);
+  ent.timer = setTimeout(() => {
+    const e = ent; _queue.delete(key);
+    flushUpdate(e.wsDir, Array.from(e.rels)).catch((err) => console.warn("[code-index] 增量更新失败:", err.message));
+  }, 700);
+}
+
+/* 立即删除某文件的索引分块（文件被删除时调用） */
+function removeFile(wsDir, rel) {
+  const wsAbs = path.resolve(wsDir);
+  const key = wsKeyOf(wsAbs);
+  const payload = _cache.has(key) ? _cache.get(key) : loadFromDisk(wsIndexFile(wsAbs));
+  if (!payload || !payload.chunks) return { ok: false, reason: "no-index" };
+  const r = String(rel).replace(/\\/g, "/");
+  payload.chunks = payload.chunks.filter((c) => c.path !== r);
+  payload.meta = payload.meta || {};
+  payload.meta.count = payload.chunks.length;
+  payload.meta.builtAt = Date.now();
+  try {
+    fs.mkdirSync(path.dirname(wsIndexFile(wsAbs)), { recursive: true });
+    fs.writeFileSync(wsIndexFile(wsAbs), JSON.stringify(payload), "utf8");
+  } catch (e) { console.warn("[code-index] 删除持久化失败:", e.message); }
+  _cache.set(key, payload);
+  return { ok: true };
+}
+
+module.exports = { buildIndex, search, getIndex, chunkFile, langOfFile, metaOf, queueFileUpdate, removeFile, flushUpdate };
