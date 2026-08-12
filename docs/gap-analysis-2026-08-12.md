@@ -77,7 +77,7 @@
 
 **⑩ 多智能体/子代理编排（架构 F19）**：**✅ 已落地（单工作区子智能体，非 worktree 隔离）**。新增 `agent` 工具 + `runSubAgent` 方法（OpenCode `agent` 工具范式）：父智能体派发一个聚焦子智能体，在**同一工作区**内读/搜/写/改/运行命令完成子任务并返回中文汇报。`runSubAgent` 收敛工具白名单（排除 `agent` 自身防递归、排除 `create_plan`/`update_plan`/`undo` 防污染主流程），轮数上限 24（默认 12）防失控；运行期临时把 `tool/state/say` 等 UI 句柄替换为 no-op（静默主界面），但真实改动工作区并刷新编辑器与语义索引；结束后复原句柄。子智能体共享父的 `files/patch/_undoStack`，因此其写盘也会在父的 undo 栈留下检查点（可撤销）。验证脚本 `scripts/verify-multiagent.js` 覆盖执行工具返回结果、白名单、轮数收敛、真实写盘全绿。说明：当前为串行单子智能体（未做 worktree 级隔离/真正并行），满足"编排"核心诉求；后续如需并行可再加。
 
-**⑪ 工作流模板 / goal 式目标驱动（agent-design P2-8）**：未做。
+**⑪ 工作流模板 / goal 式目标驱动（agent-design P2-8）**：**✅ 已落地**。新增 `server/workflow-store.js`（`WorkflowStore`：5 个内置模板 feature/bugfix/refactor/test/docs + 自定义模板持久化到 `.pancode/workflows/<hash>.json`，`{goal}` 占位符替换）。`agent-llm.js` 新增 6 个只读/元操作工具：`list_templates`（列内置+自定义）、`instantiate_template`（模板→可执行 plan，`{goal}` 注入标题/步骤）、`save_template`（当前活跃计划或显式步骤沉淀为模板，可一键复用）、`remove_template`（仅自定义可删）、`set_goal`（设定会话目标并持久化到 `.pancode/goals/<hash>.json`；可选 `template` 一键生成执行计划；空值清除）、`goal_status`（查看目标+计划进度）。`set_goal` 会把目标注入每轮 system prompt 实现「目标驱动」；子智能体黑名单屏蔽全部 6 个元操作工具（防污染主流程）。均不触碰用户业务代码，规划模式也安全。验证脚本 `scripts/verify-workflow-goal.js`（21 项全绿）。
 
 **⑫ 会话结束"沉淀为规则/记忆"轻量入口（agent-design P2-7）**：`create_skill` 是隐式沉淀，缺显式"本次会话有效决策/被拒操作是否存入记忆"的收尾提示。
 
@@ -93,6 +93,6 @@
 2. ~~**⑥ 实时增量代码索引（P1）**：文件落盘即刷新语义索引，模型新写代码可立即检索。**→ 已完成。**~~
 3. ~~**⑨ allow/deny 可视化配置 UI（P1）**：权限三档 + 允许/拒绝清单，设置面板已具备，后端已执行。**→ 复核为误判，实际已完成。**~~
 4. **P1 真正剩余**：⑤ fast-apply（需小模型端点，依赖外部）。**⑧ /undo 检查点已于 2026-08-12 完成。**
-5. **P2 全部按需**（⑩ 多智能体编排、⑪ 工作流模板/goal、⑫ 会话结束沉淀记忆、⑬ LSP diagnostics 喂给 Agent），属"锦上添花"。**→ ⑬ 已完成（2026-08-12）；⑩ 已完成（2026-08-12）。**
+5. **P2 全部按需**（⑩ 多智能体编排、⑪ 工作流模板/goal、⑫ 会话结束沉淀记忆、⑬ LSP diagnostics 喂给 Agent），属"锦上添花"。**→ ⑬ 已完成（2026-08-12）；⑩ 已完成（2026-08-12）；⑪ 已完成（2026-08-12）。**
 
 > 说明：本报告最初为纯交叉核对（未改代码）；2026-08-12 已据此实现并验证 **③ 真实 Plan Mode 硬开关**、**① MCP 外部工具接入**、**⑥ 实时增量代码索引** 三项；并复核确认 **⑨ allow/deny UI** 早已落地（报告误判为缺口）。P0 缺口已全部清零，P1 中 ⑥ 与 ⑨ 均已完成。

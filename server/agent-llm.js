@@ -36,6 +36,7 @@ const { ContextRetriever } = require("./context-retriever");
 const { EvolutionEngine } = require("./evolution");
 const { SkillStore } = require("./skill-store");
 const { PlanStore } = require("./plan-store");
+const { WorkflowStore, fillGoal } = require("./workflow-store");
 const safeWrite = require("./safe-write");
 const { PatchEngine } = require("./patch");
 
@@ -250,6 +251,85 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "list_templates",
+      description: "列出所有可用的工作流模板（内置 + 自定义），每个含名称、说明、步骤数。用于挑选合适的流程来驱动任务。",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "instantiate_template",
+      description: "用一个工作流模板生成可执行的任务计划（plan）。模板标题/步骤中的 {goal} 会被 goal 文本替换。" +
+        "生成后会像 create_plan 一样出现在侧边栏供你逐步推进。适合把常见研发流程（功能开发/修 bug/重构/测试/文档）一键展开。",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "模板名称，如 feature / bugfix / refactor / test / docs，或 list_templates 看到的自定义名" },
+          goal: { type: "string", description: "可选，目标文本，替换模板里的 {goal}，如『用户登录模块』" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "save_template",
+      description: "把当前流程沉淀为可复用的工作流模板。不传 tasks 时直接把「当前活跃计划」的步骤存为模板；传 tasks 则存自定义步骤。" +
+        "下次可用 instantiate_template 一键复用。仅自定义模板可被保存/删除，内置模板不可改。",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "模板名（小写，作为引用标识），如 my-release" },
+          description: { type: "string", description: "模板说明（可选）" },
+          title: { type: "string", description: "计划标题模板，可用 {goal} 占位（可选）" },
+          tasks: { type: "array", items: { type: "string" }, description: "步骤列表；省略则使用当前活跃计划的步骤" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_template",
+      description: "删除一个自定义工作流模板（内置模板不可删）。",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "要删除的自定义模板名" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_goal",
+      description: "设定本次会话的「目标」，让 Agent 在所有后续轮次都围绕该目标自主推进（goal 式目标驱动）。" +
+        "目标会被注入到每轮系统提示，模型据此拆解步骤、推进直到目标达成。可选同时指定 template 一键生成执行计划。" +
+        "goal 留空表示清除当前目标。这是元操作，不改动你的业务代码。",
+      parameters: {
+        type: "object",
+        properties: {
+          goal: { type: "string", description: "目标描述，如『为项目加上 GitHub Actions 自动测试』；留空则清除目标" },
+          template: { type: "string", description: "可选，工作流模板名（feature/bugfix/...），指定后会用 goal 实例化一份执行计划" },
+        },
+        required: ["goal"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "goal_status",
+      description: "查看当前会话目标及关联执行计划的进度（目标/已完成步骤数/各步骤状态）。不改变任何状态，仅供你掌握全局。",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "agent",
       description: "派发一个聚焦子智能体去独立完成一项子任务（多智能体编排）。子智能体在**同一工作区**内拥有读/搜/写/改/运行命令的能力，但禁止再派生子智能体、禁止创建计划或撤销。" +
         "适合把大任务拆给子智能体去实现某模块或并行探索，最后它会返回一份中文结果汇报。请在有明确、可独立交付的子任务时使用；需要你亲自逐步掌控时不要用。" +
@@ -346,6 +426,13 @@ class LlmAgent extends AgentBase {
     this.skills = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"));
     const planDir = path.join(require("./config").ROOT, ".pancode", "plans");
     this.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
+    const wfDir = path.join(require("./config").ROOT, ".pancode", "workflows");
+    fs.mkdirSync(wfDir, { recursive: true });
+    this.workflows = new WorkflowStore(path.join(wfDir, wsHash + ".json"));
+    const goalDir = path.join(require("./config").ROOT, ".pancode", "goals");
+    fs.mkdirSync(goalDir, { recursive: true });
+    this._goalPath = path.join(goalDir, wsHash + ".json");
+    this._goal = this._loadGoal();
     this.contextRetriever = new ContextRetriever(this.memory, this.files);
     this.evolution = new EvolutionEngine(this.memory);
     const soulDir = path.join(require("./config").ROOT, ".pancode", "soul");
@@ -635,7 +722,7 @@ ${taskSummary}
       "优先用 read_file / search_code / search_symbol / repo_map 理解代码，再动手写或改。" +
       "完成后用简洁中文汇报你做了什么、结果如何。你拥有读/搜/写/改/运行命令的权限。";
     // 子智能体工具白名单：排除会自我嵌套或污染主流程的工具
-    const BLOCK = new Set(["agent", "create_plan", "update_plan", "undo"]);
+    const BLOCK = new Set(["agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template", "save_template", "remove_template", "list_templates", "goal_status"]);
     const subTools = TOOLS.filter((t) => !BLOCK.has(t.function.name));
     const messages = [
       { role: "system", content: SUB_PROMPT },
@@ -676,6 +763,14 @@ ${taskSummary}
       Object.assign(this, saved);
     }
     return finalText;
+  }
+
+  /* ---------------- 会话目标（goal 驱动） ---------------- */
+  _loadGoal() {
+    try { const g = JSON.parse(fs.readFileSync(this._goalPath, "utf8")); return g.goal || null; } catch (e) { return null; }
+  }
+  _saveGoal() {
+    safeWrite.saveJson(this._goalPath, { goal: this._goal, ts: Date.now() });
   }
 
   /* ---------------- 权限决策 ---------------- */
@@ -1237,6 +1332,90 @@ ${taskSummary}
         }
         return "任务更新失败";
       }
+      case "list_templates": {
+        const all = this.workflows.list();
+        if (!all.length) return "暂无可用模板";
+        const builtins = all.filter((t) => t.builtin);
+        const custom = all.filter((t) => !t.builtin);
+        let txt = "内置模板（" + builtins.length + "）:\n";
+        builtins.forEach((t) => { txt += "  - " + t.name + "：" + t.description + "（" + t.tasks.length + " 步）\n"; });
+        if (custom.length) {
+          txt += "自定义模板（" + custom.length + "）:\n";
+          custom.forEach((t) => { txt += "  - " + t.name + "：" + t.description + "（" + t.tasks.length + " 步）\n"; });
+        }
+        return txt;
+      }
+      case "instantiate_template": {
+        const tpl = this.workflows.find(args.name);
+        if (!tpl) return "未找到模板：" + args.name + "（可用 list_templates 查看）";
+        const goal = args.goal || "";
+        const title = fillGoal(tpl.title, goal);
+        const tasks = tpl.tasks.map((x) => fillGoal(x, goal));
+        const plan = this.plan.create(this._currentConv, title, tasks);
+        if (plan) {
+          this.emit({ type: "plan.created", plan, convId: plan.convId });
+          return "已用模板「" + tpl.name + "」生成计划：" + title + "（" + plan.tasks.length + " 步）";
+        }
+        return "计划生成失败";
+      }
+      case "save_template": {
+        let tasks = args.tasks;
+        if (!Array.isArray(tasks) || tasks.length === 0) {
+          const active = this.plan.getActive(this._currentConv);
+          if (!active) return "没有活跃计划，且未提供 tasks，无法保存模板";
+          tasks = active.tasks.map((t) => t.text);
+        }
+        const rec = this.workflows.save(args.name, args.description, args.title, tasks);
+        if (rec) return "已保存模板：" + rec.name + "（" + rec.tasks.length + " 步）";
+        return "模板保存失败（需提供 name 与步骤）";
+      }
+      case "remove_template": {
+        const ok = this.workflows.remove(args.name);
+        if (ok) return "已删除自定义模板：" + args.name;
+        return "未找到自定义模板：" + args.name + "（内置模板不可删）";
+      }
+      case "set_goal": {
+        const goal = (args.goal || "").trim();
+        if (!goal) {
+          this._goal = null; this._saveGoal();
+          this.emit({ type: "goal.set", goal: null });
+          return "已清除会话目标";
+        }
+        this._goal = goal; this._saveGoal();
+        this.emit({ type: "goal.set", goal });
+        let extra = "";
+        if (args.template) {
+          const tpl = this.workflows.find(args.template);
+          if (tpl) {
+            const title = fillGoal(tpl.title, goal);
+            const tasks = tpl.tasks.map((x) => fillGoal(x, goal));
+            const plan = this.plan.create(this._currentConv, title, tasks);
+            if (plan) {
+              this.emit({ type: "plan.created", plan, convId: plan.convId });
+              extra = "；已用模板「" + tpl.name + "」生成执行计划（" + plan.tasks.length + " 步）";
+            }
+          } else {
+            extra = "（提示：模板「" + args.template + "」未找到，已仅设定目标）";
+          }
+        }
+        return "已设定会话目标：" + goal + extra;
+      }
+      case "goal_status": {
+        if (!this._goal) return "当前未设定会话目标（可用 set_goal 设定）";
+        const active = this.plan.getActive(this._currentConv);
+        let txt = "【会话目标】" + this._goal + "\n";
+        if (active) {
+          const done = active.tasks.filter((t) => t.status === "done" || t.status === "skipped").length;
+          txt += "【执行计划】" + active.title + "（" + done + "/" + active.tasks.length + " 完成）\n";
+          active.tasks.forEach((t, i) => {
+            const icon = t.status === "done" ? "✅" : t.status === "in_progress" ? "🔄" : t.status === "skipped" ? "⏭️" : "⬜";
+            txt += "  " + (i + 1) + ". " + icon + " " + t.text + "\n";
+          });
+        } else {
+          txt += "【执行计划】尚未创建（可用 instantiate_template 或 create_plan）";
+        }
+        return txt;
+      }
       default:
         return "未知工具: " + name;
     }
@@ -1277,6 +1456,17 @@ ${taskSummary}
     const mcpDefs = (!this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
     const baseTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
     const activeTools = baseTools.concat(mcpDefs);
+    // 目标驱动：把会话目标注入每轮系统提示，让 Agent 围绕目标自主推进
+    if (this._goal) {
+      let g = "【本次会话目标】" + this._goal + "\n";
+      g += "请在每一步推进时对齐该目标；当目标达成（相关计划任务全部完成，或你判断已实质性满足）时，明确汇报「目标已完成」并停止。";
+      const ap = this.plan.getActive(this._currentConv);
+      if (ap) {
+        const done = ap.tasks.filter((t) => t.status === "done" || t.status === "skipped").length;
+        g += " 当前执行计划「" + ap.title + "」已完成 " + done + "/" + ap.tasks.length + " 步。";
+      }
+      messages.push({ role: "system", content: g });
+    }
     for (const h of this.history) messages.push(h);
 
     let rounds = 0;
