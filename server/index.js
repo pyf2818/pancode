@@ -112,6 +112,7 @@ function helloPayload() {
     wsId: _wsIdHash(WS_DIR),
     workspace: WS_DIR,
     truncated: !!files.truncated,
+    tabs: term.list(),          // 还原多标签终端（同一服务进程内刷新可恢复）
   };
 }
 
@@ -300,7 +301,7 @@ app.post("/api/workspace", (req, res) => {
     const dir = String((req.body || {}).dir || "").trim();
     if (!dir) return res.status(400).json({ ok: false, error: "路径不能为空" });
     if (engine.running) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" });
-    if (term.busy) term.kill();
+    if (term) term.closeAll();
     mountWorkspace(dir);
     configMod.saveWorkspace(cfg, WS_DIR);
     broadcast(helloPayload());   // 所有已连接窗口立即切换到新工作区
@@ -673,14 +674,28 @@ app.get("/api/index/status", (req, res) => {
 /* ---------- 本地 Agent 检测与一键调用 ---------- */
 app.get("/api/agents/detect", (req, res) => {
   try {
-    res.json({ ok: true, agents: agents.detectAgents() });
+    res.json({ ok: true, agents: agents.detectAgents(cfg.agents && cfg.agents.paths) });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 app.post("/api/agents/launch", (req, res) => {
-  const cmd = req.body && req.body.cmd;
-  if (!cmd) return res.status(400).json({ ok: false, error: "缺少 cmd" });
-  const r = agents.launchAgent(cmd, WS_DIR);
+  const id = req.body && req.body.id;
+  const a = agents.AGENTS.find((x) => x.id === id);
+  if (!a) return res.status(400).json({ ok: false, error: "未知 Agent" });
+  // 优先使用「全局路径配置 / PATH」解析出的可执行文件
+  const detected = agents.detectAgents(cfg.agents && cfg.agents.paths);
+  const rec = detected.find((x) => x.id === id);
+  const execPath = (rec && rec.path) || a.cmd;
+  const r = agents.launchAgent(execPath, WS_DIR);
   res.json(r.ok ? { ok: true } : { ok: false, error: r.error });
+});
+app.get("/api/agents/paths", (req, res) => {
+  res.json({ ok: true, paths: (cfg.agents && cfg.agents.paths) || {} });
+});
+app.post("/api/agents/paths", (req, res) => {
+  try {
+    configMod.saveAgentPaths(cfg, (req.body || {}));
+    res.json({ ok: true, paths: cfg.agents.paths });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 /* ---------- WebSocket ---------- */
@@ -721,16 +736,24 @@ wss.on("connection", (ws) => {
         }
         break;
 
-      case "term.exec":
-        if (typeof m.cmd === "string" && m.cmd.trim() && !term.busy) {
-          term.run(m.cmd.slice(0, 500)).then(() => {
+      case "term.exec": {
+        const tabId = m.tabId || "default";
+        if (typeof m.cmd === "string" && m.cmd.trim() && !term.busyFor(tabId)) {
+          term.run(tabId, m.cmd.slice(0, 500)).then(() => {
             broadcast({ type: "fs.sync", files: snapshotFiles() });
             engine.pushChanges(false);
           });
         }
         break;
+      }
+      case "term.open":
+        if (typeof m.tabId === "string" && m.tabId) term.open(m.tabId, m.title || "");
+        break;
+      case "term.close":
+        if (typeof m.tabId === "string" && m.tabId) term.close(m.tabId);
+        break;
       case "term.kill":
-        term.kill();
+        term.kill(typeof m.tabId === "string" ? m.tabId : "default");
         break;
 
       /* ----- 文件操作协议（编辑器可写的核心） ----- */
@@ -906,7 +929,7 @@ function shutdown(sig) {
   console.log("\n[pancode] 收到 " + sig + "，正在优雅关闭…");
   try { if (engine && typeof engine.abort === "function") engine.abort(); } catch (e) {}   // 中止进行中的 Agent 任务
   try { if (engine && typeof engine.flushConversations === "function") engine.flushConversations(); } catch (e) {}  // C6：同步刷盘会话上下文
-  try { if (term && typeof term.kill === "function") term.kill(); } catch (e) {}            // 杀掉终端子进程，避免孤儿
+  try { if (term && typeof term.closeAll === "function") term.closeAll(); } catch (e) {}      // 杀掉全部终端子进程，避免孤儿
   try { for (const c of wss.clients) { try { c.close(); } catch (e) {} } } catch (e) {}
   try { if (files) files.stopWatch(); } catch (e) {}
   try { server.close(() => process.exit(0)); } catch (e) { process.exit(0); }

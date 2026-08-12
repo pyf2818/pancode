@@ -1,8 +1,8 @@
 /* ============================================================
-   pancode 终端层 —— AI 与用户共用的真实命令执行
-   - shell 模式执行任意命令（cwd 固定在 workspace）
-   - 输出实时逐行推送 + 完整聚合返回给 Agent
-   - 超时保护 / 输出上限保护（防挂死、防刷屏）
+   pancode 终端层 —— AI 与用户共用的真实命令执行（多标签页版）
+   - 每个标签 (tabId) 一个独立 shell 会话（独立子进程 + 独立历史缓冲）
+   - 标签在内存中常驻：刷新页面后由 hello 的 term.list 还原（同一服务进程内）
+   - 输出实时逐行推送（携带 tabId），超时 / 输出上限保护
    ============================================================ */
 "use strict";
 const fs = require("fs");
@@ -12,6 +12,10 @@ const { check } = require("./security");
 
 const MAX_OUT = 200 * 1024;   // 单次命令最多聚合 200KB 输出
 const DEFAULT_TIMEOUT = 60_000;
+const MAX_HISTORY = 800;      // 每个标签最多保留的历史行数
+
+/* AI 任务的命令统一路由到这个固定标签（前端会自动创建并展示为「Agent」标签） */
+const AI_TERM_TAB = "agent";
 
 /* Windows 专用：修复继承破碎环境导致的 spawn(shell:true) 失败（退出码 3221225794）。
    子进程环境若 ComSpec 为空 / PATH 为 Git Bash 的 unix 风格，CreateProcess 初始化环境失败。
@@ -49,29 +53,75 @@ function classify(line) {
   return "tl-cmd";
 }
 
+/* ---------------- 单标签会话 ---------------- */
+class TerminalSession {
+  constructor(id, title, emit, dir, auditDir) {
+    this.id = id;
+    this.title = title || "终端";
+    this.emit = emit;
+    this.dir = dir;
+    this.auditDir = auditDir;
+    this.child = null;          // 当前运行的子进程（busy 标记）
+    this.history = [];          // [{ cls, text, cmd }]，用于刷新还原
+  }
+  get busy() { return !!this.child; }
+
+  _push(cls, text, isCmd) {
+    const entry = { cls, text, cmd: !!isCmd };
+    this.history.push(entry);
+    if (this.history.length > MAX_HISTORY) this.history.shift();
+    return entry;
+  }
+  _emitLine(text, cls) {
+    const entry = this._push(cls, text, false);
+    this.emit({ type: "term.line", tabId: this.id, text, cls });
+    return entry;
+  }
+}
+
+/* ---------------- 终端池：管理所有标签会话 ---------------- */
 class TerminalLayer {
   constructor(wsDir, emit, auditDir) {
     this.dir = wsDir;
-    this.emit = emit;      // 广播事件
+    this.emit = emit;          // 广播事件
     this.auditDir = auditDir || null;
-    this.current = null;   // 当前运行的子进程
+    this.sessions = new Map(); // tabId -> TerminalSession
   }
 
-  get busy() { return !!this.current; }
+  open(tabId, title) {
+    if (!tabId) return null;
+    let s = this.sessions.get(tabId);
+    if (!s) {
+      s = new TerminalSession(tabId, title, this.emit, this.dir, this.auditDir);
+      this.sessions.set(tabId, s);
+    } else if (title) {
+      s.title = title;
+    }
+    return s;
+  }
+
+  busyFor(tabId) {
+    const s = this.sessions.get(tabId);
+    return !!(s && s.busy);
+  }
 
   /**
    * 真实执行命令。argv 提供时用无 shell 精确执行（AI 内部用），
    * 否则走系统 shell（用户手敲命令用，支持管道等）。
    */
-  run(displayCmd, argv, opts) {
+  run(tabId, displayCmd, argv, opts) {
+    if (!tabId) tabId = AI_TERM_TAB;
     opts = opts || {};
+    const s = this.open(tabId);
     const display = argv ? argv.join(" ") : displayCmd;
     const sec = check(display, !!opts.strict);
     if (sec.blocked) {
-      this.emit({ type: "term.line", text: "[已拒绝执行] " + sec.reason + "： " + display.slice(0, 200), cls: "tl-err" });
+      this.emit({ type: "term.line", tabId, text: "[已拒绝执行] " + sec.reason + "： " + display.slice(0, 200), cls: "tl-err" });
       return Promise.resolve({ code: -1, out: "", blocked: true, timedOut: false });
     }
-    this.emit({ type: "term.cmd", text: displayCmd });
+    // 命令回显（提示符前缀由前端拼装）
+    s._push(null, displayCmd, true);
+    this.emit({ type: "term.cmd", tabId, text: displayCmd });
     if (this.auditDir) this._audit(opts.ai ? "AI" : "user", displayCmd);
     return new Promise((resolve) => {
       let child;
@@ -81,42 +131,68 @@ class TerminalLayer {
           ? spawn(argv[0], argv.slice(1), { cwd: this.dir, env })
           : spawn(displayCmd, { cwd: this.dir, shell: true, env });
       } catch (err) {
-        this.emit({ type: "term.line", text: String(err), cls: "tl-err" });
+        this.emit({ type: "term.line", tabId, text: String(err), cls: "tl-err" });
         return resolve({ code: -1, out: String(err), timedOut: false });
       }
-      this.current = child;
+      s.child = child;
       let out = "", truncated = false, timedOut = false;
 
       const timer = setTimeout(() => {
         timedOut = true;
-        this.emit({ type: "term.line", text: "[超时 " + ((opts.timeout || DEFAULT_TIMEOUT) / 1000) + "s，已终止]", cls: "tl-err" });
+        this.emit({ type: "term.line", tabId, text: "[超时 " + ((opts.timeout || DEFAULT_TIMEOUT) / 1000) + "s，已终止]", cls: "tl-err" });
         try { child.kill(); } catch (e) {}
       }, opts.timeout || DEFAULT_TIMEOUT);
 
       const onData = (buf) => {
-        const s = buf.toString("utf8");
-        if (out.length < MAX_OUT) out += s;
+        const str = buf.toString("utf8");
+        if (out.length < MAX_OUT) out += str;
         else if (!truncated) { truncated = true; out += "\n[输出过长，已截断]"; }
-        s.split(/\r?\n/).forEach((line, i, arr) => {
+        str.split(/\r?\n/).forEach((line, i, arr) => {
           if (i === arr.length - 1 && line === "") return;
-          this.emit({ type: "term.line", text: line.slice(0, 2000), cls: classify(line) });
+          this.emit({ type: "term.line", tabId, text: line.slice(0, 2000), cls: classify(line) });
         });
       };
       child.stdout.on("data", onData);
       child.stderr.on("data", onData);
       child.on("close", (code) => {
         clearTimeout(timer);
-        this.current = null;
-        this.emit({ type: "term.exit", code });
+        s.child = null;
+        this.emit({ type: "term.exit", tabId });
         resolve({ code: timedOut ? -2 : code, out, timedOut });
       });
       child.on("error", (err) => {
         clearTimeout(timer);
-        this.current = null;
-        this.emit({ type: "term.line", text: String(err), cls: "tl-err" });
+        s.child = null;
+        this.emit({ type: "term.line", tabId, text: String(err), cls: "tl-err" });
         resolve({ code: -1, out: String(err), timedOut: false });
       });
     });
+  }
+
+  /* 中断某标签当前命令（对齐 VS Code 终端 Ctrl+C） */
+  kill(tabId) {
+    const s = this.sessions.get(tabId);
+    if (s && s.child) { try { s.child.kill(); } catch (e) {} return true; }
+    return false;
+  }
+
+  /* 关闭某标签：杀掉子进程并移除会话 */
+  close(tabId) {
+    const s = this.sessions.get(tabId);
+    if (!s) return;
+    if (s.child) { try { s.child.kill(); } catch (e) {} }
+    this.sessions.delete(tabId);
+  }
+
+  /* 关闭全部标签（切换工作区 / 重置时） */
+  closeAll() {
+    for (const s of this.sessions.values()) { if (s.child) { try { s.child.kill(); } catch (e) {} } }
+    this.sessions.clear();
+  }
+
+  /* 序列化给前端用于刷新还原 */
+  list() {
+    return [...this.sessions.values()].map((s) => ({ id: s.id, title: s.title, history: s.history.slice() }));
   }
 
   /* A6：命令审计日志——每次真实执行的命令落盘到 .pancode/audit/<日期>.log，可追溯 AI/用户行为 */
@@ -128,12 +204,6 @@ class TerminalLayer {
       fs.appendFileSync(f, line);
     } catch (e) {}
   }
-
-  /* 中断当前命令（对齐 VS Code 终端 Ctrl+C） */
-  kill() {
-    if (this.current) { try { this.current.kill(); } catch (e) {} return true; }
-    return false;
-  }
 }
 
-module.exports = { TerminalLayer, classify };
+module.exports = { TerminalLayer, classify, AI_TERM_TAB };

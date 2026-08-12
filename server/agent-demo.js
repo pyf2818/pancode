@@ -4,6 +4,7 @@
    ============================================================ */
 "use strict";
 const { AgentBase, sleep } = require("./agent-base");
+const { AI_TERM_TAB } = require("./terminal");
 
 const TODO_FIXED = `// 待办事项核心逻辑
 import { sortByPriority } from "./utils.js";
@@ -152,7 +153,7 @@ class DemoAgent extends AgentBase {
     this.state(true, "AI 正在运行测试");
     await this.say("代码写好了。现在我调用终端真实运行测试来验证：");
     t = this.tool("terminal", "运行终端", "node tests/run-tests.js");
-    const r1 = await this.term.run("node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
+    const r1 = await this.term.run(AI_TERM_TAB, "node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
     t.body(r1.out.trim() + "\n\n(exit code " + r1.code + ")");
     if (r1.code === 0) {
       t.done(true, "全部通过");
@@ -182,7 +183,7 @@ class DemoAgent extends AgentBase {
 
       this.state(true, "AI 重新验证中");
       t = this.tool("terminal", "运行终端", "node tests/run-tests.js（复测）");
-      const r2 = await this.term.run("node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
+      const r2 = await this.term.run(AI_TERM_TAB, "node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
       t.body(r2.out.trim() + "\n\n(exit code " + r2.code + ")");
       t.done(r2.code === 0, r2.code === 0 ? "5/5 通过" : "仍有失败");
     }
@@ -197,7 +198,7 @@ class DemoAgent extends AgentBase {
     this.state(true, "AI 思考中");
     await this.think("用户说：" + userText + "\n主任务已经完成。我重新真实跑一遍测试，确认工作区状态后再回复。");
     const t = this.tool("terminal", "运行终端", "node tests/run-tests.js（复核）");
-    const r = await this.term.run("node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
+    const r = await this.term.run(AI_TERM_TAB, "node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
     t.body(r.out.trim());
     t.done(r.code === 0, r.code === 0 ? "全部通过" : "有失败");
     const changes = this.pushChanges(false);

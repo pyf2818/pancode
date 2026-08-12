@@ -28,6 +28,7 @@ const repoMap = require("./repo-map");
 const { MemoryStore } = require("./memory-store");
 const { SoulStore } = require("./soul-store");
 const { ProgressionStore } = require("./progression-store");
+const { AI_TERM_TAB } = require("./terminal");
 const { computeProgression } = require("./progression");
 const { ContextRetriever } = require("./context-retriever");
 const { EvolutionEngine } = require("./evolution");
@@ -911,7 +912,7 @@ ${taskSummary}
         }
         const t = this.tool("terminal", "运行终端", args.command);
         this.state(true, "AI 正在执行命令");
-        const r = await this.term.run(args.command, null, { timeout: 90_000, strict: true, ai: true });
+        const r = await this.term.run(AI_TERM_TAB, args.command, null, { timeout: 90_000, strict: true, ai: true });
         if (r.blocked) {
           t.body("命令被安全沙箱拦截：" + args.command);
           t.done(false, "已拦截", false);

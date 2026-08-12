@@ -49,6 +49,10 @@ const DEFAULTS = {
     model: "text-embedding-3-small",
     dim: 1536,
   },
+  // —— 本地 Agent CLI 全局路径（可选；配置了绝对路径后优先于 PATH 探测）——
+  agents: {
+    paths: { claude: "", codex: "", gemini: "", aider: "" },  // 各 Agent 可执行文件绝对路径
+  },
 };
 
 function readJsonSafe(p) {
@@ -166,6 +170,21 @@ function agentSettings(cfg) {
   };
 }
 
+/* 持久化本地 Agent CLI 全局路径（仅非敏感配置，写入 pancode.config.json） */
+function saveAgentPaths(cfg, patch) {
+  const p = (patch && patch.paths) || {};
+  const fields = ["claude", "codex", "gemini", "aider"];
+  if (!cfg.agents) cfg.agents = { paths: {} };
+  if (!cfg.agents.paths) cfg.agents.paths = {};
+  fields.forEach((k) => {
+    if (typeof p[k] === "string") cfg.agents.paths[k] = p[k].trim();
+  });
+  const onDisk = readJsonSafe(CONFIG_PATH) || {};
+  onDisk.agents = { paths: cfg.agents.paths };
+  writeJsonSafe(CONFIG_PATH, onDisk);
+  return cfg;
+}
+
 /* 当前引擎模式：有 key + baseURL 就用真实 LLM，否则演示引擎
    CURSORWEB_ENGINE=demo 可强制演示引擎（测试用，保证确定性） */
 function engineMode(cfg) {
@@ -212,4 +231,4 @@ function progressionPath(cfg) {
   return path.join(ROOT, ".pancode", "progression", key + ".json");
 }
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveAgentPaths, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };

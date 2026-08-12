@@ -319,6 +319,16 @@
           <label>上下文预算（tokens）<input id="agmBudget" type="number" min="8000" step="1000" placeholder="120000"></label>
         </div>
       </div>
+      <div class="agm-paths">
+        <div class="agm-sec-title">本地 Agent CLI 全局路径（可选）</div>
+        <div class="agm-paths-tip">留空则自动探测 PATH；若 CLI 不在 PATH 上（如自定义安装目录），在此填入可执行文件<b>绝对路径</b>（如 <code>C:\apps\claude.exe</code> 或 <code>/usr/local/bin/codex</code>），将优先于 PATH 使用。</div>
+        <div class="agm-path-grid">
+          <label>Claude Code<input id="agmPathClaude" type="text" placeholder="claude 绝对路径（留空自动探测）" spellcheck="false"></label>
+          <label>OpenAI Codex<input id="agmPathCodex" type="text" placeholder="codex 绝对路径（留空自动探测）" spellcheck="false"></label>
+          <label>Gemini CLI<input id="agmPathGemini" type="text" placeholder="gemini 绝对路径（留空自动探测）" spellcheck="false"></label>
+          <label>Aider<input id="agmPathAider" type="text" placeholder="aider 绝对路径（留空自动探测）" spellcheck="false"></label>
+        </div>
+      </div>
       <div class="set-status" id="agmStatus"></div>
       <div class="set-actions">
         <span class="agm-hint">保存后立即广播到所有窗口，对下一条消息生效</span>
