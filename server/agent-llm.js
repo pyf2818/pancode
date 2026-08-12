@@ -330,6 +330,35 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "save_session_memory",
+      description: "会话收尾时，把本次会话的「有效决策 / 经验教训 / 被拒或返工的操作」结构化沉淀进长期记忆（.pancode/memory），" +
+        "供未来会话参考，避免重复踩坑或重复确认。这是显式的「结算」入口，与逐条自动记忆互补。" +
+        "decisions=本次做出的有效决策/约定；lessons=踩坑与经验；rejected=被用户拒绝或返工的操作（即『不要怎么做』）。" +
+        "若本次浮现出可复用的流程，可顺带用 skill 字段存为 Skill。为空则不写入。",
+      parameters: {
+        type: "object",
+        properties: {
+          decisions: { type: "array", items: { type: "string" }, description: "本次会话的有效决策/约定列表，如『聊天记录持久化用 SQLite 而非 JSON』" },
+          lessons: { type: "array", items: { type: "string" }, description: "经验教训/踩坑列表，如『Pancode 的 gap 报告『未做』项不可信，先读代码复核』" },
+          rejected: { type: "array", items: { type: "string" }, description: "被拒/返工的操作（反例），如『不要直接整文件覆盖 Monaco 内容，用 apply_edit 片段』" },
+          skill: {
+            type: "object",
+            description: "可选，若本次浮现可复用流程，存为 Skill",
+            properties: {
+              name: { type: "string" },
+              description: { type: "string" },
+              trigger: { type: "string" },
+              body: { type: "string" },
+            },
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "agent",
       description: "派发一个聚焦子智能体去独立完成一项子任务（多智能体编排）。子智能体在**同一工作区**内拥有读/搜/写/改/运行命令的能力，但禁止再派生子智能体、禁止创建计划或撤销。" +
         "适合把大任务拆给子智能体去实现某模块或并行探索，最后它会返回一份中文结果汇报。请在有明确、可独立交付的子任务时使用；需要你亲自逐步掌控时不要用。" +
@@ -381,6 +410,7 @@ ${PLATFORM_HINT}
 7. 面对复杂任务（涉及 3 个以上步骤），先用 create_plan 拆解为子任务计划，然后用 update_plan 逐个标记进度，用户会在侧边栏实时看到进展。
 8. 上下文中如果出现【相关 Skill】，说明系统已匹配到可参考的解决方案模板，请参考其中的步骤和验证方法来指导你的工作。
 9. 执行 run_command 时，务必先确认命令语法符合当前【运行环境】——Windows 下后台启动用 start /B，不要用 `&` 结尾试图后台化；没有 grep/cat/ls 就用 findstr/type/dir。
+10. 当你完成一段较完整的工作（一个功能落地、一轮迭代收尾）时，用 save_session_memory 把本次的**有效决策、经验教训、被拒/返工的操作**结构化沉淀进长期记忆——写几条要点即可，不要冗长。这能让未来的会话少踩坑、少重复确认。
 
 安全准则（必须严格遵守）：
 - 禁止修改或删除 .env、.git、node_modules、package-lock.json 等关键文件。
@@ -722,7 +752,7 @@ ${taskSummary}
       "优先用 read_file / search_code / search_symbol / repo_map 理解代码，再动手写或改。" +
       "完成后用简洁中文汇报你做了什么、结果如何。你拥有读/搜/写/改/运行命令的权限。";
     // 子智能体工具白名单：排除会自我嵌套或污染主流程的工具
-    const BLOCK = new Set(["agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template", "save_template", "remove_template", "list_templates", "goal_status"]);
+    const BLOCK = new Set(["agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template", "save_template", "remove_template", "list_templates", "goal_status", "save_session_memory"]);
     const subTools = TOOLS.filter((t) => !BLOCK.has(t.function.name));
     const messages = [
       { role: "system", content: SUB_PROMPT },
@@ -1415,6 +1445,33 @@ ${taskSummary}
           txt += "【执行计划】尚未创建（可用 instantiate_template 或 create_plan）";
         }
         return txt;
+      }
+      case "save_session_memory": {
+        const decisions = Array.isArray(args.decisions) ? args.decisions : [];
+        const lessons = Array.isArray(args.lessons) ? args.lessons : [];
+        const rejected = Array.isArray(args.rejected) ? args.rejected : [];
+        let saved = 0;
+        decisions.forEach((d) => { if (this.memory.add("decision", "会话决策", String(d).trim())) saved++; });
+        lessons.forEach((l) => { if (this.memory.add("lesson", "经验教训", String(l).trim())) saved++; });
+        rejected.forEach((r) => { if (this.memory.add("error", "被拒操作/反例", String(r).trim())) saved++; });
+        let skillName = null;
+        if (args.skill && args.skill.name) {
+          const sk = this.skills.add({
+            name: args.skill.name,
+            description: args.skill.description || "",
+            trigger: args.skill.trigger || "",
+            body: args.skill.body || "",
+          });
+          if (sk && !sk._duplicate) skillName = sk.name;
+        }
+        const summary = "已沉淀 " + saved + " 条记忆"
+          + (decisions.length ? "（决策 " + decisions.length + "）" : "")
+          + (lessons.length ? "（经验 " + lessons.length + "）" : "")
+          + (rejected.length ? "（反例 " + rejected.length + "）" : "")
+          + (skillName ? "；已存 Skill：" + skillName : "");
+        if (saved === 0 && !skillName) return "没有可沉淀的内容（decisions/lessons/rejected 均为空且无 skill）";
+        this.emit({ type: "session.memory.saved", count: saved, skill: skillName });
+        return summary;
       }
       default:
         return "未知工具: " + name;

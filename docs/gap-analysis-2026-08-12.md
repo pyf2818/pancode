@@ -79,7 +79,7 @@
 
 **⑪ 工作流模板 / goal 式目标驱动（agent-design P2-8）**：**✅ 已落地**。新增 `server/workflow-store.js`（`WorkflowStore`：5 个内置模板 feature/bugfix/refactor/test/docs + 自定义模板持久化到 `.pancode/workflows/<hash>.json`，`{goal}` 占位符替换）。`agent-llm.js` 新增 6 个只读/元操作工具：`list_templates`（列内置+自定义）、`instantiate_template`（模板→可执行 plan，`{goal}` 注入标题/步骤）、`save_template`（当前活跃计划或显式步骤沉淀为模板，可一键复用）、`remove_template`（仅自定义可删）、`set_goal`（设定会话目标并持久化到 `.pancode/goals/<hash>.json`；可选 `template` 一键生成执行计划；空值清除）、`goal_status`（查看目标+计划进度）。`set_goal` 会把目标注入每轮 system prompt 实现「目标驱动」；子智能体黑名单屏蔽全部 6 个元操作工具（防污染主流程）。均不触碰用户业务代码，规划模式也安全。验证脚本 `scripts/verify-workflow-goal.js`（21 项全绿）。
 
-**⑫ 会话结束"沉淀为规则/记忆"轻量入口（agent-design P2-7）**：`create_skill` 是隐式沉淀，缺显式"本次会话有效决策/被拒操作是否存入记忆"的收尾提示。
+**⑫ 会话结束"沉淀为规则/记忆"轻量入口（agent-design P2-7）**：**✅ 已落地**。在已有三层沉淀（逐条 `_maybeRemember` 关键词自动分类 + `create_skill` 显式技能 + `EvolutionEngine.autoExtract` 任务后自动提炼）之上，新增**显式「会话收尾结算」入口**：`agent-llm.js` 加 `save_session_memory` 工具，把本次会话的 `decisions`（→decision 类）/ `lessons`（→lesson 类）/ `rejected`（被拒·返工操作，→error 反例类）结构化写入 `MemoryStore`（`.pancode/memory`），并可顺带用 `skill` 字段存为 Skill；空输入不写。SYSTEM_PROMPT 新增第 10 条指引：完成一段较完整工作时主动结算沉淀。该工具不碰用户业务代码、规划模式安全；已加入子智能体黑名单（防污染主会话记忆）。验证脚本 `scripts/verify-session-memory.js`（8 项全绿）。至此 P2 缺口全部清零。
 
 **⑬ LSP diagnostics 真正喂给 Agent（架构 E16 收尾）**：**✅ 已落地**。后端 `lsp-bridge.js` 在代理 `textDocument/publishDiagnostics` 时把诊断存入 `LspManager._diagnostics`（按归一化绝对路径缓存，Windows/Unix 一致），并通过 `setActiveManager/getActiveManager` 单例访问器暴露给 Agent。新增只读工具 `get_diagnostics`：传 `path` 返回单文件诊断，不传返回整个工作区汇总（含错误/警告计数）。模型可据此自我修正编译/类型错误。纯只读、规划模式下也安全（不在 MUTATING_TOOLS 内）。验证脚本 `scripts/verify-lsp-diagnostics.js` 全绿。
 
@@ -93,6 +93,6 @@
 2. ~~**⑥ 实时增量代码索引（P1）**：文件落盘即刷新语义索引，模型新写代码可立即检索。**→ 已完成。**~~
 3. ~~**⑨ allow/deny 可视化配置 UI（P1）**：权限三档 + 允许/拒绝清单，设置面板已具备，后端已执行。**→ 复核为误判，实际已完成。**~~
 4. **P1 真正剩余**：⑤ fast-apply（需小模型端点，依赖外部）。**⑧ /undo 检查点已于 2026-08-12 完成。**
-5. **P2 全部按需**（⑩ 多智能体编排、⑪ 工作流模板/goal、⑫ 会话结束沉淀记忆、⑬ LSP diagnostics 喂给 Agent），属"锦上添花"。**→ ⑬ 已完成（2026-08-12）；⑩ 已完成（2026-08-12）；⑪ 已完成（2026-08-12）。**
+5. **P2 全部按需**（⑩ 多智能体编排、⑪ 工作流模板/goal、⑫ 会话结束沉淀记忆、⑬ LSP diagnostics 喂给 Agent），属"锦上添花"。**→ ⑬ 已完成（2026-08-12）；⑩ 已完成（2026-08-12）；⑪ 已完成（2026-08-12）；⑫ 已完成（2026-08-12）。至此 P2 缺口全部清零，仅剩 P1 的 ⑤ fast-apply（依赖外部小模型端点）。**
 
 > 说明：本报告最初为纯交叉核对（未改代码）；2026-08-12 已据此实现并验证 **③ 真实 Plan Mode 硬开关**、**① MCP 外部工具接入**、**⑥ 实时增量代码索引** 三项；并复核确认 **⑨ allow/deny UI** 早已落地（报告误判为缺口）。P0 缺口已全部清零，P1 中 ⑥ 与 ⑨ 均已完成。
