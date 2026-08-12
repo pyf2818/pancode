@@ -192,6 +192,16 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "undo",
+      description: "撤销上一步对文件的改动（单步回滚）。系统会在每次 write_file / apply_edit / delete_file 前自动记录检查点，" +
+        "调用本工具会把最近一次改动的受影响文件恢复到改动前的状态：被编辑的文件还原内容、被删除的文件重新生成。" +
+        "只能逐步撤销（后进先出），连续调用可依次回退更早的改动。若没有任何已记录的改动，会如实告知。注意：这会改变工作区文件。",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_skill",
       description: "将当前任务的解决方案沉淀为可复用的 Skill 模板，供未来类似问题自动匹配参考。",
       parameters: {
@@ -240,7 +250,7 @@ const TOOLS = [
 ];
 
 /* 规划模式（planMode）下禁止 Agent 调用的"会改动工作区 / 执行命令"工具 */
-const MUTATING_TOOLS = new Set(["write_file", "apply_edit", "delete_file", "run_command"]);
+const MUTATING_TOOLS = new Set(["write_file", "apply_edit", "delete_file", "run_command", "undo"]);
 
 /* 把一条 LSP Diagnostic 格式化为可读文本（供 get_diagnostics 工具返回） */
 function fmtDiag(x) {
@@ -306,6 +316,7 @@ class LlmAgent extends AgentBase {
     this._repoDirty = false;        // 仓库索引失效标记（文件变更后置位）
     this._repoCache = null;         // 缓存的仓库符号索引
     this.patch = new PatchEngine(this.files);   // 补丁暂存/审阅引擎（apply_edit 工具使用）
+    this._undoStack = [];                  // ⑧ /undo 检查点栈：每次改盘前压入受影响文件的「改动前快照」
 
     /* Phase 2：4 大子系统初始化 */
     const wsHash = crypto.createHash("md5")
@@ -532,7 +543,9 @@ ${taskSummary}
   /* 用户在审阅面板「接受」暂存改动 → 写盘并广播变更。
      hunkSelections = { path: [hunkIndex,...] } 时仅应用选中的片段（逐 hunk 部分应用）。 */
   applyPatch(convId, paths, hunkSelections) {
+    const snaps = (paths || []).map((p) => this._snapshotBefore(p));   // 落盘前快照（⑧ /undo）
     const applied = this.patch.apply(convId, paths, hunkSelections);
+    this._pushCheckpoint(snaps, "应用补丁 " + applied.length + " 文件");
     for (const p of applied) {
       this.fileChanged(p);                 // 触发前端编辑器内容刷新
       this.emit({ type: "editor.open", path: p });
@@ -545,6 +558,44 @@ ${taskSummary}
   /* 用户在审阅面板「拒绝」暂存改动 */
   rejectPatch(convId, paths) {
     return this.patch.reject(convId, paths);
+  }
+
+  /* ============================================================
+     ⑧ /undo 检查点：单步回滚
+     ============================================================ */
+  _snapshotBefore(p) {
+    const existed = this.files.exists(p);
+    const content = existed ? this.files.read(p) : null;
+    return { path: p, beforeExisted: existed, beforeContent: content };
+  }
+
+  _pushCheckpoint(entries, label) {
+    if (!entries || !entries.length) return;
+    this._undoStack.push({ label: label || "改动", entries, at: Date.now() });
+    if (this._undoStack.length > 50) this._undoStack.shift();   // 限制栈深，避免无限增长
+  }
+
+  _undoLast() {
+    if (!this._undoStack.length) return { ok: false, reason: "empty" };
+    const ck = this._undoStack.pop();
+    try {
+      for (const e of ck.entries) {
+        if (e.beforeExisted) {
+          this.files.write(e.path, e.beforeContent);       // 恢复改动前内容
+          codeIndex.queueFileUpdate(this.files.dir, e.path);
+        } else {
+          this.files.remove(e.path);                        // 该操作新建了文件 → 撤销即删除
+          codeIndex.removeFile(this.files.dir, e.path);
+        }
+        this.fileChanged(e.path);
+        this.emit({ type: "editor.open", path: e.path });
+      }
+      this.pushChanges(false);
+      return { ok: true, restored: ck.entries.map((e) => e.path), label: ck.label };
+    } catch (err) {
+      this._undoStack.push(ck);   // 还原失败，退还检查点以便重试
+      return { ok: false, reason: "restore-failed:" + (err && err.message || "未知错误") };
+    }
   }
 
   /* ---------------- 权限决策 ---------------- */
@@ -883,12 +934,13 @@ ${taskSummary}
         }
         const t = this.tool("edit", isNew ? "创建文件" : "编辑文件", args.path);
         try {
-          const before = isNew ? "" : this.files.read(args.path);
+          const snap = this._snapshotBefore(args.path);
+          this._pushCheckpoint([snap], (isNew ? "创建 " : "写入 ") + args.path);   // ⑧ /undo 检查点
           this.files.write(args.path, args.content);
           codeIndex.queueFileUpdate(this.files.dir, args.path); // 增量刷新语义索引
           this.fileChanged(args.path);
           this.pushChanges(false);
-          const st = require("./agent-base").diffStat(before, args.content);
+          const st = require("./agent-base").diffStat(isNew ? "" : snap.beforeContent, args.content);
           t.body((isNew ? "(新文件)\n" : "") + args.content.split("\n").slice(0, 30).join("\n"));
           t.done(true, "+" + st.add + " −" + st.del, false);
           this.emit({ type: "editor.open", path: args.path });
@@ -931,6 +983,7 @@ ${taskSummary}
         }
         const t = this.tool("edit", "删除文件", args.path);
         try {
+          this._pushCheckpoint([this._snapshotBefore(args.path)], "删除 " + args.path);   // ⑧ /undo 检查点
           this.files.remove(args.path);
           codeIndex.removeFile(this.files.dir, args.path); // 同步移除语义索引分块
           this.fileChanged(args.path);
@@ -1042,6 +1095,18 @@ ${taskSummary}
         t.body(txt.slice(0, 8000));
         t.done(true, "诊断 " + (d.scope === "file" ? d.items.length : d.errors + "/" + d.warnings));
         return txt;
+      }
+      case "undo": {
+        const t = this.tool("edit", "撤销上一步", "undo");
+        const r = this._undoLast();
+        if (!r.ok) {
+          if (r.reason === "empty") { t.done(false, "无可撤销", false); return "当前没有可撤销的改动（还没有执行过写入 / 编辑 / 删除操作，或进程重启后检查点已清空）。"; }
+          t.done(false, "撤销失败", false);
+          return "撤销失败：" + (r.reason || "未知错误");
+        }
+        t.body("已撤销：" + r.label + "\n恢复文件：" + r.restored.join(", "));
+        t.done(true, "已撤销 " + r.restored.length + " 个文件", false);
+        return "已撤销操作「" + r.label + "」，恢复 " + r.restored.length + " 个文件：" + r.restored.join(", ");
       }
       case "create_skill": {
         const t = this.tool("edit", "创建 Skill", args.name);

@@ -67,9 +67,7 @@
 **⑦ @提及 真正解析注入（架构 C11 / agent-design P0-1）→ 已落地**
 - 现状：`agent-llm.js:680` `_resolveMentions` 已解析 `@file:`/`@folder:` 并读取内容/列出目录注入「引用上下文」（2026-08-12 复核，原报告误判为缺口）。
 
-**⑧ 显式 /undo 检查点（架构 A4）**
-- 现状：有 `patch.reject`（撤销编辑）+ "还原工作区"（git discard，C8）+ 每会话 changes 快照。但缺 Cursor 式"每次应用前快照、`/undo` 单步回滚"的显式检查点。
-- 价值：中。
+**⑧ 显式 /undo 检查点（架构 A4）**：**✅ 已落地**。在 `agent-llm.js` 实现检查点栈 `_undoStack`：`write_file` / `delete_file` 改盘前、`applyPatch`（审阅接受后真正落盘）前，分别用 `_snapshotBefore` 记录受影响文件的「改动前内容 + 是否存在」。新增 `undo` 工具（已加入 `TOOLS`，并列入 `MUTATING_TOOLS` 故规划模式下禁用），调用 `_undoLast` 按 LIFO 单步回滚：被编辑/删除的文件分别还原内容 / 重建，新建的文件则删除；回滚同时刷新语义索引（queueFileUpdate/removeFile）与前端的 editor.open。栈深上限 50。验证脚本 `scripts/verify-undo.js` 覆盖编辑回滚、新建撤销(删除)、删除撤销(重建)、多文件补丁、空栈、连续 LIFO 全绿。注意：检查点为进程内内存态，进程重启后清空（符合"检查点"语义，未做持久化）。
 
 **⑨ allow/deny 规则可视化配置 UI（agent-design P0-2 收尾）✅ 已落地（复核为误判）**
 - 现状（2026-08-12 复核）：**其实已实现**。Agent 设置面板（`index.html` 权限模式区）提供 `agmMode` 模式下拉 + `agmAllow` / `agmDeny` 两个文本域（每行一条，支持子串或 `/正则/`，allow 在 semi 模式生效、deny 全模式硬拦截）；`settings.js` 的 `openAgentSettings` 读取、`agmSave` 写回 `{permissions:{mode,allow,deny}}`；后端 `config.js saveAgentSettings` 持久化、`agent-llm.js _approvalDecision/_matchRule` 按命令/文件路径 subject 匹配放行或拦截。即"命令级 + 文件级 allow/deny 可视化配置"已具备。
@@ -94,7 +92,7 @@
 1. ~~**① MCP（唯一剩余 P0）**：决定生态扩展性，工作量较大，单独排期。**→ 已完成。**~~
 2. ~~**⑥ 实时增量代码索引（P1）**：文件落盘即刷新语义索引，模型新写代码可立即检索。**→ 已完成。**~~
 3. ~~**⑨ allow/deny 可视化配置 UI（P1）**：权限三档 + 允许/拒绝清单，设置面板已具备，后端已执行。**→ 复核为误判，实际已完成。**~~
-4. **P1 真正剩余**：⑤ fast-apply（需小模型端点，依赖外部）、⑧ /undo 检查点（单步回滚）。
+4. **P1 真正剩余**：⑤ fast-apply（需小模型端点，依赖外部）。**⑧ /undo 检查点已于 2026-08-12 完成。**
 5. **P2 全部按需**（⑩ 多智能体编排、⑪ 工作流模板/goal、⑫ 会话结束沉淀记忆、⑬ LSP diagnostics 喂给 Agent），属"锦上添花"。**→ ⑬ 已完成（2026-08-12）。**
 
 > 说明：本报告最初为纯交叉核对（未改代码）；2026-08-12 已据此实现并验证 **③ 真实 Plan Mode 硬开关**、**① MCP 外部工具接入**、**⑥ 实时增量代码索引** 三项；并复核确认 **⑨ allow/deny UI** 早已落地（报告误判为缺口）。P0 缺口已全部清零，P1 中 ⑥ 与 ⑨ 均已完成。
