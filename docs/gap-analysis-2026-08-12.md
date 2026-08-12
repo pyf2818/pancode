@@ -83,7 +83,7 @@
 
 **⑫ 会话结束"沉淀为规则/记忆"轻量入口（agent-design P2-7）**：`create_skill` 是隐式沉淀，缺显式"本次会话有效决策/被拒操作是否存入记忆"的收尾提示。
 
-**⑬ LSP diagnostics 真正喂给 Agent（架构 E16 收尾）**：`lsp-bridge` 已接，但是否把诊断作为工具结果暴露给 agent（OpenCode 范式）需确认。
+**⑬ LSP diagnostics 真正喂给 Agent（架构 E16 收尾）**：**✅ 已落地**。后端 `lsp-bridge.js` 在代理 `textDocument/publishDiagnostics` 时把诊断存入 `LspManager._diagnostics`（按归一化绝对路径缓存，Windows/Unix 一致），并通过 `setActiveManager/getActiveManager` 单例访问器暴露给 Agent。新增只读工具 `get_diagnostics`：传 `path` 返回单文件诊断，不传返回整个工作区汇总（含错误/警告计数）。模型可据此自我修正编译/类型错误。纯只读、规划模式下也安全（不在 MUTATING_TOOLS 内）。验证脚本 `scripts/verify-lsp-diagnostics.js` 全绿。
 
 ---
 
@@ -95,6 +95,6 @@
 2. ~~**⑥ 实时增量代码索引（P1）**：文件落盘即刷新语义索引，模型新写代码可立即检索。**→ 已完成。**~~
 3. ~~**⑨ allow/deny 可视化配置 UI（P1）**：权限三档 + 允许/拒绝清单，设置面板已具备，后端已执行。**→ 复核为误判，实际已完成。**~~
 4. **P1 真正剩余**：⑤ fast-apply（需小模型端点，依赖外部）、⑧ /undo 检查点（单步回滚）。
-5. **P2 全部按需**（⑩ 多智能体编排、⑪ 工作流模板/goal、⑫ 会话结束沉淀记忆、⑬ LSP diagnostics 喂给 Agent），属"锦上添花"。
+5. **P2 全部按需**（⑩ 多智能体编排、⑪ 工作流模板/goal、⑫ 会话结束沉淀记忆、⑬ LSP diagnostics 喂给 Agent），属"锦上添花"。**→ ⑬ 已完成（2026-08-12）。**
 
 > 说明：本报告最初为纯交叉核对（未改代码）；2026-08-12 已据此实现并验证 **③ 真实 Plan Mode 硬开关**、**① MCP 外部工具接入**、**⑥ 实时增量代码索引** 三项；并复核确认 **⑨ allow/deny UI** 早已落地（报告误判为缺口）。P0 缺口已全部清零，P1 中 ⑥ 与 ⑨ 均已完成。

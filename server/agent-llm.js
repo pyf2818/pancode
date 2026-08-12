@@ -31,6 +31,7 @@ const { ProgressionStore } = require("./progression-store");
 const { AI_TERM_TAB } = require("./terminal");
 const { computeProgression } = require("./progression");
 const { getMcpManager } = require("./mcp");
+const { getActiveManager } = require("./lsp-bridge");
 const { ContextRetriever } = require("./context-retriever");
 const { EvolutionEngine } = require("./evolution");
 const { SkillStore } = require("./skill-store");
@@ -175,6 +176,22 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "get_diagnostics",
+      description: "读取当前工作区的 LSP 实时诊断（编译/类型/语法错误与警告），供你自我修正代码。" +
+        "不传 path 时返回整个工作区全部文件的诊断汇总（含错误/警告数量）；传 path 时只返回该文件的诊断。" +
+        "诊断反映的是当前已在编辑器打开、并由语言服务器分析过的文件；若返回为空，通常意味着相关文件尚未打开或语言服务器未启用（在设置中开启）。这是只读工具，不会改动任何文件。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "可选，相对工作区的文件路径，如 src/app.js；不传则返回整个工作区" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_skill",
       description: "将当前任务的解决方案沉淀为可复用的 Skill 模板，供未来类似问题自动匹配参考。",
       parameters: {
@@ -224,6 +241,18 @@ const TOOLS = [
 
 /* 规划模式（planMode）下禁止 Agent 调用的"会改动工作区 / 执行命令"工具 */
 const MUTATING_TOOLS = new Set(["write_file", "apply_edit", "delete_file", "run_command"]);
+
+/* 把一条 LSP Diagnostic 格式化为可读文本（供 get_diagnostics 工具返回） */
+function fmtDiag(x) {
+  const sev = x.severity === 1 ? "错误"
+    : x.severity === 2 ? "警告"
+    : x.severity === 3 ? "信息" : "提示";
+  const ln = (x.range && x.range.start) ? (x.range.start.line + 1) + ":" + (x.range.start.character + 1) : "?";
+  const src = x.source ? " [" + x.source + "]" : "";
+  let code = "";
+  if (x.code != null) code = " (" + (typeof x.code === "object" && x.code.value != null ? x.code.value : x.code) + ")";
+  return "- [" + sev + "] " + ln + src + code + " " + x.message;
+}
 
 /* 运行环境提示：注入 SYSTEM_PROMPT，避免 agent 用错平台的 shell 语法
    （Windows cmd 无 `&` 后台符 / grep / cat，用 start /B、findstr、type；路径分隔符为 \） */
@@ -987,6 +1016,31 @@ ${taskSummary}
           : "无相关记忆";
         t.body(txt);
         t.done(true, results.length + " 条记忆");
+        return txt;
+      }
+      case "get_diagnostics": {
+        const t = this.tool("read", "读取 LSP 诊断", args.path || "全部文件");
+        const mgr = getActiveManager();
+        if (!mgr) { t.done(false, "LSP 未启用"); return "当前未启用 LSP（在设置中开启语言服务器）。"; }
+        const d = mgr.getDiagnostics(this.files.dir, args.path);
+        let txt;
+        if (d.scope === "file") {
+          if (!d.items.length) txt = "文件 " + d.path + "：无 LSP 诊断（无错误/警告）。";
+          else txt = "文件 " + d.path + " 的 LSP 诊断（" + d.items.length + " 条）：\n" + d.items.map(fmtDiag).join("\n");
+        } else {
+          if (!d.files.length) {
+            txt = "当前工作区没有 LSP 诊断（可能相关文件尚未在编辑器中打开，或语言服务器未启用）。";
+          } else {
+            txt = "当前工作区 LSP 诊断：共 " + d.errors + " 个错误、" + d.warnings + " 个警告，分布在 " + d.files.length + " 个文件：\n" +
+              d.files.map((f) => {
+                const head = "■ " + f.path + "（" + (f.language || "?") + "，" + f.items.length + " 条）";
+                if (!f.items.length) return head + "：无";
+                return head + "\n" + f.items.map((x) => "    " + fmtDiag(x)).join("\n");
+              }).join("\n");
+          }
+        }
+        t.body(txt.slice(0, 8000));
+        t.done(true, "诊断 " + (d.scope === "file" ? d.items.length : d.errors + "/" + d.warnings));
         return txt;
       }
       case "create_skill": {

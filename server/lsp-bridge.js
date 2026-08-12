@@ -15,7 +15,13 @@
 "use strict";
 const { spawn } = require("child_process");
 const { WebSocketServer } = require("ws");
+const path = require("path");
 const auth = require("./auth");
+
+/* ---------- 单例访问器：让 Agent（server/agent-llm.js）能拿到与主进程同一个 LspManager 实例 ---------- */
+let _activeManager = null;
+function setActiveManager(m) { _activeManager = m; }
+function getActiveManager() { return _activeManager; }
 
 /* ---------- LSP stdio 分帧解析（Content-Length: N\r\n\r\n{json}） ---------- */
 class LspParser {
@@ -61,6 +67,9 @@ class LspManager {
     this.servers = Object.assign({}, DEFAULT_SERVERS, (this.cfg.lsp && this.cfg.lsp.servers) || {});
     this.wss = new WebSocketServer({ noServer: true });
     this.wss.on("connection", (ws, req) => this._onConnection(ws, req));
+    // 实时诊断缓存：归一化绝对路径 -> { abs, language, uri, items, at }
+    // 由后端在代理 textDocument/publishDiagnostics 时填充，Agent 通过 getDiagnostics 查询
+    this._diagnostics = new Map();
   }
 
   /* 给前端的能力清单（哪些语言有 LSP 可用） */
@@ -73,6 +82,70 @@ class LspManager {
   }
 
   createWss() { return this.wss; }
+
+  /* ============================================================
+     诊断缓存与查询（供 Agent get_diagnostics 工具 / 前端调试用）
+     ============================================================ */
+
+  /* 归一化路径：去 file:// 前缀、解码、统一为正斜杠、去首尾斜杠、盘符小写。
+     这样 Windows (E:\x) 与 LSP uri (file:///E:/x) 能可靠地做前缀匹配。 */
+  _normPath(p) {
+    if (!p) return "";
+    let s = decodeURIComponent(p);
+    s = s.replace(/\\/g, "/");
+    s = s.replace(/^\/+/, "");
+    s = s.replace(/\/+$/, "");
+    s = s.replace(/^[a-zA-Z]:/, (m) => m.toLowerCase());
+    return s.toLowerCase();
+  }
+
+  _absFromUri(uri) {
+    if (!uri) return null;
+    if (uri.startsWith("file://")) return decodeURIComponent(uri.slice("file://".length));
+    return null;
+  }
+
+  _storeDiagnostics(lang, uri, items) {
+    const originalAbs = this._absFromUri(uri);
+    if (!originalAbs) return;
+    const norm = this._normPath(originalAbs);
+    this._diagnostics.set(norm, { abs: originalAbs, language: lang, uri, items, at: Date.now() });
+  }
+
+  _relFrom(ws, originalAbs) {
+    const w = this._normPath(ws || "");
+    const lower = this._normPath(originalAbs);
+    if (w && lower.startsWith(w + "/")) return lower.slice(w.length + 1);
+    return lower;
+  }
+
+  /* 供 Agent 查询：
+     - relPath 给定时返回单个文件诊断（items 可能为空数组 = 该文件无错误）
+     - 不传 relPath 时返回当前工作区全部诊断（按文件聚合，含错误/警告计数） */
+  getDiagnostics(workspaceDir, relPath) {
+    if (relPath) {
+      const originalAbs = path.resolve(workspaceDir || "", relPath);
+      const norm = this._normPath(originalAbs);
+      const e = this._diagnostics.get(norm);
+      return { ok: true, scope: "file", path: relPath, language: e ? e.language : null, items: e ? e.items : [] };
+    }
+    const w = this._normPath(workspaceDir || "");
+    const out = [];
+    for (const [, e] of this._diagnostics) {
+      if (w && !this._normPath(e.abs).startsWith(w + "/")) continue;
+      out.push({ path: this._relFrom(workspaceDir || "", e.abs), language: e.language, items: e.items, at: e.at });
+    }
+    out.sort((a, b) => a.path.localeCompare(b.path));
+    let errors = 0, warnings = 0;
+    for (const f of out) for (const d of f.items) {
+      if (d.severity === 1) errors++;
+      else if (d.severity === 2) warnings++;
+    }
+    return { ok: true, scope: "workspace", errors, warnings, files: out };
+  }
+
+  /* 清空诊断缓存（如工作区卸载时调用，Agent 侧一般不会用到） */
+  clearDiagnostics() { this._diagnostics.clear(); }
 
   handleUpgrade(req, socket, head) {
     const u = new URL(req.url, "http://localhost");
@@ -112,6 +185,10 @@ class LspManager {
 
     const parser = new LspParser();
     parser.onMessage = (msg) => {
+      // 后端顺手缓存诊断：供 Agent 的 get_diagnostics 工具读取，模型据此自我修正编译/类型错误
+      if (msg && msg.method === "textDocument/publishDiagnostics" && msg.params && msg.params.uri) {
+        this._storeDiagnostics(lang, msg.params.uri, msg.params.diagnostics || []);
+      }
       // 把语言服务器发来的 LSP 消息原样转发给前端（前端负责解释）
       send({ type: "lsp.msg", language: lang, msg });
     };
@@ -148,4 +225,4 @@ class LspManager {
   }
 }
 
-module.exports = { LspManager, DEFAULT_SERVERS, encodeLsp, LspParser };
+module.exports = { LspManager, DEFAULT_SERVERS, encodeLsp, LspParser, setActiveManager, getActiveManager };

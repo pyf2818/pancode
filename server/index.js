@@ -19,7 +19,7 @@ const { TerminalLayer } = require("./terminal");
 const { ping } = require("./llm");
 const { LlmAgent } = require("./agent-llm");
 const { DemoAgent } = require("./agent-demo");
-const { LspManager } = require("./lsp-bridge");
+const { LspManager, setActiveManager } = require("./lsp-bridge");
 const codeIndex = require("./code-index");
 const agents = require("./agents");
 const { SoulStore } = require("./soul-store");
@@ -724,6 +724,7 @@ app.post("/api/agents/paths", (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const lspManager = new LspManager(cfg);
+setActiveManager(lspManager);   // 让 Agent 的 get_diagnostics 工具能访问同一实例的诊断缓存
 
 /* A1：业务 WS 仅接受登录后的 userToken（登录闸门）。AUTH_TOKEN 仅用于本机 bootstrap，不再用于 WS */
 server.on("upgrade", (req, socket, head) => {
