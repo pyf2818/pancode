@@ -247,6 +247,23 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "agent",
+      description: "派发一个聚焦子智能体去独立完成一项子任务（多智能体编排）。子智能体在**同一工作区**内拥有读/搜/写/改/运行命令的能力，但禁止再派生子智能体、禁止创建计划或撤销。" +
+        "适合把大任务拆给子智能体去实现某模块或并行探索，最后它会返回一份中文结果汇报。请在有明确、可独立交付的子任务时使用；需要你亲自逐步掌控时不要用。" +
+        "task 用一句话描述子任务目标（可含关键文件路径/约束）。",
+      parameters: {
+        type: "object",
+        properties: {
+          task: { type: "string", description: "子任务目标，如『为 src/util.js 补充 parseQuery 函数的单元测试』" },
+          subagent_type: { type: "string", description: "可选：general/explorer/coder，默认 general" },
+        },
+        required: ["task"],
+      },
+    },
+  },
 ];
 
 /* 规划模式（planMode）下禁止 Agent 调用的"会改动工作区 / 执行命令"工具 */
@@ -596,6 +613,69 @@ ${taskSummary}
       this._undoStack.push(ck);   // 还原失败，退还检查点以便重试
       return { ok: false, reason: "restore-failed:" + (err && err.message || "未知错误") };
     }
+  }
+
+  /* ============================================================
+     ⑩ 多智能体编排：spawn 一个聚焦子智能体（agent 工具）
+     ============================================================ */
+  /* 包装 chatStream 为实例方法，便于在测试中注入假实现验证逻辑 */
+  _chatStream(messages, tools, hooks) {
+    return chatStream(this.cfg.llm, messages, tools, hooks);
+  }
+
+  /* 运行一个子智能体：在父工作区内读/搜/写/改/运行命令，完成一项聚焦子任务并返回结果文本。
+     - 禁止递归 agent、禁止 plan/undo，工具集收敛为只读+改动类
+     - UI 静默：子智能体的工具时间线不刷到主界面（仍真实改动工作区并刷新编辑器）
+     - 轮数上限 maxRounds，避免失控 */
+  async runSubAgent(task, opts) {
+    opts = opts || {};
+    const type = opts.subagent_type || "general";
+    const SUB_PROMPT = "你是一个子智能体（类型：" + type + "），在父智能体的同一工作区内执行一项具体子任务。" +
+      "要求：目标明确、独立完成，不要向用户追问；不要创建计划、不要调用 plan/undo 类工具；" +
+      "优先用 read_file / search_code / search_symbol / repo_map 理解代码，再动手写或改。" +
+      "完成后用简洁中文汇报你做了什么、结果如何。你拥有读/搜/写/改/运行命令的权限。";
+    // 子智能体工具白名单：排除会自我嵌套或污染主流程的工具
+    const BLOCK = new Set(["agent", "create_plan", "update_plan", "undo"]);
+    const subTools = TOOLS.filter((t) => !BLOCK.has(t.function.name));
+    const messages = [
+      { role: "system", content: SUB_PROMPT },
+      { role: "user", content: task },
+    ];
+    const maxRounds = Math.min(opts.maxRounds || 12, 24);
+    // 静默主界面 UI：临时替换为 no-op 句柄，结束后复原
+    const saved = { tool: this.tool, thinkStart: this.thinkStart, msgStart: this.msgStart, state: this.state, say: this.say };
+    const dummy = { body() {}, done() {}, end() {}, delta() {}, start() {} };
+    this.tool = () => dummy;
+    this.thinkStart = () => dummy;
+    this.msgStart = () => dummy;
+    this.state = () => {};
+    this.say = async () => {};
+    let finalText = "";
+    try {
+      for (let round = 0; round < maxRounds; round++) {
+        const r = await this._chatStream(messages, subTools, {});
+        if (r.content) finalText = r.content;
+        if (!r.toolCalls || !r.toolCalls.length) break;
+        messages.push({
+          role: "assistant",
+          content: r.content || "",
+          tool_calls: r.toolCalls.map((tc, i) => ({
+            id: tc.id || "sub_" + round + "_" + i,
+            type: "function",
+            function: { name: tc.name, arguments: JSON.stringify(tc.args || {}) },
+          })),
+        });
+        const toolMsgs = [];
+        for (const tc of r.toolCalls) {
+          const res = await this.execTool(tc.name, tc.args || {});
+          toolMsgs.push({ role: "tool", tool_call_id: tc.id || "sub_" + round + "_0", content: String(res) });
+        }
+        messages.push(...toolMsgs);
+      }
+    } finally {
+      Object.assign(this, saved);
+    }
+    return finalText;
   }
 
   /* ---------------- 权限决策 ---------------- */
@@ -1107,6 +1187,21 @@ ${taskSummary}
         t.body("已撤销：" + r.label + "\n恢复文件：" + r.restored.join(", "));
         t.done(true, "已撤销 " + r.restored.length + " 个文件", false);
         return "已撤销操作「" + r.label + "」，恢复 " + r.restored.length + " 个文件：" + r.restored.join(", ");
+      }
+      case "agent": {
+        const t = this.tool("agent", "子智能体", args.task);
+        this.state(true, "子智能体执行中");
+        try {
+          const result = await this.runSubAgent(args.task, { subagent_type: args.subagent_type });
+          t.body((result || "(子智能体无返回)").slice(0, 6000));
+          t.done(true, "子智能体完成");
+          this.state(false, "AI 思考中");
+          return "子智能体已完成子任务「" + args.task + "」，汇报如下：\n\n" + (result || "(无返回)");
+        } catch (e) {
+          t.done(false, "子智能体失败");
+          this.state(false, "AI 思考中");
+          return "子智能体执行失败：" + e.message;
+        }
       }
       case "create_skill": {
         const t = this.tool("edit", "创建 Skill", args.name);
