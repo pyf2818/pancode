@@ -1500,13 +1500,17 @@ function handleEvent(ev) {
       state.round = ev.round || 0;
       state.project = ev.project || "workspace";
       /* 工作区切换检测：路径变化时按新工作区重载对话（隔离存储） */
-      if (ev.workspace && ev.workspace !== state.workspace) {
+      if (ev.wsId) _wsId = ev.wsId;     // 稳定工作区 ID：消除刷新前后存储 key 不一致（聊天记录丢失根因）
+      if (ev.workspace) {
+        const wsChanged = ev.workspace !== state.workspace;
         const prevWs = state.workspace;
         state.workspace = ev.workspace;
-        lspDisposeAll();                 // 工作区变了，file:// 根随之改变，旧 LSP 会话失效
-        if (prevWs) reloadConvForWs();   // 非首次：切换工作区需重载会话列表与 active
-      } else if (ev.workspace) {
-        state.workspace = ev.workspace;
+        if (wsChanged && prevWs) {
+          lspDisposeAll();               // 工作区变了，file:// 根随之改变，旧 LSP 会话失效
+          reloadConvForWs();             // 非首次：切换工作区需重载会话列表与 active（已用稳定 key）
+        } else {
+          restoreConv();                 // 首次或工作区未变（如刷新）：用稳定 key 恢复会话
+        }
       }
       $("projName").textContent = state.project.toUpperCase();
       document.querySelector(".tb-project").textContent = state.project;
@@ -2102,7 +2106,9 @@ function bindInput() {
    用工作区路径做哈希后缀，localStorage 里保留各项目独立的一份。 */
 const CONV_LS_BASE = "cw-conv-v1";
 const CONV_ACTIVE_BASE = "cw-conv-active";
+let _wsId = null;   // 服务端 hello 下发的稳定工作区 ID（绝对路径哈希）；优先用于会话存储 key，确保刷新前后一致（修复相对/绝对路径导致聊天记录丢失）
 function _wsHash() {
+  if (_wsId) return _wsId;
   const ws = state.workspace || "default";
   let h = 0;
   for (let i = 0; i < ws.length; i++) h = (h * 31 + ws.charCodeAt(i)) >>> 0;
@@ -2504,7 +2510,6 @@ $("hpRefresh").onclick = () => renderPreview();
 initResizers();
 replaceIcons();
 mountShared();
-restoreConv();
 refreshAgents();
 initConvObserver();
 bindInput();

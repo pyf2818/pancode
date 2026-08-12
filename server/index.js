@@ -96,6 +96,8 @@ function snapshotFiles() {
   return out;
 }
 
+function _wsIdHash(p) { let h = 0; for (let i = 0; i < p.length; i++) h = (h * 31 + p.charCodeAt(i)) >>> 0; return h.toString(36); }
+
 function helloPayload() {
   return {
     type: "hello",
@@ -107,6 +109,7 @@ function helloPayload() {
     lsp: lspManager.capabilities(),
     git: git.info(),
     project: path.basename(WS_DIR),
+    wsId: _wsIdHash(WS_DIR),
     workspace: WS_DIR,
     truncated: !!files.truncated,
   };
