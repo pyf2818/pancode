@@ -780,12 +780,119 @@ function renderBreadcrumb() {
 
 /* ---------------- 全文搜索（服务端真实搜索） ---------------- */
 let searchTimer = null;
+let searchMode = "kw";   // kw=关键词(WS grep) | sem=语义(本地向量/BM25 索引)
+let semBuilding = false;
 $("searchInput").addEventListener("input", function () {
   clearTimeout(searchTimer);
   const q = this.value.trim();
   if (q.length < 2) { $("searchResults").innerHTML = ""; return; }
-  searchTimer = setTimeout(() => send({ type: "search", query: q }), 200);
+  searchTimer = setTimeout(() => {
+    if (searchMode === "sem") semanticSearch(q);
+    else send({ type: "search", query: q });
+  }, 200);
 });
+
+/* ---------------- 语义代码检索（本地向量/BM25 索引） ---------------- */
+function switchSearchMode(mode) {
+  searchMode = mode;
+  $("searchModeKw").classList.toggle("active", mode === "kw");
+  $("searchModeSem").classList.toggle("active", mode === "sem");
+  $("semBar").style.display = mode === "sem" ? "flex" : "none";
+  $("searchInput").placeholder = mode === "sem"
+    ? "用自然语言描述要找的代码，如：LSP 诊断是怎么推送的"
+    : "在所有文件中搜索…";
+  $("searchResults").innerHTML = "";
+  if (mode === "sem") { refreshIndexStatus(); setTimeout(() => $("searchInput").focus(), 30); }
+}
+
+async function refreshIndexStatus() {
+  try {
+    const r = await fetch("/api/index/status").then((x) => x.json());
+    if (r && r.built) {
+      $("semStatus").textContent = "已构建 · " + (r.meta.count || 0) + " 片段"
+        + (r.meta.useVector ? " · 向量" : " · BM25")
+        + (r.meta.builtAt ? " · " + new Date(r.meta.builtAt).toLocaleTimeString() : "");
+      const b = $("btnBuildIndex"); if (b) { b.querySelector("span").textContent = "重建索引"; b.disabled = false; }
+    } else {
+      $("semStatus").textContent = "索引未构建，点击构建";
+      const b = $("btnBuildIndex"); if (b) { b.querySelector("span").textContent = "构建索引"; b.disabled = false; }
+    }
+  } catch (e) { $("semStatus").textContent = ""; }
+}
+
+async function buildCodeIndex() {
+  if (semBuilding) return;
+  semBuilding = true;
+  const b = $("btnBuildIndex"); if (b) b.disabled = true;
+  $("semStatus").textContent = "构建中…";
+  try {
+    const r = await fetch("/api/index/build", { method: "POST" }).then((x) => x.json());
+    if (r && r.ok) {
+      $("semStatus").textContent = "已构建 · " + (r.count || 0) + " 片段" + (r.useVector ? " · 向量" : " · BM25");
+      if (b) b.querySelector("span").textContent = "重建索引";
+    } else {
+      $("semStatus").textContent = "构建失败：" + ((r && r.error) || "未知");
+    }
+  } catch (e) {
+    $("semStatus").textContent = "构建失败：" + e.message;
+  } finally {
+    semBuilding = false;
+    if (b) b.disabled = false;
+  }
+}
+
+async function semanticSearch(q) {
+  try {
+    const r = await fetch("/api/index/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: q, k: 12 }),
+    }).then((x) => x.json());
+    if (!r || !r.ok) {
+      $("searchResults").innerHTML = '<div class="sr-count">' + esc((r && r.reason) || "检索失败，请先构建索引") + "</div>";
+      return;
+    }
+    renderSemanticResults(r);
+  } catch (e) {
+    $("searchResults").innerHTML = '<div class="sr-count">检索失败：' + esc(e.message) + "</div>";
+  }
+}
+
+function renderSemanticResults(r) {
+  const box = $("searchResults");
+  box.innerHTML = "";
+  const cnt = document.createElement("div");
+  cnt.className = "sr-count";
+  cnt.textContent = "语义检索 · " + (r.mode || "bm25") + " 模式 · " + (r.count || 0) + " 个结果";
+  box.appendChild(cnt);
+  (r.results || []).forEach((res) => {
+    const item = document.createElement("div");
+    item.className = "sem-result";
+    const head = document.createElement("div");
+    head.className = "sem-head";
+    head.innerHTML = fileIco(res.path)
+      + ' <span class="sem-path">' + esc(res.path) + "</span>"
+      + ' <span class="sem-range">' + res.startLine + "-" + res.endLine + "</span>"
+      + (res.score != null ? ' <span class="sem-score">' + res.score + "</span>" : "");
+    head.onclick = () => openFile(res.path, res.startLine);
+    item.appendChild(head);
+    if (res.title) {
+      const t = document.createElement("div");
+      t.className = "sem-title"; t.textContent = res.title;
+      item.appendChild(t);
+    }
+    const snip = document.createElement("pre");
+    snip.className = "sem-snippet";
+    snip.textContent = res.snippet;
+    snip.onclick = () => openFile(res.path, res.startLine);
+    item.appendChild(snip);
+    box.appendChild(item);
+  });
+}
+
+$("searchModeKw").onclick = () => switchSearchMode("kw");
+$("searchModeSem").onclick = () => switchSearchMode("sem");
+$("btnBuildIndex").onclick = buildCodeIndex;
 
 function renderSearchResults(query, results) {
   const box = $("searchResults");
@@ -835,7 +942,7 @@ document.querySelectorAll(".ab-btn").forEach((btn) => {
     ["explorer", "search", "scm", "skills"].forEach((name) => {
       $("view-" + name).style.display = name === v ? "block" : "none";
     });
-    if (v === "search") setTimeout(() => $("searchInput").focus(), 50);
+    if (v === "search") { setTimeout(() => $("searchInput").focus(), 50); if (searchMode === "sem") refreshIndexStatus(); }
     if (v === "skills") onSkillsViewActive();
   };
 });

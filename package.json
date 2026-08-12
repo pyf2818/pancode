@@ -16,6 +16,8 @@
     "test:code-index": "node scripts/test-code-index.js",
     "test:patch": "node scripts/test-patch.js",
     "verify:ui": "node scripts/verify-ui.js",
+    "index:build": "node scripts/index-build.js",
+    "verify:search": "node scripts/verify-search.js",
     "test": "npm run test:verify && node scripts/smoke-test.js && node scripts/fileops-test.js && npm run test:integration && npm run test:patch && npm run test:lsp && npm run test:code-index"
   },
   "build": {

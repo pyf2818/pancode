@@ -67,7 +67,15 @@
     </div>
     <div class="side-view" id="view-search" style="display:none">
       <div class="side-title" data-i18n="search">搜索</div>
+      <div class="search-mode">
+        <button id="searchModeKw" class="sm-btn active" data-i18n="kwSearch">关键词</button>
+        <button id="searchModeSem" class="sm-btn" data-i18n="semSearch">语义</button>
+      </div>
       <div class="search-box"><input id="searchInput" type="text" placeholder="在所有文件中搜索…" spellcheck="false"></div>
+      <div id="semBar" class="sem-bar" style="display:none">
+        <button id="btnBuildIndex" class="sem-build"><i data-ico="memory"></i><span data-i18n="buildIndex">构建索引</span></button>
+        <span id="semStatus" class="sem-status"></span>
+      </div>
       <div id="searchResults"></div>
     </div>
     <div class="side-view" id="view-scm" style="display:none">

@@ -102,29 +102,44 @@ function cosine(a, b) {
 }
 
 /* ---------- BM25（兜底检索） ---------- */
-function tokenize(s) { return (s || "").toLowerCase().match(/[a-z0-9_$]+/g) || []; }
+/* 分词：先拆 camelCase / snake_case / 路径分隔符，再整体小写。
+   这样 BM25 兜底检索能命中驼峰标识符（如 WebSocketServer -> web/socket/server），
+   查询 “server” 也能命中 “WebSocketServer”。保留原整词与拆分碎片两类 token。 */
+function tokenize(s) {
+  if (!s) return [];
+  const norm = String(s)
+    .replace(/[_\.\/\\]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  return norm.toLowerCase().match(/[a-z0-9_$]+/g) || [];
+}
 function buildBm25(chunks) {
   const N = chunks.length;
-  const df = {};
+  // 注意：必须用 Object.create(null) 而非 {}，否则普通对象从 Object.prototype
+  // 继承的 "constructor" 键会与代码中的 constructor 标识符冲突——读到的是
+  // Object 构造函数，Object + 1 变成字符串，污染 len 累加，使 avgdl = NaN，
+  // 进而导致所有 BM25 得分变 NaN 被过滤掉、检索永远返回 0 结果。
+  const df = Object.create(null);
   chunks.forEach((c) => { const tset = new Set(tokenize(c.text)); tset.forEach((t) => (df[t] = (df[t] || 0) + 1)); });
   const docs = chunks.map((c) => {
-    const f = {};
+    const f = Object.create(null);
     tokenize(c.text).forEach((t) => (f[t] = (f[t] || 0) + 1));
     const len = Object.values(f).reduce((a, b) => a + b, 0);
     return { tf: f, len };
   });
-  const avgdl = docs.reduce((s, d) => s + d.len, 0) / Math.max(1, N);
+  const sumLens = docs.reduce((s, d) => s + d.len, 0);
+  const avgdl = sumLens / Math.max(1, N);
   return { N, df, docs, avgdl };
 }
 function bm25Score(qtokens, doc, idx) {
   const k = 1.5, b = 0.75;
+  const adl = idx.avgdl > 0 ? idx.avgdl : 1; // 防御：avgdl 非正时兜底，避免 0/0 = NaN 污染整次检索
   let score = 0;
   for (const q of qtokens) {
     if (!idx.df[q]) continue;
     const f = doc.tf[q] || 0;
     if (!f) continue;
     const idf = Math.log(1 + (idx.N - idx.df[q] + 0.5) / (idx.df[q] + 0.5));
-    score += idf * (f * (k + 1)) / (f + k * (1 - b + (b * doc.len) / idx.avgdl));
+    score += idf * (f * (k + 1)) / (f + k * (1 - b + (b * doc.len) / adl));
   }
   return score;
 }
