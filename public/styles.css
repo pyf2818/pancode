@@ -668,6 +668,49 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 #diffClose:hover{background:var(--bg4);color:#fff}
 #diffHost{flex:1;min-height:0}
 
+/* ============ 补丁审阅面板 ============ */
+#patchModal{position:fixed;inset:0;background:#000000aa;z-index:var(--z-modal);display:flex;align-items:center;justify-content:center}
+.patch-box{width:90vw;height:84vh;background:var(--bg);border:1px solid #4a4a4a;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px #000c}
+.patch-head{height:48px;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--bg3);flex-shrink:0}
+.patch-title{font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.patch-title .ico{color:var(--blue)}
+.patch-count{font-size:11px;color:var(--text-dim);font-family:var(--mono)}
+.patch-legend{font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:5px;margin-left:4px}
+.patch-legend i{width:10px;height:10px;display:inline-block;border-radius:2px}
+.patch-actions{margin-left:auto;display:flex;gap:8px}
+.patch-btn{font-size:12px;padding:5px 12px;border-radius:6px;display:inline-flex;align-items:center;gap:5px;color:var(--text);border:1px solid var(--border);background:var(--bg4);cursor:pointer}
+.patch-btn .ico{width:12px;height:12px}
+.patch-btn:hover{filter:brightness(1.12)}
+.patch-btn.ok{background:var(--ok);color:#04210f;border-color:transparent}
+.patch-btn.danger{background:transparent;border-color:#e5484d66;color:var(--err)}
+.patch-btn.danger:hover{background:#e5484d18}
+.patch-body{flex:1;min-height:0;display:flex}
+.patch-files{width:260px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;background:var(--bg2);padding:8px}
+.patch-file{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;cursor:pointer;font-size:12.5px;font-family:var(--mono);border:1px solid transparent}
+.patch-file:hover{background:var(--bg4)}
+.patch-file.active{background:var(--active);border-color:var(--accent)}
+.patch-file .pf-stat{margin-left:auto;font-size:11px;flex-shrink:0;font-family:var(--mono)}
+.patch-file .pf-act{display:flex;gap:4px;flex-shrink:0}
+.patch-file .pf-btn{padding:2px 7px;border-radius:5px;font-size:11px;cursor:pointer;border:1px solid var(--border);background:var(--bg3);color:var(--text)}
+.patch-file .pf-btn.acc{background:var(--ok);color:#04210f;border-color:transparent}
+.patch-file .pf-btn.rej{color:var(--err);border-color:#e5484d55}
+.patch-file .pf-btn:hover{filter:brightness(1.1)}
+.patch-file.resolved{opacity:.5;text-decoration:line-through}
+.patch-diff-wrap{flex:1;min-height:0;display:flex;flex-direction:column}
+.patch-hunk-bar{height:34px;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0}
+.phb-title{font-size:12px;color:var(--text-dim)}
+.patch-hunk-bar .patch-btn{padding:3px 10px;margin-left:auto}
+.patch-hunks{max-height:34%;overflow-y:auto;background:var(--bg);border-bottom:1px solid var(--border);flex-shrink:0;padding:4px 0}
+.phk{display:flex;align-items:flex-start;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border)}
+.phk:last-child{border-bottom:none}
+.phk-idx{font-size:11px;color:var(--text-dim);font-family:var(--mono);flex-shrink:0;width:22px;padding-top:2px}
+.phk-snippet{flex:1;margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.5;white-space:pre-wrap;word-break:break-all;max-height:96px;overflow:hidden;color:var(--text-dim)}
+.phk-snippet .dl{color:var(--err);display:block}
+.phk-snippet .al{color:var(--ok);display:block}
+.phk-toggle{display:flex;align-items:center;gap:5px;font-size:12px;flex-shrink:0;cursor:pointer;user-select:none;padding-top:2px}
+.phk-toggle input{accent-color:var(--ok);width:14px;height:14px;cursor:pointer}
+#patchHost{flex:1;min-height:0}
+
 /* 打字光标 */
 .type-caret::after{content:"▍";color:var(--blue);animation:blink 1s step-end infinite}
 @keyframes blink{50%{opacity:0}}

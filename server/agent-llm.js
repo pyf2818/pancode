@@ -33,6 +33,7 @@ const { EvolutionEngine } = require("./evolution");
 const { SkillStore } = require("./skill-store");
 const { PlanStore } = require("./plan-store");
 const safeWrite = require("./safe-write");
+const { PatchEngine } = require("./patch");
 
 /* C6 会话持久化参数 */
 const CONV_MAX = 20;          // 最多保留 20 个对话（与内存 LRU 上限一致）
@@ -79,6 +80,27 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "apply_edit",
+      description: "以「搜索/替换片段」方式修改已存在文件（首选编辑方式，比整文件覆盖更精准、更安全）。" +
+        "提供 path + edits（数组，每项含 old_string 与 new_string），或 path + old_string + new_string 做单处修改。" +
+        "old_string 必须是文件中「逐字且唯一」的片段；新建/重写整个文件时 old_string 留空。也可以用 patch 字段传入 Aider 风格的多文件 search/replace 文本块。" +
+        "改动会先进入「审阅面板」，用户在 diff 视图逐文件接受/拒绝后才落盘，无需你再次确认。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "要修改的文件相对路径（与 edits 或 old_string/new_string 搭配；多文件时用 patch）" },
+          edits: { type: "array", items: { type: "object", properties: { old_string: { type: "string" }, new_string: { type: "string" } } }, description: "多处修改：每项 old_string→new_string" },
+          old_string: { type: "string", description: "单处修改：被替换的原片段（留空表示整文件新建/重写）" },
+          new_string: { type: "string", description: "单处修改：替换后的新片段" },
+          patch: { type: "string", description: "Aider 风格多文件 search/replace 文本块（优先级高于上面的字段）" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "delete_file",
       description: "删除指定文件（危险操作，需权限确认）。",
       parameters: {
@@ -104,7 +126,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_command",
-      description: "在工作区根目录执行一条 shell 命令（如运行测试 / 构建）。危险命令会被安全沙箱拦截。",
+      description: "在工作区根目录执行一条 shell 命令（如运行测试 / 构建）。危险命令会被安全沙箱拦截。命令语法必须符合当前运行环境" + (process.platform === "win32" ? "（Windows：后台启动用 `start /B`，`&` 只是分隔符不是后台；用 findstr/type/dir 替代 grep/cat/ls）" : "（bash）") + "。",
       parameters: {
         type: "object",
         properties: { command: { type: "string", description: "要执行的命令，如 node tests/run.js" } },
@@ -197,17 +219,26 @@ const TOOLS = [
   },
 ];
 
+/* 运行环境提示：注入 SYSTEM_PROMPT，避免 agent 用错平台的 shell 语法
+   （Windows cmd 无 `&` 后台符 / grep / cat，用 start /B、findstr、type；路径分隔符为 \） */
+const PLATFORM_HINT = process.platform === "win32"
+  ? "【运行环境】当前是 Windows，shell = cmd.exe。命令必须用 Windows 语法：后台启动用 `start /B`（`&` 在 cmd 里只是分隔符不是后台）；没有 `grep`/`cat`/`ls`/`&&`，用 `findstr`/`type`/`dir`/`&`；路径用 `\\`；跨平台命令（node/npm/git 等）可直接用。运行 JS 用 `node`。"
+  : "【运行环境】当前是 Linux/macOS，shell = bash。命令用 POSIX 语法（`&` 后台、`grep`/`cat`/`ls` 均可用）。";
+
 const SYSTEM_PROMPT = `你是 pancode Agent，一个在真实项目工作区中自主编程的 AI。
+${PLATFORM_HINT}
 
 工作准则：
-1. 动手前先用 list_files / read_file 了解项目，不要凭空假设文件内容。
-2. 修改代码用 write_file 写入完整文件内容（不是补丁）。
+1. 动手前先用 list_files / read_file / repo_map 了解项目，不要凭空假设文件内容。
+2. 修改「已存在」的文件一律用 apply_edit（传递 path + edits 做片段替换，old_string 必须逐字且唯一；整文件新建/重写时 old_string 留空）。新建一个此前不存在的文件才用 write_file。
+   改完同一个文件后若要再改，继续追加 edits 到同一 apply_edit 调用，不要用 write_file 整文件覆盖。
 3. 每次有意义的修改之后，必须用 run_command 运行测试或程序验证，失败就继续修复，直到通过或确认无法解决。
 4. 写文件 / 删除文件 / 执行命令等操作会由系统代为向用户请求确认（取决于当前权限模式），你正常调用工具即可，无需自行询问用户；若被拒绝，换更安全的方案或停止。
 5. 全程用简体中文回复。最终答复请总结：做了什么改动、如何验证的、结果如何。
 6. run_command 的命令在工作区根目录执行；运行 JS 用 node，禁止执行危险命令（rm -rf /、格式化磁盘等）。
 7. 面对复杂任务（涉及 3 个以上步骤），先用 create_plan 拆解为子任务计划，然后用 update_plan 逐个标记进度，用户会在侧边栏实时看到进展。
 8. 上下文中如果出现【相关 Skill】，说明系统已匹配到可参考的解决方案模板，请参考其中的步骤和验证方法来指导你的工作。
+9. 执行 run_command 时，务必先确认命令语法符合当前【运行环境】——Windows 下后台启动用 start /B，不要用 `&` 结尾试图后台化；没有 grep/cat/ls 就用 findstr/type/dir。
 
 安全准则（必须严格遵守）：
 - 禁止修改或删除 .env、.git、node_modules、package-lock.json 等关键文件。
@@ -239,6 +270,7 @@ class LlmAgent extends AgentBase {
     this._memPath = null;
     this._repoDirty = false;        // 仓库索引失效标记（文件变更后置位）
     this._repoCache = null;         // 缓存的仓库符号索引
+    this.patch = new PatchEngine(this.files);   // 补丁暂存/审阅引擎（apply_edit 工具使用）
 
     /* Phase 2：4 大子系统初始化 */
     const wsHash = crypto.createHash("md5")
@@ -460,6 +492,23 @@ ${taskSummary}
       p.resolve({ approved: false, reason: "用户中断" });
     }
     this.pending.clear();
+  }
+
+  /* 用户在审阅面板「接受」暂存改动 → 写盘并广播变更。
+     hunkSelections = { path: [hunkIndex,...] } 时仅应用选中的片段（逐 hunk 部分应用）。 */
+  applyPatch(convId, paths, hunkSelections) {
+    const applied = this.patch.apply(convId, paths, hunkSelections);
+    for (const p of applied) {
+      this.fileChanged(p);                 // 触发前端编辑器内容刷新
+      this.emit({ type: "editor.open", path: p });
+    }
+    this.pushChanges(false);               // 更新 SCM / 状态栏改动数
+    return applied;
+  }
+
+  /* 用户在审阅面板「拒绝」暂存改动 */
+  rejectPatch(convId, paths) {
+    return this.patch.reject(convId, paths);
   }
 
   /* ---------------- 权限决策 ---------------- */
@@ -782,6 +831,29 @@ ${taskSummary}
           return "写入成功: " + args.path;
         } catch (e) { t.done(false, "写入失败"); return "错误: " + e.message; }
       }
+      case "apply_edit": {
+        const t = this.tool("edit", "暂存改动", args.path || "多文件");
+        const res = this.patch.stage(this._currentConv, args);
+        if (!res.ok) {
+          t.done(false, "编辑未应用", false);
+          return "编辑未应用：" + res.error + "。请修正 old_string 使其「逐字、唯一且存在于文件中」，然后重试同一处修改。";
+        }
+        const files = res.staged;
+        this.emit({
+          type: "patch.review",
+          convId: this._currentConv,
+          files: files.map((f) => ({
+            path: f.path, status: f.status, isNew: f.isNew,
+            original: f.original, modified: f.modified, add: f.add, del: f.del,
+            hunks: f.hunks,
+          })),
+        });
+        t.body(files.map((f) => f.path + "  (+" + f.add + " −" + f.del + ")").join("\n"));
+        t.done(true, "已暂存 " + files.length + " 个文件，待审阅", false);
+        return "已暂存 " + files.length + " 处文件改动（" + files.map((f) => f.path).join(", ") +
+          "）。这些改动已进入「审阅面板」，请用户在 diff 视图中逐文件「接受」或「拒绝」后再落盘。" +
+          "不要对同一个文件改用 write_file 整文件覆盖。";
+      }
       case "delete_file": {
         const gate = await this._gate("delete_file", { path: args.path }, "high");
         if (gate.blocked) {
@@ -833,7 +905,10 @@ ${taskSummary}
         t.body((r.out || "(无输出)").slice(-4000) + "\n\n(exit code " + r.code + ")");
         t.done(r.code === 0, r.code === 0 ? "退出码 0" : "退出码 " + r.code, r.code !== 0);
         this.pushChanges(false);
-        return "退出码: " + r.code + "\n输出:\n" + (r.out || "(无输出)").slice(-6000);
+        const errHint = r.code !== 0 && process.platform === "win32"
+          ? "\n\n提示：当前为 Windows/cmd 环境，请检查命令是否用了 Linux 语法（`&` 后台、`grep`/`cat`/`ls`），应改用 `start /B`、`findstr`/`type`/`dir`。"
+          : "";
+        return "退出码: " + r.code + "\n输出:\n" + (r.out || "(无输出)").slice(-6000) + errHint;
       }
       case "repo_map": {
         const t = this.tool("read", "生成仓库地图", "repo_map");

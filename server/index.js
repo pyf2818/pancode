@@ -803,6 +803,30 @@ wss.on("connection", (ws) => {
       case "tool.reject":
         if (typeof engine.resolveApproval === "function" && m.id) engine.resolveApproval(m.id, false);
         break;
+
+      /* ----- 补丁审阅：用户在 diff 视图逐文件「接受 / 拒绝」 ----- */
+      case "patch.approve":
+        safe(() => {
+          const convId = m.convId || engine._currentConv;
+          const paths = Array.isArray(m.paths) ? m.paths : [];
+          const applied = typeof engine.applyPatch === "function"
+            ? engine.applyPatch(convId, paths, m.hunks) : [];
+          if (applied.length) {
+            broadcast({ type: "fs.sync", files: snapshotFiles() });
+            broadcast({ type: "patch.applied", paths: applied, convId });
+          } else {
+            broadcast({ type: "patch.applied", paths: [], convId, empty: true });
+          }
+        }, ws);
+        break;
+      case "patch.reject":
+        safe(() => {
+          const convId = m.convId || engine._currentConv;
+          const paths = Array.isArray(m.paths) ? m.paths : [];
+          if (typeof engine.rejectPatch === "function") engine.rejectPatch(convId, paths);
+          broadcast({ type: "patch.rejected", paths, convId, all: !paths.length });
+        }, ws);
+        break;
     }
   });
 });

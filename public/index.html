@@ -364,6 +364,33 @@
   </div>
 </div>
 
+<!-- ======================= 补丁审阅面板（agent 编辑审阅） ======================= -->
+<div id="patchModal" style="display:none">
+  <div class="patch-box">
+    <div class="patch-head">
+      <span class="patch-title"><i data-ico="robot" data-cls="ico-accent"></i>AI 提议的改动 — 审阅</span>
+      <span class="patch-count" id="patchCount">0 个文件</span>
+      <span class="patch-legend"><i class="lg-del"></i>原文 <i class="lg-add"></i>改动后</span>
+      <span class="patch-actions">
+        <button id="patchAcceptAll" class="patch-btn ok"><i data-ico="check"></i>全部接受</button>
+        <button id="patchRejectAll" class="patch-btn danger"><i data-ico="close"></i>全部拒绝</button>
+        <button id="patchClose" class="patch-btn"><i data-ico="close"></i>稍后</button>
+      </span>
+    </div>
+    <div class="patch-body">
+      <div class="patch-files" id="patchFiles"></div>
+      <div class="patch-diff-wrap">
+        <div class="patch-hunk-bar">
+          <span class="phb-title">片段（hunk）— 勾选要接受的改动</span>
+          <button id="patchApplySelected" class="patch-btn ok"><i data-ico="check"></i>应用选中</button>
+        </div>
+        <div id="patchHunks" class="patch-hunks"></div>
+        <div id="patchHost"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ======================= 登录/注册弹窗 ======================= -->
 <div id="authModal" style="display:none">
   <div class="set-box" style="max-width:380px">
