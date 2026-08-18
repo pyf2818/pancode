@@ -6,7 +6,7 @@
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
-const { McpManager } = require("../server/mcp");
+const { McpManager } = require("../../server/mcp");
 
 const MOCK = path.join(__dirname, "mock-mcp-server.js");
 const NODE = process.execPath;
@@ -51,7 +51,7 @@ async function partA() {
 function startServer(port) {
   process.env.PORT = String(port);
   process.env.NO_AUTH = "1";
-  const server = require("../server/index.js");
+  const server = require("../../server/index.js");
   return server;
 }
 function req(method, port, urlPath, body, token) {

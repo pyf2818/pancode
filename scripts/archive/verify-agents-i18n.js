@@ -14,7 +14,7 @@ const path = require("path");
 
 process.env.PORT = process.env.PORT || "8825";
 process.env.CURSORWEB_WORKSPACE = process.env.CURSORWEB_WORKSPACE || path.resolve(__dirname, "..", "server");
-require("../server/index.js");
+require("../../server/index.js");
 
 const PORT = process.env.PORT;
 const OUT = path.join(__dirname, "_verify_out");

@@ -1,6 +1,6 @@
 {
   "name": "pancode",
-  "version": "2.3.0",
+  "version": "3.0.0",
   "description": "基于 Monaco Editor (VS Code 开源内核) 的 Web AI 编程工作台 — 可写编辑器 + Git 基线 + 真实 LLM Agent 工具调用循环（OpenAI 兼容），无 Key 时演示引擎保底",
   "main": "electron/main.js",
   "scripts": {
@@ -14,8 +14,11 @@
     "test:integration": "node scripts/integration-runner.js",
     "test:lsp": "node scripts/test-lsp.js",
     "test:code-index": "node scripts/test-code-index.js",
+    "test:summary": "node scripts/test-change-summary.js",
     "test:patch": "node scripts/test-patch.js",
     "verify:ui": "node scripts/verify-ui.js",
+    "verify:workflow-ui": "node scripts/_verify_workflow_ui.js",
+    "verify:all": "npm run test:summary && npm run test:verify && npm run verify:ui && npm run verify:workflow-ui",
     "index:build": "node scripts/index-build.js",
     "verify:search": "node scripts/verify-search.js",
     "test": "npm run test:verify && node scripts/smoke-test.js && node scripts/fileops-test.js && npm run test:integration && npm run test:patch && npm run test:lsp && npm run test:code-index"

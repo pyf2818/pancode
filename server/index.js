@@ -15,6 +15,7 @@ require("./dotenv").loadDotEnv();   // 启动即加载本地 .env（LLM 密钥�
 const configMod = require("./config");
 const { FileStore, langOf } = require("./files");
 const { GitLayer } = require("./git");
+const { summarize, docDraft } = require("./change-summary");
 const { TerminalLayer } = require("./terminal");
 const { ping } = require("./llm");
 const { LlmAgent } = require("./agent-llm");
@@ -177,6 +178,34 @@ app.get("/api/version", (req, res) => res.json({
   features: ["repo_map", "search_symbol", "chat_history", "resizable_preview", "permissions", "attachments", "persona", "rules", "auto_memory"],
 }));
 
+/* P2 可观测：Agent 内部 trace / 真实 token 用量调试端点（开发排查用，随全局鉴权生效） */
+app.get("/api/agent/trace", (req, res) => {
+  if (typeof engine.getTrace === "function") return res.json({ ok: true, trace: engine.getTrace() });
+  res.json({ ok: false, error: "当前引擎不支持 trace（演示引擎）" });
+});
+app.get("/api/agent/usage", (req, res) => {
+  if (typeof engine.getTrace === "function") return res.json({ ok: true, usage: engine.getTrace().usage });
+  res.json({ ok: false, error: "当前引擎不支持 usage（演示引擎）" });
+});
+/* P2 可观测：读取某会话落盘的 trace 历史（跨会话回看，路径已净化） */
+app.get("/api/agent/trace/history", (req, res) => {
+  const id = req.query && req.query.conv;
+  const safe = id ? String(id).replace(/[^a-zA-Z0-9_-]/g, "_") : "";
+  if (!safe) return res.json({ ok: true, events: [] });
+  const fp = path.join(configMod.ROOT, ".pancode", "agent-traces", safe + ".jsonl");
+  if (!fs.existsSync(fp)) return res.json({ ok: true, events: [] });
+  try {
+    const lines = fs.readFileSync(fp, "utf8").split("\n");
+    const events = [];
+    for (let i = lines.length - 1; i >= 0 && events.length < 500; i--) {
+      const l = lines[i].trim(); if (!l) continue;
+      try { events.push(JSON.parse(l)); } catch (e) {}
+    }
+    events.reverse();
+    res.json({ ok: true, events });
+  } catch (e) { res.json({ ok: false, error: String(e) }); }
+});
+
 /* 仅本机可领取访问令牌（绑定 127.0.0.1 后局域网不可达） */
 app.get("/api/bootstrap", (req, res) => {
   const ip = req.socket.remoteAddress || "";
@@ -294,6 +323,64 @@ app.post("/api/plans/:id/complete", (req, res) => {
     broadcast({ type: "plan.updated", plan, convId: plan.convId });
     res.json({ ok: true, plan });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- 工作流模板 API（供前端工作流面板展示真实模板，含用户自定义） ---------- */
+app.get("/api/templates", (req, res) => {
+  try {
+    if (!engine || !engine.workflows) return res.json({ ok: true, templates: [] });
+    const templates = engine.workflows.list().map((t) => ({
+      name: t.name,
+      description: t.description || "",
+      title: t.title || "",
+      steps: Array.isArray(t.tasks) ? t.tasks.length : 0,
+      tasks: Array.isArray(t.tasks) ? t.tasks : [],
+      builtin: !!t.builtin,
+    }));
+    res.json({ ok: true, templates });
+  } catch (e) { res.json({ ok: true, templates: [] }); }
+});
+
+/* ---------- Git 状态预览 + 一键提交（一站式交付闭环） ---------- */
+app.get("/api/git/status", (req, res) => {
+  try {
+    if (!git) return res.json({ ok: true, available: false, branch: "", changes: [] });
+    res.json({ ok: true, available: git.available, branch: git.branch, changes: git.changes() });
+  } catch (e) { res.json({ ok: true, available: false, changes: [] }); }
+});
+app.post("/api/git/commit", (req, res) => {
+  try {
+    if (!git) return res.status(503).json({ ok: false, error: "Git 未就绪" });
+    const body = req.body || {};
+    const files = Array.isArray(body.files) ? body.files : undefined; // undefined → 全量提交（向后兼容）
+    const r = git.commit((body.message) || "", files);
+    res.json(Object.assign({ ok: r.ok }, r.ok ? r : { error: r.error, nothing: r.nothing }));
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* 智能变更摘要（P9 / P10）：GET 全量，POST {files} 仅统计选中子集
+   返回 summary(changelog/总览/建议) 与 docDraft(文档片段)，均为草稿，由前端决定是否采用 */
+function buildSummaryPayload(subset) {
+  return { ok: true, available: git.available, branch: git.branch, summary: summarize(subset), docDraft: docDraft(subset) };
+}
+app.get("/api/git/summary", (req, res) => {
+  try {
+    if (!git) return res.json({ ok: true, available: false, summary: null, docDraft: "" });
+    res.json(buildSummaryPayload(git.changes()));
+  } catch (e) { res.json({ ok: true, available: false, summary: null, docDraft: "" }); }
+});
+app.post("/api/git/summary", (req, res) => {
+  try {
+    if (!git) return res.json({ ok: true, available: false, summary: null, docDraft: "" });
+    const all = git.changes();
+    const body = req.body || {};
+    let subset = all;
+    if (Array.isArray(body.files) && body.files.length) {
+      const set = new Set(body.files);
+      subset = all.filter((c) => set.has(c.path));
+    }
+    res.json(buildSummaryPayload(subset));
+  } catch (e) { res.json({ ok: true, available: false, summary: null, docDraft: "" }); }
 });
 
 /* ---------- 工作区管理：打开任意本地文件夹 ---------- */

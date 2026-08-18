@@ -1,7 +1,7 @@
 /* ============================================================
    用户认证系统 - 注册 / 登录 / 会话管理
    存储：.pancode/users.json
-   密码：SHA-256 + salt（本机工具，无需 bcrypt 重量级依赖）
+   密码：scrypt + 随机 salt（本机工具，无需 bcrypt 重量级依赖）
    会话：token 随机生成，存入内存 Map（重启失效）
    ============================================================ */
 "use strict";
@@ -80,6 +80,18 @@ function hasUsers() {
   return Object.keys(loadUsers()).length > 0;
 }
 
+/* ---------- 删除用户 ----------
+   仅供验证 / 测试脚本自清理，避免 users.json 长期堆积一次性测试账号。
+   同时吊销该用户名下的所有会话。找不到用户返回 false。 */
+function removeUser(username) {
+  const users = loadUsers();
+  if (!username || !users[username]) return false;
+  delete users[username];
+  saveUsers(users);
+  for (const [tok, s] of sessions) if (s && s.username === username) sessions.delete(tok);
+  return true;
+}
+
 /* 定时清扫过期会话（避免未登录 / 长期未活动 token 永驻内存，A4） */
 const _sessSweep = setInterval(() => {
   const now = Date.now();
@@ -89,4 +101,4 @@ const _sessSweep = setInterval(() => {
 }, 10 * 60 * 1000);
 if (_sessSweep && _sessSweep.unref) _sessSweep.unref();
 
-module.exports = { register, login, verify, logout, hasUsers };
+module.exports = { register, login, verify, logout, hasUsers, removeUser };

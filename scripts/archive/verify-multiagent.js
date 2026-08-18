@@ -14,7 +14,7 @@ function assert(cond, msg) {
 
 async function main() {
   let LlmAgent;
-  try { ({ LlmAgent } = require("../server/agent-llm")); }
+  try { ({ LlmAgent } = require("../../server/agent-llm")); }
   catch (e) { console.error("无法加载 agent-llm.js：", e.message); process.exit(1); }
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "sub-"));

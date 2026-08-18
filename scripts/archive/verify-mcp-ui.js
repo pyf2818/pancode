@@ -12,7 +12,7 @@ const NODE = process.execPath;
 const PORT = 8861;
 
 process.env.PORT = String(PORT);
-const server = require("../server/index.js");
+const server = require("../../server/index.js");
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 async function poll(fn, ms) { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await sleep(400); } return false; }

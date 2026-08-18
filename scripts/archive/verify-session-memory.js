@@ -3,7 +3,7 @@
  *   决策/经验/反例 三类分类落库、Skill 顺带沉淀、空输入不写入
  */
 "use strict";
-const { LlmAgent } = require("../server/agent-llm");
+const { LlmAgent } = require("../../server/agent-llm");
 
 let pass = 0, fail = 0;
 function ok(name, cond) {

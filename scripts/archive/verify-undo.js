@@ -15,7 +15,7 @@ function assert(cond, msg) {
 
 let LlmAgent;
 try {
-  ({ LlmAgent } = require("../server/agent-llm"));
+  ({ LlmAgent } = require("../../server/agent-llm"));
 } catch (e) {
   console.error("无法加载 agent-llm.js：", e.message);
   process.exit(1);

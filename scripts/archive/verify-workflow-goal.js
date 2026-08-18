@@ -7,9 +7,9 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { LlmAgent } = require("../server/agent-llm");
-const { PlanStore } = require("../server/plan-store");
-const { WorkflowStore, fillGoal } = require("../server/workflow-store");
+const { LlmAgent } = require("../../server/agent-llm");
+const { PlanStore } = require("../../server/plan-store");
+const { WorkflowStore, fillGoal } = require("../../server/workflow-store");
 
 let pass = 0, fail = 0;
 function ok(name, cond) {

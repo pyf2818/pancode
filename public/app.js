@@ -349,6 +349,148 @@ function applyTheme(t) {
 }
 $("btnTheme").onclick = () => applyTheme(getTheme() === "light" ? "dark" : "light");
 
+/* ---------- 键盘快捷键帮助弹窗 ---------- */
+function openShortcuts() {
+  const m = $("shortcutsModal");
+  if (m) m.style.display = "flex";
+}
+if ($("scClose")) $("scClose").onclick = () => { $("shortcutsModal").style.display = "none"; };
+if ($("shortcutsModal")) {
+  $("shortcutsModal").addEventListener("click", (e) => { if (e.target === $("shortcutsModal")) $("shortcutsModal").style.display = "none"; });
+}
+
+/* ---------- 一键提交改动弹窗（Git 一站式闭环） ---------- */
+function openCommit() {
+  const m = $("commitModal");
+  if (!m) return;
+  m.style.display = "flex";
+  $("cmResult").textContent = ""; $("cmResult").className = "cm-result";
+  const branch = $("cmBranch"), box = $("cmChanges");
+  branch.textContent = "加载中…"; box.innerHTML = "";
+  if ($("cmSummaryWrap")) $("cmSummaryWrap").style.display = "none";
+  fetch("/api/git/status").then((r) => r.json()).then((d) => {
+    if (!d.available) {
+      branch.textContent = "当前工作区不是 Git 仓库（快照模式），无法提交";
+      box.innerHTML = '<div class="cm-empty">未检测到 Git 仓库</div>';
+      $("cmSubmit").disabled = true; return;
+    }
+    branch.textContent = "分支：" + d.branch;
+    if (!d.changes || !d.changes.length) {
+      box.innerHTML = '<div class="cm-empty">没有未提交的改动</div>';
+      $("cmSubmit").disabled = true; return;
+    }
+    $("cmSubmit").disabled = false;
+    const labels = { M: "修改", A: "新增", D: "删除" };
+    box.innerHTML = "";
+    d.changes.forEach((c) => {
+      const row = document.createElement("label");
+      row.className = "cm-item";
+      const chk = document.createElement("input");
+      chk.type = "checkbox"; chk.className = "cm-chk"; chk.checked = true; chk.dataset.path = c.path;
+      const tag = document.createElement("span");
+      tag.className = "cm-tag cm-" + c.status; tag.textContent = labels[c.status] || c.status;
+      const p = document.createElement("span");
+      p.className = "cm-path"; p.textContent = c.path;
+      row.appendChild(chk); row.appendChild(tag); row.appendChild(p);
+      box.appendChild(row);
+    });
+    const selAll = $("cmSelAll");
+    if (selAll) selAll.checked = true;
+    updateCmCount();
+    $("cmMsg").value = "更新 " + d.changes.length + " 个文件";
+  }).catch(() => { branch.textContent = "状态获取失败"; box.innerHTML = ""; });
+}
+/* 已选文件数 → 提交按钮可用性 + 计数 */
+function updateCmCount() {
+  const chks = Array.from(document.querySelectorAll("#cmChanges .cm-chk"));
+  const n = chks.filter((c) => c.checked).length;
+  const total = chks.length;
+  const cnt = $("cmCount");
+  if (cnt) cnt.textContent = total ? "已选 " + n + " / " + total : "";
+  const sa = $("cmSelAll");
+  if (sa && total) sa.checked = (n === total);
+  if ($("cmSubmit")) $("cmSubmit").disabled = (total > 0 && n === 0);
+  refreshCmSummary(); // 选择变化时同步刷新智能摘要（选择感知）
+}
+/* P9/P10：智能摘要面板（变更摘要 / 文档草稿 双视图） */
+let cmView = "log", cmSummaryData = null, cmCurrentText = "";
+function refreshCmSummary() {
+  const wrap = $("cmSummaryWrap"); if (!wrap) return;
+  const chks = Array.from(document.querySelectorAll("#cmChanges .cm-chk"));
+  if (!chks.length) { wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  const files = chks.filter((c) => c.checked).map((c) => c.dataset.path);
+  fetch("/api/git/summary", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ files }),
+  }).then((r) => r.json()).then((d) => {
+    if (!d || !d.summary) { wrap.style.display = "none"; return; }
+    cmSummaryData = d; renderCmSummary();
+  }).catch(() => {});
+}
+function renderCmSummary() {
+  if (!cmSummaryData) return;
+  let text;
+  if (cmView === "doc") {
+    text = cmSummaryData.docDraft || "";
+  } else {
+    const s = cmSummaryData.summary || {};
+    const lines = [];
+    if (s.overview) lines.push(s.overview);
+    if (Array.isArray(s.suggestions) && s.suggestions.length) {
+      lines.push("", "建议");
+      s.suggestions.forEach((t) => lines.push("- " + t));
+    }
+    text = lines.join("\n");
+  }
+  cmCurrentText = text;
+  const body = $("cmSummary");
+  if (body) body.textContent = cmCurrentText || "（暂无内容）";
+}
+function setCmTab(view) {
+  cmView = view;
+  const log = $("cmViewLog"), doc = $("cmViewDoc");
+  if (log) log.classList.toggle("active", view === "log");
+  if (doc) doc.classList.toggle("active", view === "doc");
+}
+if ($("cmViewLog")) $("cmViewLog").onclick = () => { setCmTab("log"); renderCmSummary(); };
+if ($("cmViewDoc")) $("cmViewDoc").onclick = () => { setCmTab("doc"); renderCmSummary(); };
+if ($("cmApplyMsg")) $("cmApplyMsg").onclick = () => {
+  const msg = cmSummaryData && cmSummaryData.summary ? (cmSummaryData.summary.commitMsg || "") : cmCurrentText;
+  if (msg && $("cmMsg")) $("cmMsg").value = msg.trim();
+};
+if ($("cmCopy")) $("cmCopy").onclick = () => {
+  if (!cmCurrentText) return;
+  const btn = $("cmCopy"); const old = btn ? btn.textContent : "复制";
+  const done = () => { if (btn) btn.textContent = old; };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(cmCurrentText)
+      .then(() => { if (btn) { btn.textContent = "已复制 ✓"; setTimeout(done, 1200); } })
+      .catch(done);
+  }
+};
+if ($("cmSelAll")) $("cmSelAll").onchange = () => {
+  document.querySelectorAll("#cmChanges .cm-chk").forEach((c) => { c.checked = $("cmSelAll").checked; });
+  updateCmCount();
+};
+if ($("cmChanges")) $("cmChanges").addEventListener("change", (e) => { if (e.target.classList.contains("cm-chk")) updateCmCount(); });
+if ($("cmClose")) $("cmClose").onclick = () => { $("commitModal").style.display = "none"; };
+if ($("cmCancel")) $("cmCancel").onclick = () => { $("commitModal").style.display = "none"; };
+if ($("commitModal")) {
+  $("commitModal").addEventListener("click", (e) => { if (e.target === $("commitModal")) $("commitModal").style.display = "none"; });
+}
+if ($("cmSubmit")) $("cmSubmit").onclick = () => {
+  const msg = $("cmMsg").value.trim();
+  const files = Array.from(document.querySelectorAll("#cmChanges .cm-chk"))
+    .filter((c) => c.checked).map((c) => c.dataset.path);
+  const res = $("cmResult"); res.textContent = "提交中…"; res.className = "cm-result";
+  fetch("/api/git/commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: msg, files }) })
+    .then((r) => r.json()).then((d) => {
+      if (d.ok) { res.textContent = "已提交（" + d.committed + " 个文件）✓"; res.className = "cm-result ok"; setTimeout(() => { $("commitModal").style.display = "none"; }, 1200); }
+      else { res.textContent = d.nothing ? "没有可提交的改动" : ("提交失败：" + (d.error || "")); res.className = "cm-result err"; }
+    }).catch((e) => { res.textContent = "提交失败：" + e.message; res.className = "cm-result err"; });
+};
+
 /* ---------- 可拖拽分隔条（侧边栏 / 终端 / AI 聊天栏 / Agents 三栏） ---------- */
 function initResizers() {
   /* 侧边栏宽度 */
@@ -640,8 +782,30 @@ function applyPreviewZoom() {
   if (txt) txt.textContent = Math.round(previewZoom * 100) + "%";
 }
 
-/* 预览滚动同步：编辑器和 iframe 双向跟随，requestAnimationFrame 节流 */
-let _previewScrollRAF = null;
+/* 预览滚动同步：编辑器 <-> iframe 双向跟随（postMessage 桥）
+   预览 iframe 已改为 sandbox="allow-scripts"（去掉 allow-same-origin，杜绝预览内脚本
+   反咬父页面 pancode），iframe 因此是不透明源，无法再直读 contentDocument/scrollHeight。
+   改用 postMessage 跨源桥同步滚动位置，且不回退任何 UX。 */
+const PREVIEW_BRIDGE = '<script>(function(){var P=function(){try{parent.postMessage({__pcPs:window.scrollY,__pcSh:(document.body?document.body.scrollHeight:0)},"*")}catch(e){}};window.addEventListener("scroll",function(){requestAnimationFrame(P)},{passive:true});window.addEventListener("resize",function(){requestAnimationFrame(P)},{passive:true});window.addEventListener("message",function(e){var d=e.data;if(d&&d.__pcPt!=null){try{window.scrollTo(0,d.__pcPt)}catch(e){}}});if(document.readyState!=="loading")P();else window.addEventListener("DOMContentLoaded",P);})();<\/script>';
+function injectPreviewBridge(html) {
+  const i = html.toLowerCase().lastIndexOf("</body>");
+  if (i >= 0) return html.slice(0, i) + PREVIEW_BRIDGE + html.slice(i);
+  return html + PREVIEW_BRIDGE;
+}
+
+let _previewScrollRAF = null, _pvSh = 1000, _pvSyncing = false, _pvMsgAttached = false;
+function _onPreviewMessage(e) {
+  const d = e.data;
+  if (!d || d.__pcPs == null) return;
+  if (d.__pcSh && d.__pcSh > 0) _pvSh = d.__pcSh; // 缓存预览页可滚动高度（跨源无法直读）
+  if (_pvSyncing) return; // 本次由 editor->preview 触发，忽略回声避免回环
+  if (previewOn && editor) { try { editor.setScrollTop(d.__pcPs); } catch (_) {} }
+}
+function _ensurePreviewMsg() {
+  if (_pvMsgAttached) return;
+  _pvMsgAttached = true;
+  window.addEventListener("message", _onPreviewMessage);
+}
 function _schedulePreviewScrollSync() {
   if (_previewScrollRAF) return;
   _previewScrollRAF = requestAnimationFrame(() => {
@@ -649,24 +813,22 @@ function _schedulePreviewScrollSync() {
     if (!previewOn) return;
     const frame = $("hpFrame");
     if (!frame || !frame.contentWindow) return;
-    // 编辑器 -> 预览（按高度比例）
     try {
       const ratio = editor.getScrollTop() / Math.max(1, editor.getScrollHeight() - editor.getContainerDomNode().clientHeight);
-      const target = ratio * (frame.contentDocument?.body?.scrollHeight || 1000);
-      frame.contentWindow.scrollTo(0, target);
-    } catch (_) {}
-    // 预览 -> 编辑器（取 iframe 滚动位置）
-    try {
-      const sy = frame.contentWindow?.scrollY ?? 0;
-      if (sy > 0) editor.setScrollTop(sy);
+      const target = ratio * _pvSh;
+      _pvSyncing = true;
+      frame.contentWindow.postMessage({ __pcPt: target }, "*");
+      requestAnimationFrame(() => { _pvSyncing = false; }); // 下一帧解除回环保护
     } catch (_) {}
   });
 }
 function _attachPreviewScrollListeners() {
-  // 编辑器滚动时触发同步
-  if (editor) {
+  // 编辑器滚动时触发同步；仅订阅一次，避免每次 renderPreview 重复挂监听
+  if (editor && !editor._pvScrollBound) {
+    editor._pvScrollBound = true;
     editor.onDidScrollChange(() => _schedulePreviewScrollSync());
   }
+  _ensurePreviewMsg();
 }
 
 function renderPreview() {
@@ -675,13 +837,12 @@ function renderPreview() {
   if (!previewOn || !path || !isPreviewable(path) || !models[path]) return;
   const val = models[path].getValue();
   if (extOf(path) === "html" || extOf(path) === "htm") {
-    frame.srcdoc = val;
+    frame.srcdoc = injectPreviewBridge(val);
   } else {
-    frame.srcdoc = "<!DOCTYPE html><html><head><meta charset='utf-8'><style>" + MD_CSS + "</style></head><body class='md-body'>" + renderMarkdown(val) + "</body></html>";
+    frame.srcdoc = injectPreviewBridge("<!DOCTYPE html><html><head><meta charset='utf-8'><style>" + MD_CSS + "</style></head><body class='md-body'>" + renderMarkdown(val) + "</body></html>");
   }
   frame.style.zoom = previewZoom;
   frame.style.marginTop = "0"; // 每次重绘重置滚动偏移
-  // 文件切换后，同步到编辑器顶部
   _attachPreviewScrollListeners();
 }
 function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 350); }
@@ -1228,6 +1389,72 @@ function appendTermHtml(tabId, html) {
 function termLine(html, tabId) { appendTermHtml(tabId || termActive, html); }
 function termPrompt(cmd, tabId) { appendTermHtml(tabId || termActive, termHtmlFromEntry({ cmd: true, text: cmd })); }
 
+/* ----- Agent Trace 面板：渲染 agent 内部事件流（llm.round / tool.* / usage） ----- */
+const TRACE_LABELS = {
+  "llm.round": "llm.round", "tool.call": "tool.call", "tool.arg_err": "arg_err",
+  "tool.loop": "loop", "tool.failstreak": "failstreak", "usage": "usage",
+};
+const traceState = { rounds: 0, tools: 0, tokens: 0, loops: 0, errors: 0, seq: 0 };
+
+function traceDetail(ev) {
+  const d = ev.data || {};
+  switch (ev.type) {
+    case "llm.round": return "round " + (d.rounds || "?") + " · " + (d.tools || 0) + " tools · finish: " + (d.finish || "");
+    case "tool.call": return (d.name || "?") + " · " + (d.len != null ? (Math.round(d.len / 100) / 10 + "k") : "") + " chars";
+    case "tool.arg_err": return (d.name || "?") + " · 参数解析失败 → 回传模型纠正";
+    case "tool.loop": return (d.name || "?") + " 已连续 " + (d.count || "?") + " 次相同调用 → 死循环已阻断";
+    case "tool.failstreak": return "连续 " + (d.streak || "?") + " 次工具报错 → 注入反思";
+    case "usage": return "prompt " + (d.prompt_tokens || 0) + " / completion " + (d.completion_tokens || 0) + " / total " + (d.total_tokens || 0);
+    default: return JSON.stringify(d);
+  }
+}
+function fmtTok(n) { n = n || 0; return n >= 1000 ? (Math.round(n / 100) / 10) + "k" : "" + n; }
+function setTraceText(id, v) { const el = $(id); if (el) el.textContent = v; }
+
+function onTraceEvent(ev, isHistory) {
+  if (!ev) return;
+  const list = $("traceList"); if (!list) return;
+  if (ev.type === "llm.round") traceState.rounds++;
+  else if (ev.type === "tool.call") traceState.tools++;
+  else if (ev.type === "tool.loop" || ev.type === "tool.failstreak") traceState.loops++;
+  else if (ev.type === "tool.arg_err") traceState.errors++;
+  else if (ev.type === "usage" && ev.data) traceState.tokens = ev.data.total_tokens || traceState.tokens;
+  setTraceText("traceRounds", traceState.rounds);
+  setTraceText("traceTools", traceState.tools);
+  setTraceText("traceLoops", traceState.loops);
+  setTraceText("traceErrors", traceState.errors);
+  setTraceText("traceTokens", fmtTok(traceState.tokens));
+  setTraceText("agTraceCount", (++traceState.seq) + " 事件");
+  const t = (((ev.t || Date.now()) % 60000) / 1000).toFixed(1) + "s";
+  const row = document.createElement("div");
+  row.className = "trace-row tr-" + ev.type.replace(/\./g, "-") + (isHistory ? " tr-history" : "");
+  row.innerHTML = '<span class="tr-time">' + t + '</span>' +
+    '<span class="tr-badge">' + escHtml(TRACE_LABELS[ev.type] || ev.type) + '</span>' +
+    '<span class="tr-detail">' + escHtml(traceDetail(ev)) + '</span>';
+  list.appendChild(row);
+  while (list.children.length > 200) list.removeChild(list.firstChild);
+  list.scrollTop = list.scrollHeight;
+}
+function clearTrace() {
+  traceState.rounds = traceState.tools = traceState.loops = traceState.errors = traceState.seq = 0;
+  traceState.tokens = 0;
+  const list = $("traceList"); if (list) list.innerHTML = "";
+  setTraceText("traceRounds", "0"); setTraceText("traceTools", "0"); setTraceText("traceLoops", "0");
+  setTraceText("traceErrors", "0"); setTraceText("traceTokens", "0"); setTraceText("agTraceCount", "0 事件");
+}
+function onUsageEvent(u) { if (!u) return; traceState.tokens = u.total_tokens || traceState.tokens; setTraceText("traceTokens", fmtTok(traceState.tokens)); }
+/* 跨会话回看：从服务端拉取某会话落盘的 trace 历史并渲染（dimmed），然后 live 事件继续追加 */
+async function loadTraceHistory(convId) {
+  const list = $("traceList"); if (!list || !convId) return;
+  try {
+    const r = await fetch("/api/agent/trace/history?conv=" + encodeURIComponent(convId));
+    const j = await r.json();
+    if (!j || !j.ok || !Array.isArray(j.events)) return;
+    for (const ev of j.events) onTraceEvent(ev, true);
+    list.scrollTop = list.scrollHeight;
+  } catch (e) { /* 静默：历史缺失不应影响实时面板 */ }
+}
+
 /* 切换显示的标签缓冲 */
 function swapTerm(tabId) {
   if (!termTabs[tabId]) return;
@@ -1752,6 +1979,9 @@ function handleEvent(ev) {
     case "term.line": termLine('<span class="' + (ev.cls || "tl-cmd") + '">' + esc(ev.text) + "</span>", ev.tabId); break;
     case "term.exit": break;
 
+    case "agent.trace": onTraceEvent(ev.event); break;
+    case "agent.usage": onUsageEvent(ev.usage); break;
+
     case "file.changed": {
       if (ev.deleted) {
         delete state.files[ev.path];
@@ -1977,7 +2207,7 @@ function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/?token=" + encodeURIComponent(AUTH.token));
   ws.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch (err) { console.error(err); } };
   // C6：连接/重连建立后，把当前会话 ID 同步给服务端，恢复对应的 AI 上下文
-  ws.onopen = () => { if (typeof convId !== "undefined" && convId) send({ type: "switchConv", convId: convId }); };
+  ws.onopen = () => { if (typeof convId !== "undefined" && convId) { send({ type: "switchConv", convId: convId }); loadTraceHistory(convId); } };
   ws.onclose = () => setTimeout(connect, 1500);
 }
 /* C6：chat / newchat 统一自动携带当前会话 ID，让服务端上下文与前端会话一一对应 */
@@ -2142,8 +2372,15 @@ function bindInput() {
       return;
     }
     // 历史消息浏览（@ 菜单未打开时）
-    if (e.key === "ArrowUp") { e.preventDefault(); navHistory(1); }
-    else if (e.key === "ArrowDown") { e.preventDefault(); navHistory(-1); }
+    // 仅在「不会妨碍多行编辑」时接管方向键：单行内容随时可翻历史；
+    // 多行内容只在光标处于最开头（↑）/ 最末尾（↓）时才翻历史，
+    // 其余情况交还输入框做正常跨行移动（否则 Shift+Enter 写的多行提示词无法上下移光标）。
+    const collapsed = ta.selectionStart === ta.selectionEnd;
+    const singleLine = ta.value.indexOf("\n") === -1;
+    const atStart = collapsed && ta.selectionStart === 0;
+    const atEnd = collapsed && ta.selectionStart === ta.value.length;
+    if (e.key === "ArrowUp" && (singleLine || atStart)) { e.preventDefault(); navHistory(1); }
+    else if (e.key === "ArrowDown" && (singleLine || atEnd)) { e.preventDefault(); navHistory(-1); }
   });
   document.addEventListener("click", (e) => { if (atMenu && atMenu.style.display !== "none" && !atMenu.contains(e.target) && e.target !== ta) hideAtMenu(); });
 
@@ -2305,6 +2542,7 @@ function openConv(id) {
   convId = id;
   localStorage.setItem(convActiveKey(), id);
   send({ type: "switchConv", convId: id });   // C6：同步切换服务端 AI 上下文
+  loadTraceHistory(id);
   const c = loadConvList().find((x) => x.id === id);
   chatStream.innerHTML = c && c.dom ? c.dom : "";
   for (const k in blocks) delete blocks[k];
@@ -2370,7 +2608,7 @@ function reloadConvForWs() {
   replaceIcons();
   refreshCtx();
   // 同步服务端：切换工作区后引擎已重建（新会话），通知前端跟随
-  if (ws && ws.readyState === 1 && convId) send({ type: "switchConv", convId: convId });
+  if (ws && ws.readyState === 1 && convId) { send({ type: "switchConv", convId: convId }); loadTraceHistory(convId); }
 }
 
 /* 启动时恢复上次会话（历史跨刷新保留） */
@@ -2391,6 +2629,7 @@ function restoreConv() {
 function newConversation() {
   if (state.running) return;
   // 真正的新对话：当前会话已由 observer 持久化；新建本地会话并清空服务端 AI 上下文（保留文件改动）
+  clearTrace();
   startNewConv(true);
   send({ type: "newchat" });
 }
@@ -2425,6 +2664,12 @@ $("btnReset").onclick = () => {
 
 /* ---------------- 全局快捷键 ---------------- */
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("shortcutsModal") && $("shortcutsModal").style.display !== "none") {
+    $("shortcutsModal").style.display = "none"; return;
+  }
+  if (e.key === "Escape" && $("commitModal") && $("commitModal").style.display !== "none") {
+    $("commitModal").style.display = "none"; return;
+  }
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveActiveFile(); }
   else if ((e.ctrlKey || e.metaKey) && (e.key === "." || e.code === "Period")) {
     e.preventDefault();
@@ -2625,9 +2870,38 @@ async function startApp() {
   loadSkills(); loadPlan(convId); connect();
 }
 
-/* ===== B5 全局加载遮罩 ===== */
-function showBoot() { const b = $("bootScreen"); if (b) b.classList.remove("hidden"); }
-function hideBoot() { const b = $("bootScreen"); if (b) b.classList.add("hidden"); }
+/* ===== B5 全局加载遮罩 · 品牌开场 ===== */
+let bootShownAt = 0;
+const BOOT_MIN_DWELL = 1300; // 品牌开场最短停留，保证艺术入场被看见（而非一闪而过）
+function showBoot() {
+  const b = $("bootScreen");
+  if (b) { b.classList.remove("hidden", "boot-exit", "boot-done"); bootShownAt = Date.now(); }
+}
+function hideBoot() {
+  const b = $("bootScreen");
+  if (!b || b.classList.contains("hidden")) return;
+  const wait = Math.max(0, BOOT_MIN_DWELL - (Date.now() - bootShownAt));
+  setTimeout(() => {
+    b.classList.add("boot-done");   // 进度条拉满
+    b.classList.add("boot-exit");   // 电影化退场（淡出 + 微缩放 + 模糊）
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      b.classList.add("hidden");
+      b.classList.remove("boot-exit", "boot-done");
+    };
+    // 仅响应 bootScreen 自身的退场动画结束；子元素动画冒泡不触发
+    const onEnd = (e) => {
+      if (e.target === b && e.animationName === "bootExit") {
+        b.removeEventListener("animationend", onEnd);
+        done();
+      }
+    };
+    b.addEventListener("animationend", onEnd);
+    setTimeout(done, 850); // 兜底：reduced-motion 或动画未触发时也能收敛
+  }, wait);
+}
 
 
 bootstrap().then(async () => {

@@ -19,14 +19,8 @@
    ============================================================ */
 "use strict";
 
-function diffStat(oldStr, newStr) {
-  const cnt = (arr) => { const m = {}; arr.forEach((l) => (m[l] = (m[l] || 0) + 1)); return m; };
-  const A = cnt(String(oldStr).split("\n")), B = cnt(String(newStr).split("\n"));
-  let add = 0, del = 0;
-  for (const l in B) { const d = B[l] - (A[l] || 0); if (d > 0) add += d; }
-  for (const l in A) { const d = A[l] - (B[l] || 0); if (d > 0) del += d; }
-  return { add, del };
-}
+// diffStat 统一复用 agent-base 的单一实现，避免双份重复逻辑（patch 仍对外导出以保持 test-patch 兼容）
+const { diffStat } = require("./agent-base");
 
 /* 在单文件内容上，顺序应用 old->new 片段替换。
    返回 { original, modified, edits:[{ok,error,old_string,new_string}] } */

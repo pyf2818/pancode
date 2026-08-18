@@ -7,7 +7,7 @@
 "use strict";
 
 const assert = require("assert");
-const { LlmAgent } = require("../server/agent-llm");
+const { LlmAgent } = require("../../server/agent-llm");
 
 const events = [];
 function emit(e) { events.push(e); }

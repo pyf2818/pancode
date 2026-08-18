@@ -335,7 +335,10 @@ $("mcpSave").onclick = mcpSave;
 // 供后端 mcp.servers 广播调用：仅更新状态徽标，不覆盖本地编辑副本
 window.onMcpServers = function (servers) { mcpStatuses = servers || []; renderMcpList(); };
 
-/* ---------------- 工作流模板（目标驱动 /goal 式） ---------------- */
+/* ---------------- 工作流模板（目标驱动 /goal 式） ----------------
+   面板优先展示后端真实模板（/api/templates，含用户 save_template 存的自定义模板），
+   点击后生成「设定目标 + 实例化模板 + 逐步执行」的提示词；
+   下面的 WORKFLOWS 仅作为接口不可用时的本地兜底提示词。 */
 const WORKFLOWS = [
   { icon: "error", name: "修复 Bug", tmpl: "请定位并修复以下 bug：<描述 bug 现象与复现步骤>。\n要求：先复现，再定位根因，修复后运行相关测试验证，最后总结根因与改动。" },
   { icon: "plus", name: "实现新功能", tmpl: "请实现以下功能：<功能描述与目标>。\n要求：先列出计划（涉及的文件 / 接口 / 数据结构），再编码实现，最后自测并说明如何验证。" },
@@ -344,28 +347,92 @@ const WORKFLOWS = [
   { icon: "check", name: "跑测试 / CI", tmpl: "请运行项目的测试 / 构建 / lint，并修复所有失败项，直到全部通过；每一步说明做了什么。" },
   { icon: "eye", name: "代码审查", tmpl: "请审查 <范围 / 文件 / PR> 的代码质量、潜在 bug、安全风险与可维护性，给出按优先级排序的问题清单与改进建议。" },
 ];
-function renderWorkflows() {
-  const box = $("wfList");
-  box.innerHTML = "";
+/* 后端真实模板的展示映射：name → 图标 / 中文标签 */
+const WF_ICONS = { ship: "sparkle", review: "eye", feature: "plus", bugfix: "error", refactor: "split", test: "check", docs: "md" };
+const WF_LABELS = { ship: "一键全流程交付", review: "代码审查", feature: "实现新功能", bugfix: "修复 Bug", refactor: "重构模块", test: "补充测试", docs: "补充文档" };
+const WF_GOAL_PH = "<在此描述你的目标>";
+
+/* 真实模板 → 目标驱动提示词：Agent 会用 set_goal + 模板生成计划并执行到交付 */
+function wfTemplatePrompt(t) {
+  return "目标：" + WF_GOAL_PH + "\n\n请用工作流模板「" + t.name + "」设定会话目标并生成执行计划（共 " + t.steps +
+    " 步），然后按计划逐步执行，每完成一步更新任务状态，直到全部交付完成。";
+}
+
+/* 填入输入框并选中占位符，方便直接覆盖输入 */
+function wfFill(text) {
+  const ta = inputBox.querySelector("#chatInput");
+  if (ta) {
+    ta.value = text;
+    ta.focus();
+    const i = text.indexOf("<");
+    if (i >= 0) { const j = text.indexOf(">", i); if (j > i) ta.setSelectionRange(i, j + 1); }
+  }
+  $("wfPop").style.display = "none";
+}
+
+function wfItemEl(icon, name, sub, badge, onPick, hi) {
+  const it = document.createElement("div");
+  it.className = "wf-item" + (hi ? " wf-hi" : "");
+  it.innerHTML = '<span class="wf-ic">' + ico(icon) + '</span><div class="wf-meta"><div class="wf-name">' + esc(name) +
+    (badge ? '<span class="wf-badge">' + esc(badge) + "</span>" : "") + '</div><div class="wf-sub">' + esc(sub) + "</div></div>";
+  it.onclick = onPick;
+  return it;
+}
+function wfGroupEl(label) {
+  const g = document.createElement("div");
+  g.className = "wf-group";
+  g.textContent = label;
+  return g;
+}
+
+/* 兜底：引擎未就绪 / 接口不可用时，退回本地提示词模板，保证面板始终可用 */
+function renderWorkflowsFallback(box) {
+  box.appendChild(wfGroupEl("快捷提示词"));
   WORKFLOWS.forEach((w) => {
-    const it = document.createElement("div");
-    it.className = "wf-item";
-    it.innerHTML = '<span class="wf-ic">' + ico(w.icon) + '</span><div class="wf-meta"><div class="wf-name">' + w.name + '</div><div class="wf-sub">' + esc(w.tmpl.split("\n")[0].slice(0, 30)) + "</div></div>";
-    it.onclick = () => {
-      const ta = inputBox.querySelector("#chatInput");
-      if (ta) { ta.value = w.tmpl; ta.focus(); }
-      $("wfPop").style.display = "none";
-    };
-    box.appendChild(it);
+    box.appendChild(wfItemEl(w.icon, w.name, w.tmpl.split("\n")[0].slice(0, 30), "", () => wfFill(w.tmpl), false));
   });
 }
-$("btnWorkflow").onclick = (e) => {
-  e.stopPropagation();
+
+/* 渲染真实模板（内置 + 用户自定义），ship 置顶作为一站式交付入口 */
+async function renderWorkflows() {
+  const box = $("wfList");
+  box.innerHTML = '<div class="wf-group">加载模板…</div>';
+  let templates = [];
+  try {
+    const r = await fetch("/api/templates");
+    const d = await r.json();
+    templates = (d && d.templates) || [];
+  } catch (e) { templates = []; }
+
+  box.innerHTML = "";
+  if (!templates.length) { renderWorkflowsFallback(box); return; }
+
+  const addTpl = (t, hi) => box.appendChild(wfItemEl(
+    WF_ICONS[t.name] || "toolbox",
+    WF_LABELS[t.name] || t.name,
+    t.description || (t.steps + " 步流程"),
+    t.steps + " 步",
+    () => wfFill(wfTemplatePrompt(t)),
+    hi
+  ));
+
+  const ship = templates.find((t) => t.name === "ship" && t.builtin);
+  if (ship) { box.appendChild(wfGroupEl("一站式交付")); addTpl(ship, true); }
+
+  const rest = templates.filter((t) => t.builtin && t.name !== "ship");
+  if (rest.length) { box.appendChild(wfGroupEl("流程模板")); rest.forEach((t) => addTpl(t, false)); }
+
+  const custom = templates.filter((t) => !t.builtin);
+  if (custom.length) { box.appendChild(wfGroupEl("我的模板")); custom.forEach((t) => addTpl(t, false)); }
+}
+/* 打开 / 切换工作流面板（顶栏按钮与命令面板共用） */
+function openWorkflowPop(toggle) {
   const pop = $("wfPop");
-  const show = pop.style.display !== "block";
+  const show = toggle ? pop.style.display !== "block" : true;
   pop.style.display = show ? "block" : "none";
   if (show) renderWorkflows();
-};
+}
+$("btnWorkflow").onclick = (e) => { e.stopPropagation(); openWorkflowPop(true); };
 $("wfPop").addEventListener("click", (e) => e.stopPropagation());
 document.addEventListener("click", (e) => {
   const pop = $("wfPop");

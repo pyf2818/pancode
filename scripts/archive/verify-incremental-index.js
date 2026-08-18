@@ -7,7 +7,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { buildIndex, search, getIndex, queueFileUpdate, removeFile } = require("../server/code-index");
+const { buildIndex, search, getIndex, queueFileUpdate, removeFile } = require("../../server/code-index");
 
 let ok = true;
 const fail = (m) => { ok = false; console.log("  FAIL: " + m); };

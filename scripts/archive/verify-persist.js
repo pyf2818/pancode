@@ -18,7 +18,7 @@ const PV_FILE = "_pv_verify_test.md";
 const pvPath = path.join(WS, PV_FILE);
 fs.writeFileSync(pvPath, "# 预览拖拽验证\n\n这是一段用于验证实时预览与分隔条拖拽的 Markdown 内容。\n", "utf8");
 
-require("../server/index.js");   // 启动服务端（同进程）
+require("../../server/index.js");   // 启动服务端（同进程）
 
 const PORT = process.env.PORT;
 const OUT = path.join(__dirname, "_verify_out");

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>pancode — AI 编程工作台</title>
 <link rel="stylesheet" href="styles.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 5l4 3-4 3' fill='none' stroke='%234fc1ff' stroke-width='1.5' stroke-linecap='round'/%3E%3Cpath d='M11 2.5l2.5 6.2-2.7-.6-1.6 2.3L8 4z' fill='%234fc1ff'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 34 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%231177bb'/%3E%3Cstop offset='.55' stop-color='%234fc1ff'/%3E%3Cstop offset='1' stop-color='%23c586c0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M9 27 V5 H18 a7 7 0 0 1 0 14 H9' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M22 11 l3.4 4.2 -3.4 4.2' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
 <body>
 
@@ -13,7 +13,20 @@
 <div id="titlebar">
   <div class="tb-left">
     <div class="traffic"><span class="t-red"></span><span class="t-yellow"></span><span class="t-green"></span></div>
-    <div class="tb-logo"><i data-ico="logo" data-cls="ico-logo"></i><b>pancode</b></div>
+    <div class="tb-logo">
+      <span class="tb-logo-mark" aria-hidden="true">
+        <svg class="brand-glyph" viewBox="0 0 34 32">
+          <defs><linearGradient id="pcGradTb" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" style="stop-color:var(--accent)"/>
+            <stop offset=".55" style="stop-color:var(--blue)"/>
+            <stop offset="1" style="stop-color:var(--purple)"/>
+          </linearGradient></defs>
+          <path d="M9 27 V5 H18 a7 7 0 0 1 0 14 H9" fill="none" stroke="url(#pcGradTb)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M22 11 l3.4 4.2 -3.4 4.2" fill="none" stroke="url(#pcGradTb)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <b class="tb-word"><span class="bw-pan">pan</span><span class="bw-code">code</span></b>
+    </div>
     <button id="btnOpenFolder" class="tb-open" title="打开任意本地文件夹作为工作区"><i data-ico="folder"></i><span class="tb-project">todo-app</span><i data-ico="chevD"></i></button>
   </div>
   <div class="tb-center">
@@ -23,14 +36,18 @@
     </div>
   </div>
   <div class="tb-right">
-    <button id="btnTheme" class="tb-theme" title="切换浅色 / 深色主题"><i data-ico="moon"></i></button>
-    <button id="btnSettings" data-i18n-title="modelSettings" title="模型设置"><i data-ico="gear"></i><span data-i18n="modelSettings">模型设置</span></button>
-    <button id="btnAgentSettings" data-i18n-title="agentSettings" title="Agent 设置"><i data-ico="robot"></i><span data-i18n="agentSettings">Agent 设置</span></button>
-    <button id="btnWorkflow" data-i18n-title="workflow" title="工作流"><i data-ico="tasklist"></i><span data-i18n="workflow">工作流</span></button>
-    <button id="btnSediment" data-i18n-title="sediment" title="沉淀"><i data-ico="save"></i><span data-i18n="sediment">沉淀</span></button>
-    <button id="btnReset" data-i18n-title="resetWorkspace" title="还原工作区"><i data-ico="reset"></i><span data-i18n="resetWorkspace">还原工作区</span></button>
+    <div class="tb-group">
+      <button id="btnTheme" class="tb-icon-btn" data-i18n-title="themeToggle" title="切换浅色 / 深色主题"><i data-ico="moon"></i></button>
+      <button id="btnSettings" class="tb-icon-btn" data-i18n-title="modelSettings" title="模型设置"><i data-ico="tune"></i></button>
+      <button id="btnAgentSettings" class="tb-icon-btn" data-i18n-title="agentSettings" title="Agent 设置"><i data-ico="robot"></i></button>
+    </div>
+    <div class="tb-group">
+      <button id="btnWorkflow" class="tb-icon-btn" data-i18n-title="workflow" title="工作流"><i data-ico="tasklist"></i></button>
+      <button id="btnSediment" class="tb-icon-btn" data-i18n-title="sediment" title="沉淀"><i data-ico="save"></i></button>
+      <button id="btnReset" class="tb-icon-btn" data-i18n-title="resetWorkspace" title="还原工作区"><i data-ico="reset"></i></button>
+    </div>
     <div id="goalWrap" class="goal-wrap">
-      <button id="btnGoal" class="goal-btn" title="Goal 模式：设定目标，Agent 持续执行直到完成"><i data-ico="play"></i>Goal</button>
+      <button id="btnGoal" class="goal-btn" title="Goal 模式：设定目标，Agent 持续执行直到完成"><i data-ico="play"></i><span>Goal</span></button>
       <div id="goalPop" class="goal-pop" style="display:none">
         <div class="goal-pop-title">设定目标</div>
         <textarea id="goalInput" rows="3" placeholder="描述你的目标，如：实现完整的用户登录注册功能，包括前后端、测试"></textarea>
@@ -125,7 +142,7 @@
           <button id="hpClose" class="hp-btn" title="关闭预览"><i data-ico="close"></i></button>
         </div>
         <div id="hpScroll" class="hp-scroll">
-          <iframe id="hpFrame" class="hp-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+          <iframe id="hpFrame" class="hp-frame" sandbox="allow-scripts"></iframe>
         </div>
       </div>
     </div>
@@ -172,9 +189,18 @@
 <div id="agentsWindow" class="window" style="display:none">
   <aside id="agSessions">
     <div class="ag-brand">
-      <span class="ag-brand-ico"><i data-ico="robot" data-cls="ico-agent-anim"></i></span>
+      <span class="ag-brand-ico">
+        <svg class="ag-glyph" viewBox="0 0 34 32" aria-hidden="true">
+          <defs><linearGradient id="pcGradAgBrand" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" style="stop-color:#ffffff"/>
+            <stop offset="1" style="stop-color:#d7ecff"/>
+          </linearGradient></defs>
+          <path d="M9 27 V5 H18 a7 7 0 0 1 0 14 H9" fill="none" stroke="url(#pcGradAgBrand)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M22 11 l3.4 4.2 -3.4 4.2" fill="none" stroke="url(#pcGradAgBrand)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
       <div class="ag-brand-txt">
-        <div class="ag-brand-name">pancode Agent</div>
+        <div class="ag-brand-name"><span class="bw-pan">pan</span><span class="bw-code">code</span> <span class="ag-brand-agent">Agent</span></div>
         <div class="ag-brand-sub">AI 编程工作台</div>
       </div>
     </div>
@@ -200,7 +226,16 @@
   <main id="agCenter">
     <header class="ag-chat-head">
       <div class="ag-head-left">
-        <div class="ag-avatar"><i data-ico="sparkle" data-cls="ico-agent-anim"></i></div>
+        <div class="ag-avatar">
+          <svg class="ag-glyph" viewBox="0 0 34 32" aria-hidden="true">
+            <defs><linearGradient id="pcGradAgAvatar" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" style="stop-color:#ffffff"/>
+              <stop offset="1" style="stop-color:#d7ecff"/>
+            </linearGradient></defs>
+            <path d="M9 27 V5 H18 a7 7 0 0 1 0 14 H9" fill="none" stroke="url(#pcGradAgAvatar)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M22 11 l3.4 4.2 -3.4 4.2" fill="none" stroke="url(#pcGradAgAvatar)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
         <div class="ag-head-txt">
           <div class="ag-head-name">Agent 会话</div>
           <div class="ag-head-sub"><span class="ag-live-dot"></span><span id="agLiveTxt">AI 空闲</span> · <span class="cp-model" id="cpModelAgents">…</span></div>
@@ -224,13 +259,24 @@
       <div class="ag-panel-title"><span class="cp-title"><i data-ico="diff"></i>本次改动</span><span id="agChangeCount" class="ag-panel-hint">0 个文件</span></div>
       <div id="agChangedFiles"><div class="scm-empty" data-i18n="noChangesAgent">Agent 修改代码后，文件与 Diff 会显示在这里。</div></div>
     </section>
+    <section class="ag-panel ag-panel-grow" id="agTracePanel">
+      <div class="ag-panel-title"><span class="cp-title"><i data-ico="tasklist"></i>Agent Trace</span><span id="agTraceCount" class="ag-panel-hint">0 事件</span></div>
+      <div id="traceStats" class="trace-stats">
+        <div class="ts-item"><b id="traceRounds">0</b><span>rounds</span></div>
+        <div class="ts-item"><b id="traceTools">0</b><span>tools</span></div>
+        <div class="ts-item"><b id="traceTokens">0</b><span>tokens</span></div>
+        <div class="ts-item"><b id="traceLoops">0</b><span>loops</span></div>
+        <div class="ts-item"><b id="traceErrors">0</b><span>errors</span></div>
+      </div>
+      <div id="traceList" class="trace-list"></div>
+    </section>
   </aside>
 </div>
 
 <!-- ======================= 模型设置弹窗 ======================= -->
 <div id="settingsModal" style="display:none">
   <div class="set-box">
-    <div class="set-head"><span><i data-ico="gear"></i> 模型设置 — OpenAI 兼容 API</span><button id="setClose"><i data-ico="close"></i></button></div>
+    <div class="set-head"><span><i data-ico="tune"></i> 模型设置 — OpenAI 兼容 API</span><button id="setClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
       <div class="set-tip">填入任意 OpenAI 兼容服务（OpenAI / DeepSeek / Moonshot / 通义 / Ollama / vLLM…），保存后 Agent 立即切换为<b>真实 LLM 引擎</b>；留空则使用内置演示引擎。</div>
       <div id="modelPresets" class="model-presets">
@@ -480,12 +526,30 @@
   </div>
 </div>
 
-<!-- ======================= 全局加载遮罩 (B5) ======================= -->
+<!-- ======================= 全局加载遮罩 · 品牌开场 ======================= -->
 <div id="bootScreen">
+  <div class="boot-aurora" aria-hidden="true">
+    <span class="aurora a1"></span>
+    <span class="aurora a2"></span>
+    <span class="aurora a3"></span>
+  </div>
   <div class="boot-inner">
-    <div class="boot-logo"><i data-ico="robot"></i></div>
-    <div class="boot-title">pancode</div>
-    <div class="boot-spinner"></div>
+    <div class="boot-mark">
+      <svg class="brand-glyph" viewBox="0 0 34 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="pcGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" style="stop-color:var(--accent)"/>
+            <stop offset=".55" style="stop-color:var(--blue)"/>
+            <stop offset="1" style="stop-color:var(--purple)"/>
+          </linearGradient>
+        </defs>
+        <path d="M9 27 V5 H18 a7 7 0 0 1 0 14 H9" fill="none" stroke="url(#pcGrad)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M22 11 l3.4 4.2 -3.4 4.2" fill="none" stroke="url(#pcGrad)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="boot-word"><span class="bw-pan">pan</span><span class="bw-code">code</span></div>
+    <div class="boot-tagline">本地优先 · AI 编程工作台</div>
+    <div class="boot-progress"><i></i></div>
     <div class="boot-tip">正在启动工作台…</div>
   </div>
 </div>
@@ -506,13 +570,66 @@
 </div>
 
 <!-- ======================= 命令面板 (C3) ======================= -->
-<div id="cmdk" style="display:none">
+<div id="cmdk" class="hidden">
   <div class="cmdk-box" role="dialog" aria-label="命令面板">
     <div class="cmdk-input-row">
       <i data-ico="search" class="cmdk-search-ico"></i>
       <input id="cmdkInput" class="cmdk-input" placeholder="输入命令或文件名…  (↑↓ 选择 · Enter 执行 · Esc 关闭)" autocomplete="off" aria-label="命令搜索">
     </div>
     <div class="cmdk-list" id="cmdkList" role="listbox"></div>
+    <div class="cmdk-foot"><span><b>Ctrl/Cmd + Shift + P</b> 随时唤起命令面板</span><span class="cmdk-foot-hint">提示：输入「全流程」「主题」「文件」可快速过滤</span></div>
+  </div>
+</div>
+
+<!-- ======================= 键盘快捷键帮助弹窗 ======================= -->
+<div id="shortcutsModal" style="display:none">
+  <div class="set-box sc-box">
+    <div class="set-head"><span><i data-ico="keyboard"></i> 键盘快捷键</span><button id="scClose"><i data-ico="close"></i></button></div>
+    <div class="set-body">
+      <div class="sc-group">通用</div>
+      <div class="sc-row"><span class="sc-desc">打开命令面板</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc">保存当前文件</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>S</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc">切换 Editor / Agents 窗口</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>.</kbd></span></div>
+      <div class="sc-group">聊天 / 输入框</div>
+      <div class="sc-row"><span class="sc-desc">发送消息 / 执行</span><span class="sc-key"><kbd>Enter</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc">输入框内换行</span><span class="sc-key"><kbd>Shift</kbd> + <kbd>Enter</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc">浏览已发消息（单行时）</span><span class="sc-key"><kbd>↑</kbd> / <kbd>↓</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc">引用文件 / 文件夹</span><span class="sc-key"><kbd>@</kbd> 后输入路径</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 一键提交改动弹窗 ======================= -->
+<div id="commitModal" style="display:none">
+  <div class="set-box cm-box">
+    <div class="set-head"><span><i data-ico="branch"></i> 提交改动（Git）</span><button id="cmClose"><i data-ico="close"></i></button></div>
+    <div class="set-body">
+      <div class="cm-branch" id="cmBranch"></div>
+      <div class="cm-selall"><label><input type="checkbox" id="cmSelAll" checked> 全选</label><span class="cm-count" id="cmCount"></span></div>
+      <div class="cm-list" id="cmChanges"></div>
+      <div class="cm-summary" id="cmSummaryWrap" style="display:none">
+        <div class="cm-summary-head">
+          <span class="cm-summary-title">智能摘要</span>
+          <div class="cm-summary-tabs">
+            <button type="button" class="cm-tab active" id="cmViewLog">变更摘要</button>
+            <button type="button" class="cm-tab" id="cmViewDoc">文档草稿</button>
+          </div>
+        </div>
+        <pre class="cm-summary-body" id="cmSummary"></pre>
+        <div class="cm-summary-actions">
+          <button type="button" class="set-btn" id="cmApplyMsg">用作提交信息</button>
+          <button type="button" class="set-btn" id="cmCopy">复制</button>
+        </div>
+      </div>
+      <label class="cm-label">提交信息
+        <textarea id="cmMsg" rows="3" placeholder="例如：实现一站式交付流程"></textarea>
+      </label>
+      <div class="cm-result" id="cmResult"></div>
+      <div class="cm-actions">
+        <button id="cmCancel" class="set-btn" style="background:var(--bg4)">取消</button>
+        <button id="cmSubmit" class="btn-main">提交</button>
+      </div>
+    </div>
   </div>
 </div>
 

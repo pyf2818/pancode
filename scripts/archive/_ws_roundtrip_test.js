@@ -7,7 +7,7 @@
 const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 
-const { LlmAgent } = require("../server/agent-llm");
+const { LlmAgent } = require("../../server/agent-llm");
 
 // ---- 内存 mock 文件层 ----
 const store = {};

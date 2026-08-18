@@ -12,6 +12,7 @@ const path = require("path");
 
 process.env.PORT = process.env.PORT || "8822";
 require("../server/index.js");   // 启动服务端（同进程）
+const auth = require("../server/auth");
 
 const PORT = process.env.PORT;
 const OUT = path.join(__dirname, "_verify_out");
@@ -36,10 +37,11 @@ const MOCK = {
   ],
 };
 
+let __testUser = null;
 async function getToken() {
   const base = `http://127.0.0.1:${PORT}`;
-  const user = "verify_" + Date.now();
-  const opts = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: user, password: "test1234" }) };
+  __testUser = "verify_" + Date.now();
+  const opts = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: __testUser, password: "test1234" }) };
   await fetch(base + "/api/auth/register", opts).catch(() => {});
   const r = await fetch(base + "/api/auth/login", opts);
   const j = await r.json();
@@ -86,5 +88,11 @@ async function getToken() {
   console.log("DIAG " + JSON.stringify(diag) + " errors=" + JSON.stringify(errors.slice(0, 8)));
 
   await browser.close();
+  cleanup();
   process.exit(0);
-})().catch((e) => { console.error("VERIFY_FAIL", e); process.exit(1); });
+})().catch((e) => { console.error("VERIFY_FAIL", e); cleanup(); process.exit(1); });
+
+/* 自清理：删除本次验证注册的一次性账号 */
+function cleanup() {
+  try { if (__testUser && auth.removeUser(__testUser)) console.log("已清理临时账号: " + __testUser); } catch (e) {}
+}

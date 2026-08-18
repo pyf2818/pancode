@@ -8,7 +8,7 @@ const PORT = 8841;
 process.env.PORT = String(PORT);
 process.env.NO_AUTH = "1"; // simplify auth for the test
 
-const server = require("../server/index.js");
+const server = require("../../server/index.js");
 
 let USER_TOKEN = "";
 function req(method, urlPath, body, token) {

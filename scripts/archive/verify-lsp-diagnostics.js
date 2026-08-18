@@ -3,7 +3,7 @@
    - getDiagnostics 按文件 / 工作区两种粒度返回，且 Windows/Unix 路径归一化一致
    直接调用与 parser.onMessage 相同的 _storeDiagnostics 入口，等价于真实代理路径。 */
 "use strict";
-const { LspManager } = require("../server/lsp-bridge");
+const { LspManager } = require("../../server/lsp-bridge");
 
 let ok = true;
 function assert(cond, msg) {

@@ -61,14 +61,17 @@ function makeSkillEl(s, sourceType) {
   const isBuiltin = s.source === "workflow";
   const isAuto = s.source === "auto";
   const srcTag = isBuiltin ? ' <span style="font-size:9px;color:var(--text-dim)">内置</span>' : (isAuto ? ' <span style="font-size:9px;color:var(--ok)">沉淀</span>' : '');
+  const eyeIco = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const linkIco = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+  const trashIco = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
   el.innerHTML =
     '<div class="skill-ic" style="background:' + catColor + '">' + esc((s.name || "S")[0]) + '</div>' +
     '<div class="skill-meta"><div class="skill-name">' + esc(s.name) + srcTag + '</div>' +
     '<div class="skill-desc">' + esc(s.description || "无描述") + '</div></div>' +
     '<div class="skill-actions">' +
-    '<button class="skill-view" title="查看详情">查看</button>' +
-    '<button class="skill-ref" title="引用到对话">引用</button>' +
-    (sourceType !== "workflow" ? '<button class="danger" title="删除">删</button>' : '') + '</div>';
+    '<button class="skill-view" title="查看详情">' + eyeIco + '</button>' +
+    '<button class="skill-ref" title="引用到对话">' + linkIco + '</button>' +
+    (sourceType !== "workflow" ? '<button class="danger" title="删除">' + trashIco + '</button>' : '') + '</div>';
   el.querySelector(".skill-view").onclick = (e) => { e.stopPropagation(); showSkillDetail(s); };
   el.querySelector(".skill-ref").onclick = (e) => { e.stopPropagation(); insertSkillToChat(s); };
   const delBtn = el.querySelector(".danger");

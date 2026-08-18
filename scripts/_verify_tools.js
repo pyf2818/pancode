@@ -2,15 +2,19 @@
    通过 Module._load 覆写 ./llm ./agent-base ./config 的 require，无需真实 LLM / 文件系统。 */
 const Module = require("module");
 const path = require("path");
+const fs = require("fs");
 
 let toolsSeen = null;
 let rounds = 0;
 
 /* 当前 TOOLS 全集（随 Phase 2 扩容，保持与 agent-llm.js 同步） */
 const EXPECT_TOOLS = [
-  "list_files", "read_file", "write_file", "delete_file",
+  "list_files", "read_file", "write_file", "apply_edit", "delete_file",
   "search_code", "run_command", "repo_map", "search_symbol",
-  "search_memory", "create_skill", "create_plan", "update_plan",
+  "search_memory", "get_diagnostics", "undo",
+  "create_skill", "create_plan", "update_plan",
+  "list_templates", "instantiate_template", "save_template", "remove_template",
+  "set_goal", "goal_status", "save_session_memory", "agent",
 ].sort();
 
 const mockLlm = {
@@ -33,7 +37,7 @@ const mockLlm = {
 
 class AgentBase {
   constructor(ctx) { this.ctx = ctx; this.cfg = ctx.cfg; this.files = ctx.files; this.term = ctx.term; }
-  emit() {}
+  emit(ev) { if (ev && ev.type === "agent.trace") { (this.__trace = this.__trace || []).push(ev.event || ev); } }
   tool() { return { body() {}, done() {} }; }
   thinkStart() { return { delta() {}, end() {} }; }
   msgStart() { return { delta() {}, end() {} }; }
@@ -87,6 +91,26 @@ const { LlmAgent } = require(path.join(__dirname, "..", "server", "agent-llm.js"
   }
   if (rounds < 1) errs.push("chatStream 未被调用（ReAct 未启动）");
 
+  /* P2 可观测：agent.trace 必须随 ReAct 循环实时 emit（Trace 面板依赖此事件） */
+  const trace = a.__trace || [];
+  if (trace.length < 2) errs.push("agent.trace 事件未实时 emit（Trace 面板收不到数据），实际 " + trace.length);
+  else {
+    const types = trace.map((e) => e.type);
+    if (!types.includes("llm.round")) errs.push("缺少 llm.round trace 事件");
+    if (!types.includes("tool.call")) errs.push("缺少 tool.call trace 事件");
+    for (const e of trace) {
+      if (typeof e.seq !== "number" || typeof e.t !== "number" || !e.data) errs.push("trace 事件结构异常: " + e.type);
+    }
+  }
+
+  /* P2 可观测：trace 落盘持久化——flush 后磁盘 JSONL 必须存在且有内容（跨会话回看依赖） */
+  await a._flushTrace();
+  const traceFile = path.join(mockConfig.ROOT, ".pancode", "agent-traces", "default.jsonl");
+  let diskLines = 0;
+  try { diskLines = fs.readFileSync(traceFile, "utf8").trim().split("\n").filter(Boolean).length; } catch (e) {}
+  if (diskLines < 2) errs.push("trace 未落盘到磁盘（diskLines=" + diskLines + "）");
+  try { fs.unlinkSync(traceFile); } catch (e) {}   // 清理测试产物
+
   if (errs.length) { console.error("FAIL:\n - " + errs.join("\n - ")); process.exit(1); }
-  console.log("PASS: TOOLS 已定义（" + toolsSeen.length + " 个工具），ReAct 循环正常启动并通过工具调用跑到结束。");
+  console.log("PASS: TOOLS 已定义（" + toolsSeen.length + " 个工具），ReAct 循环正常启动并通过工具调用跑到结束；agent.trace 实时 emit " + trace.length + " 条并已落盘 " + diskLines + " 行 JSONL（llm.round / tool.call 等）。");
 })().catch((e) => { console.error("FAIL:", e && e.stack || e); process.exit(1); });

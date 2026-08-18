@@ -113,6 +113,43 @@ class GitLayer {
   info() {
     return { git: this.available, branch: this.available ? this.branch : "无 Git（快照模式）" };
   }
+
+  /* 提交改动：git add + git commit -m <message>
+     - files 省略 / 为空：git add -A（全量，向后兼容）
+     - files 为路径数组：仅暂存这些文件（按文件选择性提交）
+     安全：files 必须经过 changes() 白名单校验，拒绝 ../ 逃逸与绝对路径，杜绝越权/注入。
+     message 作为独立参数传入（非 shell 拼接），无注入风险。
+     返回 { ok, summary, committed }；无可提交改动时为 { ok:false, nothing:true }。 */
+  commit(message, files) {
+    if (!this.available) return { ok: false, error: "当前工作区不是 Git 仓库，无法提交" };
+    const msg = (message || "").trim() || "chore: 通过 pancode 提交改动";
+    // 选择性提交：仅接受当前真实改动集合内的路径
+    let targets = null;
+    if (Array.isArray(files) && files.length) {
+      const allowed = new Set(this.changes().map((c) => c.path));
+      const clean = files.filter((f) => typeof f === "string" && allowed.has(f) && !/^\.\./.test(f) && !path.isAbsolute(f));
+      if (!clean.length) return { ok: false, error: "未选择任何有效文件" };
+      targets = clean;
+    }
+    try {
+      if (targets) this._git(["add", "--", ...targets]);
+      else this._git(["add", "-A"]);
+      let out = "";
+      try { out = this._git(["commit", "-m", msg]).trim(); }
+      catch (e) {
+        const t = (e.stderr || e.stdout || e.message || "").toString();
+        if (/nothing to commit/i.test(t)) return { ok: false, nothing: true };
+        throw e;
+      }
+      // 统计本次提交涉及的文件数
+      let committed = 0;
+      try { committed = this._git(["show", "--stat", "--oneline", "HEAD", "-1"]).split("\n")
+        .filter((l) => /\|\s*\d+/.test(l)).length; } catch (e) {}
+      return { ok: true, summary: out, committed };
+    } catch (e) {
+      return { ok: false, error: (e.stderr || e.stdout || e.message || "").toString().slice(0, 300) };
+    }
+  }
 }
 
 module.exports = { GitLayer };

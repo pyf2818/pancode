@@ -8,10 +8,17 @@
 let _cmdkItems = [];
 function buildCmdList() {
   const acts = [
+    { id: "ship", title: "一键全流程交付（工作流模板）", icon: "sparkle", group: "交付", run: () => openWorkflowPop() },
+    { id: "workflow", title: "打开工作流面板", icon: "tasklist", group: "交付", run: () => openWorkflowPop(true) },
+    { id: "commit", title: "提交当前改动（Git）", icon: "branch", group: "交付", run: () => openCommit() },
+    { id: "newfile", title: "新建文件", icon: "filePlus", group: "文件", run: () => promptNewFile("") },
+    { id: "save", title: "保存当前文件", icon: "save", group: "文件", run: () => saveActiveFile() },
     { id: "theme", title: "切换主题（深色 / 浅色）", icon: getTheme() === "light" ? "moon" : "sun", group: "视图", run: () => applyTheme(getTheme() === "light" ? "dark" : "light") },
     { id: "preview", title: "切换 HTML / Markdown 预览", icon: "eye", group: "视图", run: () => togglePreview() },
+    { id: "switch", title: "切换 Editor / Agents 窗口", icon: "robot", group: "视图", run: () => switchMode((window.state && window.state.mode === "editor") ? "agents" : "editor") },
     { id: "evo", title: "打开进化树", icon: "tree", group: "视图", run: () => openEvolutionCodex() },
     { id: "settings", title: "打开模型设置", icon: "robot", group: "视图", run: () => openSettings() },
+    { id: "shortcuts", title: "查看键盘快捷键", icon: "keyboard", group: "帮助", run: () => openShortcuts() },
     { id: "logout", title: "退出登录", icon: "close", group: "账户", run: () => { localStorage.removeItem("cw-user-token"); location.reload(); } },
   ];
   const files = Object.keys(state.files || {}).sort().map((f) => ({ id: "file:" + f, title: f, icon: "files", group: "打开文件", run: () => openFile(f) }));
@@ -30,7 +37,7 @@ function renderCmdk(filter) {
   });
   list.innerHTML = html;
   list.querySelectorAll(".cmdk-item").forEach((el) => {
-    el.onclick = () => runCmdk(parseInt(el.dataset.i));
+    el.onclick = (ev) => { ev.stopPropagation(); runCmdk(parseInt(el.dataset.i)); };
     el.onmousemove = () => setCmdkActive(parseInt(el.dataset.i));
   });
   replaceIcons(list);

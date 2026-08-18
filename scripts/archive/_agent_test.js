@@ -1,6 +1,6 @@
 /* Phase 1 纯逻辑单测：不触发网络，用假 ctx 实例化 LlmAgent 验证助手方法 */
 const assert = require("assert");
-const { LlmAgent } = require("../server/agent-llm");
+const { LlmAgent } = require("../../server/agent-llm");
 
 const store = {
   "src/a.js": "console.log(1)",

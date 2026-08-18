@@ -15,7 +15,7 @@ process.env.PORT = process.env.PORT || "8831";
 const WS = process.env.CURSORWEB_WORKSPACE || path.resolve(__dirname, "..", "server");
 process.env.CURSORWEB_WORKSPACE = WS;
 
-require("../server/index.js");   // 启动服务端（同进程）
+require("../../server/index.js");   // 启动服务端（同进程）
 
 const PORT = process.env.PORT;
 const OUT = path.join(__dirname, "_verify_out");
