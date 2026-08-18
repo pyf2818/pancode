@@ -818,23 +818,6 @@ app.post("/api/agents/paths", (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-/* 本地 Agent 联动开关 + 安装检测（主 Agent 是否可在对话中调用本机 CLI） */
-app.get("/api/local-agents", (req, res) => {
-  try {
-    res.json({
-      ok: true,
-      enabled: !!(cfg.localAgents && cfg.localAgents.enabled !== false),
-      agents: agents.detectAgents(cfg.agents && cfg.agents.paths),
-    });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-app.post("/api/local-agents", (req, res) => {
-  try {
-    configMod.saveLocalAgents(cfg, (req.body || {}));
-    res.json({ ok: true, enabled: cfg.localAgents.enabled });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
 /* ---------- WebSocket ---------- */
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });

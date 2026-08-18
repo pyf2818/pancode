@@ -8,7 +8,6 @@
 "use strict";
 const os = require("os");
 const fs = require("fs");
-const { spawn } = require("child_process");
 
 /* 已知 Agent CLI：cmd 用于检测与启动，name 用于展示 */
 const AGENTS = [
@@ -76,60 +75,4 @@ function launchAgent(execPath, cwd) {
   }
 }
 
-/* 非交互式调用本机已安装的 Agent CLI，把任务结果返回给 pancode 的主 Agent（联立进 Agent 循环）。
-   - agentId: claude / codex / gemini / aider
-   - task: 交给该 CLI 的 prompt（在当前工作区目录运行）
-   - cwd: 工作区目录
-   - pathsMap: 可选的绝对路径配置（同 detectAgents）
-   返回 Promise<{ ok, code, output, error }>。未安装 / 启动失败 / 超时都会以 ok:false 返回，绝不抛异常。 */
-function runAgent(agentId, task, cwd, pathsMap) {
-  const detected = detectAgents(pathsMap);
-  const rec = detected.find((x) => x.id === agentId);
-  if (!rec || !rec.installed || !rec.path) {
-    return Promise.resolve({
-      ok: false,
-      error: "本地 Agent「" + agentId + "」未安装（侧边栏「本地 Agent」可检测；请在 PATH 或设置里配置绝对路径后重试）",
-    });
-  }
-  // 各 CLI 的非交互调用 flag（一次性把 task 作为 prompt 传入，不进入交互 TUI）
-  const FLAGS = { claude: ["-p"], codex: ["exec"], gemini: ["-p"], aider: ["--message"] };
-  const flags = FLAGS[agentId] || ["-p"];
-  const argList = [...flags, task];
-  const work = cwd || process.cwd();
-  return new Promise((resolve) => {
-    let proc;
-    try {
-      if (os.platform() === "win32") {
-        // Windows 下 npm 全局装的 CLI 多为 .cmd，必须经 cmd /c 解析
-        const line = `"${rec.path}" ${argList.map(quoteArg).join(" ")}`;
-        proc = spawn("cmd.exe", ["/c", line], { cwd: work, windowsHide: true, env: process.env });
-      } else {
-        proc = spawn(rec.path, argList, { cwd: work, env: process.env });
-      }
-    } catch (e) {
-      return resolve({ ok: false, error: "启动失败: " + e.message });
-    }
-    let out = "", err = "";
-    if (proc.stdout) proc.stdout.on("data", (d) => (out += d));
-    if (proc.stderr) proc.stderr.on("data", (d) => (err += d));
-    const to = setTimeout(() => {
-      try { proc.kill("SIGKILL"); } catch (e) {}
-      resolve({ ok: false, error: "调用超时（300s）", output: (out + err).trim().slice(0, 16000) });
-    }, 300000);
-    proc.on("error", (e) => { clearTimeout(to); resolve({ ok: false, error: "进程错误: " + e.message }); });
-    proc.on("close", (code) => {
-      clearTimeout(to);
-      const output = (out + (err ? "\n[stderr]\n" + err : "")).trim();
-      resolve({ ok: code === 0, code: code === null ? -1 : code, output: output.slice(0, 16000) });
-    });
-  });
-}
-
-/* 给 shell 参数加引号（Windows cmd /c 场景）：无空格/特殊字符则不包；否则双引号包裹，内部 " 转义为 \" */
-function quoteArg(s) {
-  const str = String(s == null ? "" : s);
-  if (/^[A-Za-z0-9_./:\\-]+$/.test(str)) return str;
-  return '"' + str.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
-}
-
-module.exports = { detectAgents, launchAgent, runAgent, AGENTS };
+module.exports = { detectAgents, launchAgent, AGENTS };

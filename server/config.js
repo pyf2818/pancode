@@ -55,9 +55,6 @@ const DEFAULTS = {
   agents: {
     paths: { claude: "", codex: "", gemini: "", aider: "" },  // 各 Agent 可执行文件绝对路径
   },
-  // —— 本地 Agent 联动：允许主 Agent 在对话中调用本机已安装的 CLI（claude/codex/gemini/aider）——
-  // 仅当对应 Agent 已安装（侧边栏可检测）且本开关开启时生效；关闭后 local_agent 工具直接返回提示。
-  localAgents: { enabled: true },
   // —— MCP（Model Context Protocol）外部工具服务器 ——
   // 每个 server：{ name, command, args[], env{}, enabled, cwd? }
   // 仅本地优先开发工具使用；server 以用户当前权限运行，请仅添加可信来源。
@@ -222,16 +219,6 @@ function saveAgentPaths(cfg, patch) {
   return cfg;
 }
 
-/* 持久化「本地 Agent 联动」开关（仅非敏感配置，写入 pancode.config.json） */
-function saveLocalAgents(cfg, patch) {
-  if (!cfg.localAgents) cfg.localAgents = { enabled: true };
-  if (typeof patch.enabled === "boolean") cfg.localAgents.enabled = patch.enabled;
-  const onDisk = readJsonSafe(CONFIG_PATH) || {};
-  onDisk.localAgents = { enabled: cfg.localAgents.enabled };
-  writeJsonSafe(CONFIG_PATH, onDisk);
-  return cfg;
-}
-
 /* 当前引擎模式：有 key + baseURL 就用真实 LLM，否则演示引擎
    CURSORWEB_ENGINE=demo 可强制演示引擎（测试用，保证确定性） */
 function engineMode(cfg) {
@@ -278,4 +265,4 @@ function progressionPath(cfg) {
   return path.join(ROOT, ".pancode", "progression", key + ".json");
 }
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveAgentPaths, saveLocalAgents, saveMcpServers, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveAgentPaths, saveMcpServers, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };

@@ -14,7 +14,7 @@ const EXPECT_TOOLS = [
   "search_memory", "get_diagnostics", "undo",
   "create_skill", "create_plan", "update_plan",
   "list_templates", "instantiate_template", "save_template", "remove_template",
-  "set_goal", "goal_status", "save_session_memory", "agent", "local_agent",
+  "set_goal", "goal_status", "save_session_memory", "agent",
 ].sort();
 
 const mockLlm = {
