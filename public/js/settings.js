@@ -186,15 +186,6 @@ async function openAgentSettings() {
     $("agmCompact").checked = !(a.context && a.context.autoCompact === false);
     $("agmBudget").value = (a.context && a.context.budgetTokens) || 120000;
     agmSyncPromptVis();
-    // 载入本地 Agent CLI 全局路径配置
-    try {
-      const p = await fetch("/api/agents/paths").then((x) => x.json());
-      const paths = (p && p.paths) || {};
-      $("agmPathClaude").value = paths.claude || "";
-      $("agmPathCodex").value = paths.codex || "";
-      $("agmPathGemini").value = paths.gemini || "";
-      $("agmPathAider").value = paths.aider || "";
-    } catch (e) {}
   } catch (e) { $("agmStatus").className = "set-status err"; $("agmStatus").textContent = "读取设置失败: " + e.message; }
   try { await refreshMcp(); } catch (e) {}
 }
@@ -223,18 +214,6 @@ $("agmSave").onclick = async () => {
     }).then((x) => x.json());
     if (r.ok) {
       applyAgentSettings(r.agent);
-      // 持久化本地 Agent CLI 全局路径（与框架设置分开存储）
-      try {
-        await fetch("/api/agents/paths", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ paths: {
-            claude: $("agmPathClaude").value.trim(),
-            codex: $("agmPathCodex").value.trim(),
-            gemini: $("agmPathGemini").value.trim(),
-            aider: $("agmPathAider").value.trim(),
-          } }),
-        });
-      } catch (e) {}
       st.className = "set-status ok"; st.textContent = "已保存，对下一条消息立即生效";
       setTimeout(() => ($("agentModal").style.display = "none"), 800);
     } else { st.className = "set-status err"; st.textContent = "保存失败: " + r.error; }

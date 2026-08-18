@@ -22,7 +22,6 @@ const { LlmAgent } = require("./agent-llm");
 const { DemoAgent } = require("./agent-demo");
 const { LspManager, setActiveManager } = require("./lsp-bridge");
 const codeIndex = require("./code-index");
-const agents = require("./agents");
 const { SoulStore } = require("./soul-store");
 const { SkillStore } = require("./skill-store");
 const { ProgressionStore } = require("./progression-store");
@@ -166,8 +165,6 @@ const NO_AUTH = new Set([
   "/api/index/status",  // 本地代码索引状态查询（本地优先工具，与 health 同级）
   "/api/index/build",   // 本地代码索引构建
   "/api/index/search",  // 本地代码索引检索
-  "/api/agents/detect", // 本机已安装 Agent 检测（本地优先工具，与 health 同级）
-  "/api/agents/launch", // 本机一键启动 Agent（仅运行用户已安装的 CLI，不泄露源码）
 ]);
 /* A1：用户会话闸门——仅校验登录后下发的 userToken（auth.verify）；AUTH_TOKEN 仅用于本机 bootstrap 与 WS 环回 */
 function userAuthed(req) {
@@ -791,32 +788,6 @@ app.get("/api/index/status", (req, res) => {
   res.json({ ok: true, built: !!idx, meta: idx ? idx.meta : null });
 });
 
-/* ---------- 本地 Agent 检测与一键调用 ---------- */
-app.get("/api/agents/detect", (req, res) => {
-  try {
-    res.json({ ok: true, agents: agents.detectAgents(cfg.agents && cfg.agents.paths) });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-app.post("/api/agents/launch", (req, res) => {
-  const id = req.body && req.body.id;
-  const a = agents.AGENTS.find((x) => x.id === id);
-  if (!a) return res.status(400).json({ ok: false, error: "未知 Agent" });
-  // 优先使用「全局路径配置 / PATH」解析出的可执行文件
-  const detected = agents.detectAgents(cfg.agents && cfg.agents.paths);
-  const rec = detected.find((x) => x.id === id);
-  const execPath = (rec && rec.path) || a.cmd;
-  const r = agents.launchAgent(execPath, WS_DIR);
-  res.json(r.ok ? { ok: true } : { ok: false, error: r.error });
-});
-app.get("/api/agents/paths", (req, res) => {
-  res.json({ ok: true, paths: (cfg.agents && cfg.agents.paths) || {} });
-});
-app.post("/api/agents/paths", (req, res) => {
-  try {
-    configMod.saveAgentPaths(cfg, (req.body || {}));
-    res.json({ ok: true, paths: cfg.agents.paths });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
 
 /* ---------- WebSocket ---------- */
 const server = http.createServer(app);

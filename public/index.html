@@ -81,12 +81,6 @@
         </span>
       </div>
       <div id="fileTree"></div>
-      <div class="side-section agent-section">
-        <div class="side-section-head"><span data-i18n="localAgents">本地 Agent</span>
-          <span class="side-actions"><button id="btnAgentRefresh" title="重新检测本地 Agent"><i data-ico="reset"></i></button></span>
-        </div>
-        <div id="agentDetectList" class="agent-list"></div>
-      </div>
     </div>
     <div class="side-view" id="view-search" style="display:none">
       <div class="side-title" data-i18n="search">搜索</div>
@@ -255,10 +249,12 @@
       <div class="ag-panel-title"><span class="cp-title"><i data-ico="terminal"></i>实时终端</span><span class="ag-panel-hint">真实执行</span></div>
       <div id="terminalSlotAgents" class="terminal-slot"></div>
     </section>
-    <section class="ag-panel ag-panel-grow">
+    <div class="resizer-h" id="agResize1" title="拖动调整终端高度"></div>
+    <section class="ag-panel ag-panel-grow" id="agChangedPanel">
       <div class="ag-panel-title"><span class="cp-title"><i data-ico="diff"></i>本次改动</span><span id="agChangeCount" class="ag-panel-hint">0 个文件</span></div>
       <div id="agChangedFiles"><div class="scm-empty" data-i18n="noChangesAgent">Agent 修改代码后，文件与 Diff 会显示在这里。</div></div>
     </section>
+    <div class="resizer-h" id="agResize2" title="拖动调整本次改动高度"></div>
     <section class="ag-panel ag-panel-grow" id="agTracePanel">
       <div class="ag-panel-title"><span class="cp-title"><i data-ico="tasklist"></i>Agent Trace</span><span id="agTraceCount" class="ag-panel-hint">0 事件</span></div>
       <div id="traceStats" class="trace-stats">
@@ -363,18 +359,6 @@
           <label class="agm-check"><input type="checkbox" id="agmMemory">启用自动记忆（记住你的纠正与偏好）</label>
           <label class="agm-check"><input type="checkbox" id="agmCompact">上下文超预算 85% 时自动摘要压缩</label>
           <label>上下文预算（tokens）<input id="agmBudget" type="number" min="8000" step="1000" placeholder="120000"></label>
-        </div>
-      </div>
-      <div class="agm-paths">
-        <div class="agm-sec-title">本地 Agent CLI 全局路径（可选）</div>
-        <div class="agm-sec-row">
-        </div>
-        <div class="agm-paths-tip">留空则自动探测 PATH；若 CLI 不在 PATH 上（如自定义安装目录），在此填入可执行文件<b>绝对路径</b>（如 <code>C:\apps\claude.exe</code> 或 <code>/usr/local/bin/codex</code>），将优先于 PATH 使用。</div>
-        <div class="agm-path-grid">
-          <label>Claude Code<input id="agmPathClaude" type="text" placeholder="claude 绝对路径（留空自动探测）" spellcheck="false"></label>
-          <label>OpenAI Codex<input id="agmPathCodex" type="text" placeholder="codex 绝对路径（留空自动探测）" spellcheck="false"></label>
-          <label>Gemini CLI<input id="agmPathGemini" type="text" placeholder="gemini 绝对路径（留空自动探测）" spellcheck="false"></label>
-          <label>Aider<input id="agmPathAider" type="text" placeholder="aider 绝对路径（留空自动探测）" spellcheck="false"></label>
         </div>
       </div>
       <div class="agm-mcp">

@@ -151,16 +151,6 @@ const LANGS = {
     indexBuilt: "已构建",
     // 语言切换
     langToggle: "EN",
-    // 本地 Agent 检测（侧边栏）
-    agentWindow: "Agents 窗口",
-    localAgents: "本地 Agent",
-    agentInstalled: "已安装",
-    agentNotInstalled: "未安装",
-    launchAgent: "一键调用",
-    agentDetecting: "正在检测本机 Agent…",
-    agentDetectHint: "检测到本机已安装的 AI 编程 Agent，点击即在终端启动并进入当前工作区",
-    agentLaunchFail: "启动失败，请手动在终端运行：",
-    agentNone: "未检测到本机已安装的 Agent（可安装 Claude Code / Codex 后在此一键调用）",
   },
   en: {
     modelSettings: "Model Settings",
@@ -292,16 +282,6 @@ const LANGS = {
     indexBuilt: "Built",
     // 语言切换
     langToggle: "中",
-    // 本地 Agent 检测（侧边栏）
-    agentWindow: "Agents Window",
-    localAgents: "Local Agents",
-    agentInstalled: "Installed",
-    agentNotInstalled: "Not installed",
-    launchAgent: "Launch",
-    agentDetecting: "Detecting local agents…",
-    agentDetectHint: "Detected local AI coding agents. Click to launch in terminal at the current workspace",
-    agentLaunchFail: "Launch failed, run manually in terminal: ",
-    agentNone: "No local agents detected (install Claude Code / Codex to launch them here)",
   },
 };
 

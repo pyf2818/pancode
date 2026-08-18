@@ -1089,49 +1089,50 @@ function renderSearchResults(query, results) {
   });
 }
 
-/* ---------------- 本地 Agent 检测与一键调用 ---------------- */
-function refreshAgents() {
-  const list = $("agentDetectList");
-  if (!list) return;
-  list.innerHTML = '<div class="agent-detecting"><span class="agent-spin"></span>' + esc(t("agentDetecting")) + "</div>";
-  fetch("/api/agents/detect")
-    .then((r) => r.json())
-    .then((j) => {
-      if (!j.ok || !j.agents || !j.agents.length) { list.innerHTML = '<div class="agent-empty">' + esc(t("agentNone")) + "</div>"; return; }
-      list.innerHTML = "";
-      j.agents.forEach((a) => {
-        const el = document.createElement("div");
-        el.className = "agent-item" + (a.installed ? " installed" : " missing");
-        const badge = a.installed
-          ? '<span class="agent-badge ok">' + esc(t("agentInstalled")) + "</span>"
-          : '<span class="agent-badge">' + esc(t("agentNotInstalled")) + "</span>";
-        const btn = a.installed
-          ? '<button class="agent-launch" data-id="' + esc(a.id) + '">' + ico("play") + esc(t("launchAgent")) + "</button>"
-          : "";
-        const pathLine = a.installed && a.path ? '<div class="agent-path" title="' + esc(a.path) + '">' + esc(a.path) + "</div>" : "";
-        el.innerHTML = '<div class="agent-meta"><b>' + esc(a.name) + "</b>" + badge + "</div>" + pathLine + btn;
-        list.appendChild(el);
-      });
-      list.querySelectorAll(".agent-launch").forEach((b) => {
-        b.onclick = () => launchAgent(b.dataset.id);
-      });
-    })
-    .catch((e) => { list.innerHTML = '<div class="agent-empty">' + esc(e.message) + "</div>"; });
+/* ---------------- #agRight 右侧栏三面板拖拽调高 ---------------- */
+function initAgRightResizers() {
+  const agRight = $("agRight");
+  if (!agRight) return;
+  const termSlot = $("terminalSlotAgents");
+  const changed = $("agChangedPanel");
+  const r1 = $("agResize1"), r2 = $("agResize2");
+  const termH = parseInt(localStorage.getItem("ag-term-h"));
+  if (termSlot && termH) termSlot.style.height = termH + "px";
+  const changedH = parseInt(localStorage.getItem("ag-changed-h"));
+  if (changed && changedH) changed.style.flex = "0 0 " + changedH + "px";
+
+  if (r1 && termSlot) {
+    let sy = null;
+    r1.addEventListener("mousedown", (e) => { sy = e.clientY; r1.classList.add("dragging"); document.body.style.cursor = "row-resize"; e.preventDefault(); });
+    window.addEventListener("mousemove", (e) => {
+      if (sy === null) return;
+      let h = termSlot.offsetHeight + (e.clientY - sy);
+      h = Math.max(80, Math.min(560, h));
+      termSlot.style.height = h + "px"; sy = e.clientY;
+    });
+    window.addEventListener("mouseup", () => {
+      if (sy === null) return; sy = null; r1.classList.remove("dragging"); document.body.style.cursor = "";
+      localStorage.setItem("ag-term-h", termSlot.offsetHeight);
+    });
+  }
+  if (r2 && changed) {
+    let sy = null;
+    r2.addEventListener("mousedown", (e) => {
+      if (!changed.style.flex) changed.style.flex = "0 0 " + changed.offsetHeight + "px";
+      sy = e.clientY; r2.classList.add("dragging"); document.body.style.cursor = "row-resize"; e.preventDefault();
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (sy === null) return;
+      let h = changed.offsetHeight + (e.clientY - sy);
+      h = Math.max(80, Math.min(window.innerHeight * 0.7, h));
+      changed.style.flex = "0 0 " + h + "px"; sy = e.clientY;
+    });
+    window.addEventListener("mouseup", () => {
+      if (sy === null) return; sy = null; r2.classList.remove("dragging"); document.body.style.cursor = "";
+      localStorage.setItem("ag-changed-h", changed.offsetHeight);
+    });
+  }
 }
-function launchAgent(id) {
-  fetch("/api/agents/launch", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id }),
-  })
-    .then((r) => r.json())
-    .then((j) => {
-      if (j.ok) toast(t("launchAgent") + "： " + cmd);
-      else toast(t("agentLaunchFail") + cmd);
-    })
-    .catch((e) => toast(t("agentLaunchFail") + cmd));
-}
-$("btnAgentRefresh").onclick = refreshAgents;
 
 /* ---------------- 活动栏 ---------------- */
 document.querySelectorAll(".ab-btn").forEach((btn) => {
@@ -2859,9 +2860,9 @@ applyTheme(getTheme());
 $("hpClose").onclick = () => togglePreview(false);
 $("hpRefresh").onclick = () => renderPreview();
 initResizers();
+initAgRightResizers();
 replaceIcons();
 mountShared();
-refreshAgents();
 initConvObserver();
 bindInput();
 /* A1：登录成为闸门——先领取本机令牌，再判定登录态；未登录只显示登录/注册，不加载工作区数据、不连 WS */
