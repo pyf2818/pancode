@@ -2124,14 +2124,18 @@ function setRunning(running, label) {
   const liveTxt = $("agLiveTxt"); if (liveTxt) liveTxt.textContent = txt;
   const btn = inputBox.querySelector("#btnSend");
   if (btn) {
-    btn.disabled = running;
     if (running) {
+      // 修复：running 时按钮变为「停止」，必须保持可点击，才能发送 abort 中断 Agent 主循环
+      btn.disabled = false;
       btn.innerHTML = ico("stop") + t("stop");
       btn.classList.add("stop-mode");
-      btn.onclick = () => { send({ type: "term.kill" }); send({ type: "newchat" }); };
+      btn.onclick = () => send({ type: "abort" });
     } else {
+      // Agent 空闲：恢复为「发送」按钮，点击走正常 doSend（重置 onclick，避免残留 abort 处理器）
+      btn.disabled = false;
       btn.innerHTML = ico("send") + t("send");
       btn.classList.remove("stop-mode");
+      btn.onclick = doSend;
       // Agent 空闲时自动处理队列
       if (msgQueue.length > 0) setTimeout(processQueue, 500);
     }
