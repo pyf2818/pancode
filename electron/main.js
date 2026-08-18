@@ -78,6 +78,11 @@ async function createWindow() {
 }
 
 app.whenReady().then(() => {
+  /* 打包态：server 的所有数据/配置都写入可写目录（asar 只读，__dirname 落在 app.asar 内会 EPERM 崩主进程）。
+     由桌面端注入 PANCODE_DATA_DIR = userData；开发态不注入，保持项目根（config.js 兜底到 __dirname 上级）。 */
+  if (app.isPackaged) {
+    process.env.PANCODE_DATA_DIR = app.getPath("userData");
+  }
   startServer();
   createWindow();
   app.on("activate", () => {

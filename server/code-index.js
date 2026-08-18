@@ -15,7 +15,8 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const ROOT = path.join(__dirname, "..");
+// 数据根：打包态(__dirname 落在只读 app.asar)必须指向可写目录，由桌面端 main.js 注入 PANCODE_DATA_DIR(=userData)
+const ROOT = process.env.PANCODE_DATA_DIR || path.join(__dirname, "..");
 const INDEX_DIR = path.join(ROOT, ".pancode", "code-index");
 
 /* 跳过的目录 / 文件（避免索引依赖与产物） */

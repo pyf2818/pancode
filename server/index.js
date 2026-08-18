@@ -67,7 +67,7 @@ function mountWorkspace(dir) {
   WS_DIR = abs;
   files = new FileStore(WS_DIR);
   git = new GitLayer(WS_DIR, files);
-  term = new TerminalLayer(WS_DIR, broadcast, path.join(__dirname, "..", ".pancode", "audit"));
+  term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
   buildEngine();
   files.startWatch(() => {
     broadcast({ type: "fs.sync", files: snapshotFiles() });
@@ -75,8 +75,12 @@ function mountWorkspace(dir) {
   console.log("workspace 已挂载: " + WS_DIR);
 }
 
-/* 启动时挂载：绝对路径直接用，相对路径相对项目根（兼容旧配置 "workspace"） */
-mountWorkspace(path.isAbsolute(cfg.workspace) ? cfg.workspace : path.resolve(configMod.ROOT, cfg.workspace));
+/* 启动时挂载：绝对路径直接用，相对路径相对数据根（兼容旧配置 "workspace"）
+   打包态：默认相对工作区（如 userData/workspace）可能不存在 → 先创建空目录，保证应用可启动 */
+const wsArg = cfg.workspace;
+const wsAbs = path.isAbsolute(wsArg) ? wsArg : path.resolve(configMod.ROOT, wsArg);
+try { fs.mkdirSync(wsAbs, { recursive: true }); } catch (e) {}
+mountWorkspace(wsAbs);
 
 /* ---------- 快照/状态 ---------- */
 function snapshotFiles() {
@@ -1021,7 +1025,7 @@ wss.on("connection", (ws) => {
 /* A7：清理上次异常退出遗留的原子写临时文件（pancode.config.json.<pid>.tmp），避免根目录残留 */
 function cleanupTmpOrphans() {
   try {
-    const dir = path.join(__dirname, "..");
+    const dir = configMod.ROOT;
     for (const f of fs.readdirSync(dir)) {
       if (/^pancode\.config\.json\.\d+\.tmp$/.test(f)) {
         try { fs.unlinkSync(path.join(dir, f)); console.log("[pancode] 清理残留临时文件:", f); } catch (e) {}

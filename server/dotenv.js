@@ -8,7 +8,8 @@
 const fs = require("fs");
 const path = require("path");
 
-const ROOT = path.join(__dirname, "..");
+// 数据根：打包态(__dirname 落在只读 app.asar)必须指向可写目录，由桌面端 main.js 注入 PANCODE_DATA_DIR(=userData)
+const ROOT = process.env.PANCODE_DATA_DIR || path.join(__dirname, "..");
 const ENV_PATH = path.join(ROOT, ".env");
 
 function loadDotEnv() {
