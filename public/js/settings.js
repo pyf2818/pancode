@@ -195,6 +195,11 @@ async function openAgentSettings() {
       $("agmPathGemini").value = paths.gemini || "";
       $("agmPathAider").value = paths.aider || "";
     } catch (e) {}
+    // 载入「本地 Agent 联动」开关
+    try {
+      const la = await fetch("/api/local-agents").then((x) => x.json());
+      $("agmLocalLink").checked = !!(la && la.enabled !== false);
+    } catch (e) {}
   } catch (e) { $("agmStatus").className = "set-status err"; $("agmStatus").textContent = "读取设置失败: " + e.message; }
   try { await refreshMcp(); } catch (e) {}
 }
@@ -233,6 +238,13 @@ $("agmSave").onclick = async () => {
             gemini: $("agmPathGemini").value.trim(),
             aider: $("agmPathAider").value.trim(),
           } }),
+        });
+      } catch (e) {}
+      // 持久化「本地 Agent 联动」开关
+      try {
+        await fetch("/api/local-agents", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: $("agmLocalLink").checked }),
         });
       } catch (e) {}
       st.className = "set-status ok"; st.textContent = "已保存，对下一条消息立即生效";

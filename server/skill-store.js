@@ -148,16 +148,18 @@ function normalize(skill, source) {
 }
 
 class SkillStore {
-  constructor(marketDir, localPath) {
+  constructor(marketDir, localPath, builtinDir) {
     this._marketDir = marketDir;
     this._localPath = localPath;
+    this._builtinDir = builtinDir || null;   // 打包内置 skills（只读，asar 内）
     this._marketSkills = [];
     this._localSkills = [];
+    this._builtinSkills = [];
     this._load();
   }
 
   _load() {
-    // 市场 Skills（.md 文件）
+    // 市场 Skills（.md 文件，用户可写）
     this._marketSkills = [];
     try {
       fs.mkdirSync(this._marketDir, { recursive: true });
@@ -170,11 +172,25 @@ class SkillStore {
         } catch (e) {}
       }
     } catch (e) {}
-    // 工作区 Skills（JSON）
+    // 工作区 Skills（JSON，Agent 沉淀）
     this._localSkills = [];
     try {
       this._localSkills = JSON.parse(fs.readFileSync(this._localPath, "utf8")) || [];
     } catch (e) {}
+    // 打包内置 Skills（.md，只读；asar 内随安装包分发，EXE 下也能展示）
+    this._builtinSkills = [];
+    if (this._builtinDir) {
+      try {
+        const files = fs.readdirSync(this._builtinDir).filter((f) => f.endsWith(".md"));
+        for (const f of files) {
+          try {
+            const text = fs.readFileSync(path.join(this._builtinDir, f), "utf8");
+            const { meta, body } = parseFrontmatter(text);
+            this._builtinSkills.push(normalize({ ...meta, body, id: "builtin_" + f.replace(/\.md$/, "") }, "builtin"));
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
   }
 
   _saveMarket() {
@@ -252,7 +268,7 @@ class SkillStore {
     maxResults = maxResults || 3;
     if (!taskText) return [];
     const text = taskText.toLowerCase();
-    const all = [...this._marketSkills, ...this._localSkills, ...BUILTIN_WORKFLOWS].filter((s) => !s.deprecated);
+    const all = [...this._marketSkills, ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills].filter((s) => !s.deprecated);
     const scored = all.map((s) => {
       let score = 0;
       const triggers = String(s.trigger || "").toLowerCase().split(/[,;，；\s]+/).filter(Boolean);
@@ -271,7 +287,7 @@ class SkillStore {
 
   findByName(name) {
     const q = name.toLowerCase().trim();
-    const all = [...this._marketSkills, ...this._localSkills, ...BUILTIN_WORKFLOWS];
+    const all = [...this._marketSkills, ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills];
     return all.find((s) => s.name.toLowerCase() === q) || all.find((s) => s.name.toLowerCase().includes(q)) || null;
   }
 
@@ -359,11 +375,11 @@ trigger: 触发关键词1,关键词2
   }
 
   get stats() {
-    const all = [...this._marketSkills, ...this._localSkills];
-    return { total: all.length, market: this._marketSkills.length, local: this._localSkills.length, builtin: BUILTIN_WORKFLOWS.length };
+    const all = [...this._marketSkills, ...this._localSkills, ...this._builtinSkills];
+    return { total: all.length, market: this._marketSkills.length, local: this._localSkills.length, builtin: BUILTIN_WORKFLOWS.length + this._builtinSkills.length };
   }
-  get size() { return this._marketSkills.length + this._localSkills.length + BUILTIN_WORKFLOWS.length; }
-  get builtinWorkflows() { return BUILTIN_WORKFLOWS; }
+  get size() { return this._marketSkills.length + this._localSkills.length + BUILTIN_WORKFLOWS.length + this._builtinSkills.length; }
+  get builtinWorkflows() { return [...BUILTIN_WORKFLOWS, ...this._builtinSkills]; }
 }
 
 module.exports = { SkillStore, BUILTIN_WORKFLOWS, parseFrontmatter, serializeFrontmatter };

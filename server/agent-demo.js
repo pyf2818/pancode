@@ -59,6 +59,12 @@ assert("sortByPriority 高优先级排在最前",
 `;
 
 class DemoAgent extends AgentBase {
+  constructor(ctx) {
+    super(ctx);
+    // 复用服务器级共享 SkillStore（index.js buildEngine 注入，含内置 builtin-skills）；
+    // 演示模式同样需要可见内置 skill（修复 EXE 用户看不到内置 skill 的回归）
+    this.skills = (ctx && ctx.skills) || null;
+  }
   async handleChat(text) {
     if (this.running) return;
     this.emit({ type: "user.msg", text });

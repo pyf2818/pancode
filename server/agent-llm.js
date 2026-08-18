@@ -39,6 +39,7 @@ const { PlanStore } = require("./plan-store");
 const { WorkflowStore, fillGoal } = require("./workflow-store");
 const safeWrite = require("./safe-write");
 const { PatchEngine } = require("./patch");
+const agents = require("./agents");
 
 /* ============================================================
    历史 tool_call 净化（防御性）
@@ -399,10 +400,28 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "local_agent",
+      description: "调用本机已安装的 AI 编程 Agent CLI（Claude Code / Codex / Gemini CLI / Aider），让它在**当前工作区**内独立跑完一项子任务，并把返回结果并入本次对话（本地 Agent 联动）。" +
+        "适合借助这些专用 CLI 的长上下文/工具链处理子任务，或参考其实现；需要你亲自逐步掌控时不要使用。" +
+        "仅当对应 Agent 已在本地安装（侧边栏「本地 Agent」可检测）且「本地 Agent 联动」已开启时才有效，未安装或未开启会返回明确提示。" +
+        "注意：被调用的 CLI 会以它自己的权限在当前工作区读写/执行命令，结果由它自主决定。",
+      parameters: {
+        type: "object",
+        properties: {
+          agent: { type: "string", description: "用哪个本地 Agent：claude / codex / gemini / aider" },
+          task: { type: "string", description: "交给本地 Agent 的任务描述（作为 prompt 传入，在当前工作区目录运行）" },
+        },
+        required: ["agent", "task"],
+      },
+    },
+  },
 ];
 
 /* 规划模式（planMode）下禁止 Agent 调用的"会改动工作区 / 执行命令"工具 */
-const MUTATING_TOOLS = new Set(["write_file", "apply_edit", "delete_file", "run_command", "undo"]);
+const MUTATING_TOOLS = new Set(["write_file", "apply_edit", "delete_file", "run_command", "undo", "local_agent"]);
 
 /* 把一条 LSP Diagnostic 格式化为可读文本（供 get_diagnostics 工具返回） */
 function fmtDiag(x) {
@@ -493,7 +512,10 @@ class LlmAgent extends AgentBase {
     const skillDir = path.join(require("./config").ROOT, ".pancode", "skills");
     this.memory = new MemoryStore(path.join(memDir, wsHash + ".json"));
     const marketDir = path.join(require("./config").ROOT, ".pancode", "skills", "market");
-    this.skills = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"));
+    const builtinDir = path.join(__dirname, "builtin-skills");   // 打包内置 skills（asar 只读，随安装包分发）
+    // 优先复用服务器级共享 SkillStore（index.js buildEngine 注入，确保演示模式也带内置 skill）；
+    // 独立构造 LlmAgent 时（如测试）自建兜底
+    this.skills = (ctx && ctx.skills) ? ctx.skills : new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), builtinDir);
     const planDir = path.join(require("./config").ROOT, ".pancode", "plans");
     this.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
     const wfDir = path.join(require("./config").ROOT, ".pancode", "workflows");
@@ -796,7 +818,7 @@ ${taskSummary}
       "优先用 read_file / search_code / search_symbol / repo_map 理解代码，再动手写或改。" +
       "完成后用简洁中文汇报你做了什么、结果如何。你拥有读/搜/写/改/运行命令的权限。";
     // 子智能体工具白名单：排除会自我嵌套或污染主流程的工具
-    const BLOCK = new Set(["agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template", "save_template", "remove_template", "list_templates", "goal_status", "save_session_memory"]);
+    const BLOCK = new Set(["agent", "local_agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template", "save_template", "remove_template", "list_templates", "goal_status", "save_session_memory"]);
     const subTools = TOOLS.filter((t) => !BLOCK.has(t.function.name));
     const messages = [
       { role: "system", content: SUB_PROMPT },
@@ -1437,6 +1459,40 @@ ${taskSummary}
           t.done(false, "子智能体失败");
           this.state(false, "AI 思考中");
           return "子智能体执行失败：" + e.message;
+        }
+      }
+      case "local_agent": {
+        const t = this.tool("agent", "本地 Agent: " + (args.agent || "?"), args.task);
+        if (this.cfg.localAgents && this.cfg.localAgents.enabled === false) {
+          t.done(false, "联动已关闭");
+          return "本地 Agent 联动已在设置中关闭（设置 → 本地 Agent 联动）。开启后主 Agent 才能调用本机 CLI。";
+        }
+        const gate = await this._gate("local_agent", { command: (args.agent || "") + " " + (args.task || "") }, "high");
+        if (gate.blocked) {
+          const tt = this.tool("agent", "本地 Agent 被拦截", args.task); tt.done(false, "被拒绝规则拦截");
+          return "被拒绝规则拦截，未调用本地 Agent。";
+        }
+        if (!gate.approved) {
+          t.done(false, "用户拒绝");
+          return "用户拒绝了调用本地 Agent：" + (args.agent || "");
+        }
+        t.body("正在调用 " + (args.agent || "") + " …");
+        this.state(true, "本地 Agent 执行中: " + (args.agent || ""));
+        try {
+          const r = await agents.runAgent(args.agent, args.task, this.files.dir, (this.cfg.agents && this.cfg.agents.paths) || {});
+          if (!r.ok) {
+            t.done(false, "调用失败");
+            this.state(false, "AI 思考中");
+            return "本地 Agent 调用失败：" + (r.error || "未知错误") + (r.output ? "\n\n" + r.output : "");
+          }
+          t.body((r.output || "(无输出)").slice(0, 8000));
+          t.done(true, "本地 Agent 完成");
+          this.state(false, "AI 思考中");
+          return "本地 Agent「" + (args.agent || "") + "」已完成子任务「" + (args.task || "") + "」，返回如下：\n\n" + (r.output || "(无输出)").slice(0, 8000);
+        } catch (e) {
+          t.done(false, "异常");
+          this.state(false, "AI 思考中");
+          return "本地 Agent 异常：" + e.message;
         }
       }
       case "create_skill": {

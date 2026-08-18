@@ -1112,6 +1112,12 @@ function refreshAgents() {
         el.innerHTML = '<div class="agent-meta"><b>' + esc(a.name) + "</b>" + badge + "</div>" + pathLine + btn;
         list.appendChild(el);
       });
+      if (j.agents.some((a) => a.installed)) {
+        const hint = document.createElement("div");
+        hint.className = "agent-hint";
+        hint.innerHTML = "开启「本地 Agent 联动」（设置）后，主 Agent 可在对话中经 <code>local_agent</code> 调用已安装的 CLI，结果自动并入对话。";
+        list.appendChild(hint);
+      }
       list.querySelectorAll(".agent-launch").forEach((b) => {
         b.onclick = () => launchAgent(b.dataset.id);
       });

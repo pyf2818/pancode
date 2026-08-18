@@ -24,6 +24,7 @@ const { LspManager, setActiveManager } = require("./lsp-bridge");
 const codeIndex = require("./code-index");
 const agents = require("./agents");
 const { SoulStore } = require("./soul-store");
+const { SkillStore } = require("./skill-store");
 const { ProgressionStore } = require("./progression-store");
 const { computeProgression } = require("./progression");
 const auth = require("./auth");
@@ -47,10 +48,16 @@ function broadcast(ev) {
 
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
-let files = null, git = null, term = null, engine = null, soulStore = null, progressionStore = null;
+let files = null, git = null, term = null, engine = null, soulStore = null, progressionStore = null, skillStore = null;
 
 function buildEngine() {
-  const ctx = { emit: broadcast, files, git, term, cfg };
+  // 服务器级 SkillStore 单例（带打包内置 builtin-skills 目录），两种引擎共享，
+  // 确保「无 API Key 演示模式」下内置 skill 同样可见（修复 EXE 用户看不到内置 skill 的回归）
+  const wsHash = _wsIdHash(WS_DIR);
+  const marketDir = path.join(configMod.ROOT, ".pancode", "skills", "market");
+  const skillDir = path.join(configMod.ROOT, ".pancode", "skills");
+  skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"));
+  const ctx = { emit: broadcast, files, git, term, cfg, skills: skillStore };
   engine = configMod.engineMode(cfg) === "llm" ? new LlmAgent(ctx) : new DemoAgent(ctx);
   // 统一灵魂实例：复用引擎内部的 soul（指向同文件），避免双实例内存不一致
   soulStore = engine && engine.soul ? engine.soul : new SoulStore(configMod.soulPath(cfg));
@@ -808,6 +815,23 @@ app.post("/api/agents/paths", (req, res) => {
   try {
     configMod.saveAgentPaths(cfg, (req.body || {}));
     res.json({ ok: true, paths: cfg.agents.paths });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+/* 本地 Agent 联动开关 + 安装检测（主 Agent 是否可在对话中调用本机 CLI） */
+app.get("/api/local-agents", (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      enabled: !!(cfg.localAgents && cfg.localAgents.enabled !== false),
+      agents: agents.detectAgents(cfg.agents && cfg.agents.paths),
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.post("/api/local-agents", (req, res) => {
+  try {
+    configMod.saveLocalAgents(cfg, (req.body || {}));
+    res.json({ ok: true, enabled: cfg.localAgents.enabled });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
