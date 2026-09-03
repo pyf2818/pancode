@@ -17,6 +17,7 @@ const { FileStore, langOf } = require("./files");
 const { GitLayer } = require("./git");
 const { summarize, docDraft } = require("./change-summary");
 const { TerminalLayer } = require("./terminal");
+const { ProcessLayer } = require("./processes");
 const { ping } = require("./llm");
 const { LlmAgent } = require("./agent-llm");
 const { DemoAgent } = require("./agent-demo");
@@ -24,6 +25,7 @@ const { LspManager, setActiveManager } = require("./lsp-bridge");
 const codeIndex = require("./code-index");
 const { SoulStore } = require("./soul-store");
 const { SkillStore } = require("./skill-store");
+const { TeamStore, PRESET_AGENTS } = require("./team-store");
 const { ProgressionStore } = require("./progression-store");
 const { computeProgression } = require("./progression");
 const auth = require("./auth");
@@ -47,7 +49,7 @@ function broadcast(ev) {
 
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
-let files = null, git = null, term = null, engine = null, soulStore = null, progressionStore = null, skillStore = null;
+let files = null, git = null, term = null, procs = null, engine = null, soulStore = null, progressionStore = null, skillStore = null, teamStore = null;
 
 function buildEngine() {
   // 服务器级 SkillStore 单例（带打包内置 builtin-skills 目录），两种引擎共享，
@@ -56,7 +58,8 @@ function buildEngine() {
   const marketDir = path.join(configMod.ROOT, ".pancode", "skills", "market");
   const skillDir = path.join(configMod.ROOT, ".pancode", "skills");
   skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"));
-  const ctx = { emit: broadcast, files, git, term, cfg, skills: skillStore };
+  teamStore = new TeamStore(path.join(configMod.ROOT, ".pancode", "teams", wsHash + ".json"));
+  const ctx = { emit: broadcast, files, git, term, procs, cfg, skills: skillStore };
   engine = configMod.engineMode(cfg) === "llm" ? new LlmAgent(ctx) : new DemoAgent(ctx);
   // 统一灵魂实例：复用引擎内部的 soul（指向同文件），避免双实例内存不一致
   soulStore = engine && engine.soul ? engine.soul : new SoulStore(configMod.soulPath(cfg));
@@ -70,10 +73,12 @@ function mountWorkspace(dir) {
   try { fs.accessSync(abs, fs.constants.R_OK); } catch (e) { throw new Error("没有读取权限: " + abs); }
 
   if (files) files.stopWatch();
+  if (procs) { try { procs.stopAll(); } catch (e) {} }   // 切换工作区前清理上一工作区的后台进程（孤儿防护）
   WS_DIR = abs;
   files = new FileStore(WS_DIR);
   git = new GitLayer(WS_DIR, files);
   term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
+  procs = new ProcessLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
   buildEngine();
   files.startWatch(() => {
     broadcast({ type: "fs.sync", files: snapshotFiles() });
@@ -165,6 +170,8 @@ const NO_AUTH = new Set([
   "/api/index/status",  // 本地代码索引状态查询（本地优先工具，与 health 同级）
   "/api/index/build",   // 本地代码索引构建
   "/api/index/search",  // 本地代码索引检索
+  "/api/team/presets",  // 预设智能体列表（只读）
+  "/api/team/list",     // 团队列表（只读）
 ]);
 /* A1：用户会话闸门——仅校验登录后下发的 userToken（auth.verify）；AUTH_TOKEN 仅用于本机 bootstrap 与 WS 环回 */
 function userAuthed(req) {
@@ -391,6 +398,31 @@ app.post("/api/git/summary", (req, res) => {
   } catch (e) { res.json({ ok: true, available: false, summary: null, docDraft: "" }); }
 });
 
+/* ---------- 后台进程管理（Agent 启动的长驻进程：dev server / watcher 等） ---------- */
+app.get("/api/processes", (req, res) => {
+  try {
+    if (!procs) return res.json({ ok: true, processes: [] });
+    res.json({ ok: true, processes: procs.list() });
+  } catch (e) { res.json({ ok: false, error: String(e) }); }
+});
+app.get("/api/processes/log", (req, res) => {
+  try {
+    if (!procs) return res.json({ ok: false, error: "进程层未就绪" });
+    const name = String((req.query && req.query.name) || "").trim();
+    const lines = Math.min(Math.max(Number(req.query && req.query.lines) || 100, 1), 800);
+    if (!name) return res.status(400).json({ ok: false, error: "缺少 name 参数" });
+    res.json(procs.read(name, lines));
+  } catch (e) { res.status(400).json({ ok: false, error: String(e) }); }
+});
+app.post("/api/processes/stop", (req, res) => {
+  try {
+    if (!procs) return res.json({ ok: false, error: "进程层未就绪" });
+    const name = String((req.body || {}).name || "").trim();
+    if (!name) return res.status(400).json({ ok: false, error: "缺少 name" });
+    res.json(procs.stop(name));
+  } catch (e) { res.status(400).json({ ok: false, error: String(e) }); }
+});
+
 /* ---------- 工作区管理：打开任意本地文件夹 ---------- */
 app.get("/api/workspace", (req, res) => {
   res.json({ current: WS_DIR, recent: (cfg.recentWorkspaces || []).filter((p) => fs.existsSync(p)) });
@@ -531,6 +563,79 @@ app.post("/api/settings/test", async (req, res) => {
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
+/* ---------- 内联代码补全（Tab completion）---------- */
+app.post("/api/complete", async (req, res) => {
+  try {
+    const { prefix, suffix, language, filePath } = req.body || {};
+    if (!prefix || prefix.length < 2) return res.json({ ok: true, text: "" });
+    if (!cfg.llm || !cfg.llm.apiKey) return res.json({ ok: true, text: "" });
+    const baseURL = String(cfg.llm.baseURL || "").replace(/\/+$/, "");
+    const prompt =
+      "You are a code completion engine. Complete the code at the cursor position.\n" +
+      "Return ONLY the completion text (what should be inserted at cursor), no explanation, no markdown.\n" +
+      "Keep it short (1-3 lines typically). Stop at a natural boundary.\n\n" +
+      "File: " + String(filePath || "").slice(-60) + " (" + (language || "text") + ")\n\n" +
+      "Code before cursor:\n```\n" + String(prefix).slice(-1500) + "\n```\n\n" +
+      "Code after cursor:\n```\n" + String(suffix).slice(0, 500) + "\n```\n\n" +
+      "Completion:";
+    const r = await fetch(baseURL + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cfg.llm.apiKey },
+      body: JSON.stringify({
+        model: cfg.llm.model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 80,
+        temperature: 0,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return res.json({ ok: true, text: "" });
+    const data = await r.json();
+    let text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+    text = text.replace(/^```[\w]*\n?/, "").replace(/\n?```$/, "").trim();
+    if (text.length > 200) text = text.slice(0, 200);
+    res.json({ ok: true, text });
+  } catch (e) { res.json({ ok: true, text: "" }); }
+});
+
+/* Cmd+K 内联编辑：选中代码 + 指令 → AI 返回修改后的代码 */
+app.post("/api/edit", async (req, res) => {
+  try {
+    const { filePath, language, selectedText, instruction, beforeContext, afterContext } = req.body || {};
+    if (!selectedText || !instruction) return res.json({ ok: false, error: "缺少选中文本或指令" });
+    if (!cfg.llm || !cfg.llm.apiKey) return res.json({ ok: false, error: "未配置 LLM API Key" });
+    const baseURL = String(cfg.llm.baseURL || "").replace(/\/+$/, "");
+    const prompt =
+      "You are a code editing assistant. The user has selected a piece of code and wants to modify it.\n" +
+      "Return ONLY the modified code that should replace the selected text. No explanation, no markdown fences.\n" +
+      "Preserve the original language and style. Keep changes minimal and focused on the instruction.\n\n" +
+      "File: " + String(filePath || "").slice(-80) + " (" + (language || "text") + ")\n\n" +
+      "Instruction: " + String(instruction).slice(0, 500) + "\n\n" +
+      "Code before selection (for context):\n```\n" + String(beforeContext || "").slice(-800) + "\n```\n\n" +
+      "Selected code to modify:\n```\n" + String(selectedText).slice(0, 4000) + "\n```\n\n" +
+      "Code after selection (for context):\n```\n" + String(afterContext || "").slice(0, 800) + "\n```\n\n" +
+      "Modified code (replace the selected code only):";
+    const r = await fetch(baseURL + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cfg.llm.apiKey },
+      body: JSON.stringify({
+        model: cfg.llm.model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 4000,
+        temperature: 0,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!r.ok) return res.json({ ok: false, error: "LLM 返回 " + r.status });
+    const data = await r.json();
+    let text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+    text = text.replace(/^```[\w]*\n?/, "").replace(/\n?```$/, "").trim();
+    res.json({ ok: true, text });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
 /* Agent 框架设置（权限 / 人格 / 规则 / 上下文 / 记忆） */
 app.get("/api/agent-settings", (req, res) => res.json(configMod.agentSettings(cfg)));
 app.post("/api/agent-settings", (req, res) => {
@@ -539,6 +644,35 @@ app.post("/api/agent-settings", (req, res) => {
     broadcast({ type: "agent.settings", agent: configMod.agentSettings(cfg) });
     res.json({ ok: true, agent: configMod.agentSettings(cfg) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* ======================= Agent Team API ======================= */
+app.get("/api/team/presets", (req, res) => res.json({ agents: PRESET_AGENTS }));
+app.get("/api/team/list", (req, res) => res.json({ teams: teamStore ? teamStore.list() : [] }));
+app.post("/api/team/create", (req, res) => {
+  try {
+    const t = teamStore.create(req.body.name, req.body.members);
+    res.json({ ok: true, team: t });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.get("/api/team/:id", (req, res) => {
+  const t = teamStore && teamStore.find(req.params.id);
+  if (!t) return res.status(404).json({ ok: false, error: "团队不存在" });
+  res.json({ team: t });
+});
+app.post("/api/team/:id/members", (req, res) => {
+  try {
+    const t = teamStore.addMember(req.params.id, req.body.agentId);
+    res.json({ ok: true, team: t });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.delete("/api/team/:id/members/:agentId", (req, res) => {
+  const t = teamStore.removeMember(req.params.id, req.params.agentId);
+  res.json({ ok: true, team: t });
+});
+app.delete("/api/team/:id", (req, res) => {
+  const ok = teamStore.remove(req.params.id);
+  res.json({ ok });
 });
 
 /* MCP 服务器管理（外部工具）：
@@ -828,6 +962,38 @@ wss.on("connection", (ws) => {
         }
         break;
 
+      case "team.message": {
+        const team = teamStore && teamStore.find(m.teamId);
+        if (!team || typeof m.text !== "string" || !m.text.trim()) break;
+        const userMsg = { role: "user", text: m.text.slice(0, 8000), mentions: m.mentions || [], ts: Date.now() };
+        teamStore.addMessage(m.teamId, userMsg);
+        broadcast({ type: "team.msg", teamId: m.teamId, msg: userMsg });
+        const agents = (m.mentions || []).map((id) => PRESET_AGENTS.find((a) => a.id === id)).filter(Boolean);
+        if (!agents.length || !engine.runSubAgent) break;
+        (async () => {
+          let sharedCtx = "";
+          for (const agent of agents) {
+            broadcast({ type: "team.agent.start", teamId: m.teamId, agentId: agent.id, agentName: agent.name, icon: agent.icon, color: agent.color });
+            const task = "【你的角色】" + agent.systemPrompt + "\n\n【用户任务】" + m.text +
+              (sharedCtx ? "\n\n【团队协作上下文 — 其他成员的产出】\n" + sharedCtx : "");
+            try {
+              const result = await engine.runSubAgent(task, { subagent_type: agent.id });
+              const output = (result || "(无返回)").slice(0, 6000);
+              const agentMsg = { role: "agent", agentId: agent.id, agentName: agent.name, icon: agent.icon, color: agent.color, text: output, ts: Date.now() };
+              teamStore.addMessage(m.teamId, agentMsg);
+              broadcast({ type: "team.msg", teamId: m.teamId, msg: agentMsg });
+              sharedCtx += "— " + agent.name + " —\n" + output + "\n\n";
+            } catch (e) {
+              const errMsg = { role: "agent", agentId: agent.id, agentName: agent.name, icon: agent.icon, color: agent.color, text: "执行失败: " + e.message, ts: Date.now() };
+              teamStore.addMessage(m.teamId, errMsg);
+              broadcast({ type: "team.msg", teamId: m.teamId, msg: errMsg });
+            }
+          }
+          broadcast({ type: "team.done", teamId: m.teamId });
+        })();
+        break;
+      }
+
       case "term.exec": {
         const tabId = m.tabId || "default";
         if (typeof m.cmd === "string" && m.cmd.trim() && !term.busyFor(tabId)) {
@@ -971,6 +1137,11 @@ wss.on("connection", (ws) => {
         break;
       case "tool.reject":
         if (typeof engine.resolveApproval === "function" && m.id) engine.resolveApproval(m.id, false);
+        break;
+
+      /* ----- 交互式选项列表：用户选择方案后回传 ----- */
+      case "tool.choice_result":
+        if (typeof engine.resolveChoice === "function" && m.id) engine.resolveChoice(m.id, m.choice || null);
         break;
 
       /* ----- 补丁审阅：用户在 diff 视图逐文件「接受 / 拒绝」 ----- */

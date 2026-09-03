@@ -61,7 +61,7 @@ class AgentBase {
 
   tool(kind, name, target) {
     const id = this.id();
-    this.emit({ type: "tool.start", id, kind, name, target });
+    this.emit({ type: "tool.start", id, kind, name, target, round: this.round + 1 });
     return {
       body: (text) => this.emit({ type: "tool.body", id, text: String(text).slice(0, 8000) }),
       done: (ok, label, open) => this.emit({ type: "tool.end", id, ok, label, open: !!open }),

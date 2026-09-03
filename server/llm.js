@@ -47,14 +47,25 @@ async function chatStream(cfg, messages, tools, cb, attempt) {
   // 跨会话退避：若处于退避窗口内，先等窗口过期再发起，避免并发会话同时重试放大限流
   await waitBackoff();
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + cfg.apiKey,
-    },
-    body: JSON.stringify(body),
-  });
+  // 请求超时保护：默认 120s（流式 LLM 首字可能慢，但不应无限挂起）；可由 cfg.timeout 覆盖
+  const timeoutMs = Math.max(30000, Number(cfg.timeout) || 120000);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + cfg.apiKey,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    // 网络层错误（ECONNRESET / ENOTFOUND / timeout / socket hang up）→ 抛出可重试错误
+    const msg = String(e && e.message || e);
+    if (/timeout|abort|timed out/i.test(msg)) throw new Error("LLM 请求超时（" + (timeoutMs / 1000) + "s），可能网络不稳或模型服务无响应");
+    throw new Error("LLM 网络错误: " + msg);
+  }
 
   // 429 限流自动重试（指数退避）；同步把退避窗口推向未来，跨会话共享
   if (res.status === 429 && attempt < MAX_RETRIES) {
@@ -121,7 +132,19 @@ async function chatStream(cfg, messages, tools, cb, attempt) {
   };
 
   for (;;) {
-    const { done, value } = await reader.read();
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (e) {
+      // SSE 流中途断开（ECONNRESET / socket hang up / 网络抖动）
+      // 若已收到 finish_reason 或有实质内容，当作正常完成返回（避免重试导致前端内容重复）
+      if (acc.finish || acc.content || acc.toolCalls.length) {
+        if (cb && cb.onReasoning) cb.onReasoning("[SSE 流中断，已保留已收到的部分结果]");
+        break;
+      }
+      throw new Error("SSE 流中断: " + (e && e.message || e));
+    }
+    const { done, value } = chunk;
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     let nl;

@@ -173,6 +173,7 @@ class LspManager {
         cwd: root || process.cwd(),
         env: Object.assign({}, process.env),
         stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
       });
     } catch (e) {
       send({ type: "lsp.error", language: lang, message: `语言服务器启动失败：${e.message}（${def.docs || ""}）` });

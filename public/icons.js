@@ -106,6 +106,10 @@
     keyboard: `<rect x="2" y="4.4" width="12" height="7.2" rx="1.6" ${S}/><path d="M4.2 6.8h.01M6.4 6.8h.01M8.6 6.8h.01M10.8 6.8h.01M4.2 9.2h.01M6.4 9.2h.01M8.6 9.2h.01M10.8 9.2h.01M5.4 11.4h5.2" ${S}/>`,
     /* Markdown / 文档（工作流「补充文档」用） */
     md: `<path d="M4 2.5h5.4l2.6 2.6v8.4H4z" ${S}/><path d="M9.4 2.5V5h2.6" ${S}/><path d="M5.6 8.2h5M5.6 10.4h5M5.6 6.2h3" ${S}/>`,
+    /* 脉冲（后台进程心跳） */
+    pulse: `<path d="M1.5 8h3l1.5-3.5L8 11l1.8-5.5L11.5 8h3" ${S}/>`,
+    pin: `<path d="M9.2 2.8l4 4-2.2 2.2-1.6-.4-2.4 2.4v2.2l-2.2 2.2-1-1 2.2-2.2h2.2l2.4-2.4-.4-1.6z" ${S}/>`,
+    target: `<circle cx="8" cy="8" r="5.6" ${S}/><circle cx="8" cy="8" r="3.2" ${S}/><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"/>`,
   };
 
   /* 文件类型徽标：圆角方块 + 字母，参考 VS Code seti 风格 */

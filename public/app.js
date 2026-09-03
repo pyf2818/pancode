@@ -1,4 +1,4 @@
-/* ============================================================
+﻿/* ============================================================
    pancode 前端 v2.0 — Monaco 可写编辑器 + WebSocket 实时通信
    - 编辑器真实保存（Ctrl+S）、脏标记、外部变更同步
    - 文件树 CRUD：新建 / 重命名 / 删除（右键菜单）
@@ -20,6 +20,18 @@
   });
 })();
 const LANG_NAME = { javascript: "JavaScript", typescript: "TypeScript", markdown: "Markdown", json: "JSON", html: "HTML", css: "CSS", python: "Python", shell: "Shell", yaml: "YAML", plaintext: "Plain Text" };
+
+/* 滚动条只在滚动时/hover 时显示：监听全局 scroll 事件，给滚动元素加 is-scrolling class，停止后移除 */
+(function () {
+  const timers = new WeakMap();
+  document.addEventListener("scroll", (e) => {
+    const el = e.target;
+    if (!el || !el.classList) return;
+    el.classList.add("is-scrolling");
+    clearTimeout(timers.get(el));
+    timers.set(el, setTimeout(() => el.classList.remove("is-scrolling"), 600));
+  }, true);
+})();
 
 const state = {
   mode: "editor",
@@ -62,10 +74,14 @@ function diffStat(a, b) {
 const chatStream = document.createElement("div");
 chatStream.id = "chatStream";
 
+const msgNavRail = document.createElement("div");
+msgNavRail.id = "msgNavRail";
+
+
 const inputBox = document.createElement("div");
 inputBox.id = "chatInputBox";
 inputBox.innerHTML =
-  '<div id="ctxBarWrap" title="上下文用量" style="display:none"><div id="ctxBarFill"></div><span id="ctxBarTxt"></span></div>' +
+
   '<div id="ciSkillBar" class="ci-skill-bar">' +
     '<button id="btnSkillPick" class="ci-skill-pick" title="选择 Skill 引用到对话"><i data-ico="sparkle"></i>Skill</button>' +
     '<div id="ciSkillPop" class="ci-skill-pop" style="display:none"></div>' +
@@ -82,6 +98,13 @@ inputBox.innerHTML =
       '<option value="auto">权限：全自动</option>' +
     "</select>" +
     '<span class="ci-hint">Enter 发送</span>' +
+  '<div id="ctxBarWrap" title="上下文用量" style="display:none">' +
+    '<svg id="ctxRing" viewBox="0 0 36 36">' +
+      '<circle class="ctx-ring-bg" cx="18" cy="18" r="15" fill="none" stroke-width="3.5"/>' +
+      '<circle class="ctx-ring-fg" cx="18" cy="18" r="15" fill="none" stroke-width="3.5" stroke-linecap="round" transform="rotate(-90 18 18)"/>' +
+    '</svg>' +
+    '<span id="ctxRingTxt">0%</span>' +
+  '</div>' +
   '<button id="btnSend">' + ico("send") + "发送</button></div>";
 
 const terminal = document.createElement("div");
@@ -94,14 +117,17 @@ terminal.innerHTML =
 function mountShared() {
   if (state.mode === "editor") {
     $("chatSlotEditor").appendChild(chatStream);
+    $("chatSlotEditor").appendChild(msgNavRail);
     $("chatInputEditor").appendChild(inputBox);
     $("terminalSlotEditor").appendChild(terminal);
   } else {
     $("chatSlotAgents").appendChild(chatStream);
+    $("chatSlotAgents").appendChild(msgNavRail);
     $("chatInputAgents").appendChild(inputBox);
     $("terminalSlotAgents").appendChild(terminal);
   }
   chatStream.scrollTop = chatStream.scrollHeight;
+  buildMsgNav();
   const tl = $("termLines"); if (tl) tl.scrollTop = tl.scrollHeight;
 }
 
@@ -176,19 +202,35 @@ function showCtxMenu(e, path, isDir) {
             if (np && np !== path) send({ type: "file.rename", path, newPath: np });
           } },
         { key: "viewDiff", ic: "diff", fn: () => showDiff(path) },
+        { key: "aiExplain", ic: "sparkle", label: "AI 解释此文件", fn: () => aiFileAction(path, "请阅读并解释 @file:" + path + "，说明其功能、关键逻辑和设计思路。") },
+        { key: "aiFix", ic: "sparkle", label: "AI 修复错误", fn: () => aiFileAction(path, "请检查并修复 @file:" + path + " 中的错误和问题。先运行测试确认问题，修复后再验证。") },
+        { key: "aiTest", ic: "sparkle", label: "AI 生成测试", fn: () => aiFileAction(path, "请为 @file:" + path + " 生成单元测试，覆盖主要功能和边界情况。先查看项目中已有的测试风格并保持一致。") },
+        { key: "aiRefactor", ic: "sparkle", label: "AI 重构", fn: () => aiFileAction(path, "请重构 @file:" + path + "，改善代码结构、可读性和可维护性，但不改变功能。改完跑测试验证。") },
+        { key: "aiReview", ic: "sparkle", label: "AI 审查代码", fn: () => aiFileAction(path, "请对 @file:" + path + " 进行代码审查，指出潜在问题、改进建议和最佳实践。") },
         { key: "delete", ic: "trash", danger: true, fn: () => { if (confirm(t("deleteConfirm") + " " + path + "？")) send({ type: "file.delete", path }); } },
       ];
   menu.innerHTML = "";
   items.forEach((it) => {
     const d = document.createElement("div");
     d.className = "ctx-item" + (it.danger ? " danger" : "");
-    d.innerHTML = ico(it.ic) + esc(t(it.key));
+    d.innerHTML = ico(it.ic) + esc(it.label || t(it.key));
     d.onclick = () => { hideCtxMenu(); it.fn(); };
     menu.appendChild(d);
   });
   menu.style.display = "block";
   menu.style.left = Math.min(e.clientX, window.innerWidth - 200) + "px";
   menu.style.top = Math.min(e.clientY, window.innerHeight - items.length * 34 - 12) + "px";
+}
+function aiFileAction(path, text) {
+  openFile(path);
+  switchMode("agents");
+  if (state.running) {
+    msgQueue.push({ text, attachments: [] });
+    renderQueueBadge();
+    toast("已加入队列（第 " + msgQueue.length + " 条）");
+  } else {
+    lastUserText = text; send({ type: "chat", text, attachments: [] });
+  }
 }
 function hideCtxMenu() { $("ctxMenu").style.display = "none"; }
 document.addEventListener("click", hideCtxMenu);
@@ -216,8 +258,156 @@ function bootMonaco() {
   require.config({ paths: { vs: "/vendor/monaco/vs" } });
   require(["vs/editor/editor.main"], () => {
     state.monacoReady = true;
+    /* Bio-luminal 配套 Monaco 主题：编辑器融入深渊/晨光视觉，diff 修前修后行背景显式加强 */
+    monaco.editor.defineTheme("pancode-dark", {
+      base: "vs-dark", inherit: true, rules: [],
+      colors: {
+        "editor.background": "#0a0e13",
+        "editorGutter.background": "#0a0e13",
+        "minimap.background": "#0a0e13",
+        "editor.lineHighlightBackground": "#131b24",
+        "editorLineNumber.foreground": "#3d5265",
+        "editorLineNumber.activeForeground": "#7ea3b8",
+        "diffEditor.insertedLineBackground": "#1d45319e",
+        "diffEditor.removedLineBackground": "#4c1d2b9e",
+        "diffEditor.insertedTextBackground": "#2dd4a72e",
+        "diffEditor.removedTextBackground": "#fb71852e",
+        "diffEditor.insertedTextBorder": "#2dd4a740",
+        "diffEditor.removedTextBorder": "#fb718540",
+        "diffEditor.border": "#2e4457",
+      },
+    });
+    monaco.editor.defineTheme("pancode-light", {
+      base: "vs", inherit: true, rules: [],
+      colors: {
+        "editor.background": "#fafdfb",
+        "editorGutter.background": "#fafdfb",
+        "minimap.background": "#fafdfb",
+        "diffEditor.insertedLineBackground": "#b9ecd48c",
+        "diffEditor.removedLineBackground": "#ffd3da8c",
+        "diffEditor.insertedTextBackground": "#0f9d5829",
+        "diffEditor.removedTextBackground": "#dc262629",
+        "diffEditor.insertedTextBorder": "#0f9d5840",
+        "diffEditor.removedTextBorder": "#dc262640",
+        "diffEditor.border": "#bcd2c7",
+      },
+    });
+    const monacoTheme = () => (getTheme() === "light" ? "pancode-light" : "pancode-dark");
+
+    /* ---- 内联 Tab 补全 ---- */
+    function initInlineComplete(monaco, editor) {
+      const LANGS = ["javascript", "typescript", "python", "go", "rust", "java", "html", "css", "json", "markdown", "yaml", "xml", "shell", "c", "cpp"];
+      let lastReq = 0;
+      const provider = {
+        provideInlineCompletions: async function (model, position, ctx, token) {
+          const now = Date.now();
+          if (now - lastReq < 400) return { items: [] };
+          lastReq = now;
+          const lang = model.getLanguageId ? model.getLanguageId() : "plaintext";
+          const lineContent = model.getLineContent(position.lineNumber);
+          const charBefore = lineContent[position.column - 2];
+          if (charBefore && !/[\w.\(\[\{<\/\-:"']/.test(charBefore)) return { items: [] };
+          const prefix = model.getValueInRange({ startLineNumber: 1, startColumn: 1, endLineNumber: position.lineNumber, endColumn: position.column });
+          const suffix = model.getValueInRange({ startLineNumber: position.lineNumber, startColumn: position.column, endLineNumber: model.getLineCount(), endColumn: model.getLineMaxColumn(model.getLineCount()) });
+          if (prefix.trim().length < 3) return { items: [] };
+          const uri = model.uri ? model.uri.toString() : "";
+          const filePath = uri.replace("inmemory:///", "");
+          try {
+            const r = await fetch("/api/complete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ prefix, suffix, language: lang, filePath }),
+              signal: AbortSignal.timeout(7000),
+            });
+            if (token.isCancellationRequested) return { items: [] };
+            const data = await r.json();
+            if (!data || !data.ok || !data.text) return { items: [] };
+            return { items: [{ text: data.text, range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column), filterText: data.text }] };
+          } catch (e) { return { items: [] }; }
+        },
+        freeInlineCompletions: function () {},
+      };
+      LANGS.forEach(function (lang) { try { monaco.languages.registerInlineCompletionsProvider(lang, provider); } catch (e) {} });
+    }
+
+    /* Cmd+K 内联编辑：选中文本 → 输入指令 → AI 返回修改 → 预览 → Accept/Reject */
+    function initInlineEdit(monaco, editor) {
+      let box = null;
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () => {
+        const sel = editor.getSelection();
+        if (!sel || sel.isEmpty()) return;
+        const model = editor.getModel();
+        if (!model) return;
+        const selectedText = model.getValueInRange(sel);
+        const fullText = model.getValue();
+        const beforeText = fullText.slice(0, model.getOffsetAt(sel.getStartPosition()));
+        const afterText = fullText.slice(model.getOffsetAt(sel.getEndPosition()));
+        const uri = model.uri ? model.uri.toString() : "";
+        const filePath = uri.replace("inmemory:///", "");
+        const lang = model.getLanguageId ? model.getLanguageId() : "plaintext";
+        showBox(sel, selectedText, beforeText, afterText, filePath, lang);
+      });
+      function showBox(sel, selectedText, beforeText, afterText, filePath, lang) {
+        if (box) { box.remove(); box = null; }
+        box = document.createElement("div");
+        box.id = "inlineEditBox";
+        box.innerHTML =
+          '<div class="ie-header"><span class="ie-title">AI 编辑</span><span class="ie-close">×</span></div>' +
+          '<input class="ie-input" placeholder="描述你想要的修改…（Enter 执行，Esc 取消）" />' +
+          '<div class="ie-actions"><button class="ie-btn ie-accept" disabled>接受</button><button class="ie-btn ie-reject">拒绝</button></div>' +
+          '<pre class="ie-preview" style="display:none;"></pre>';
+        document.body.appendChild(box);
+        const selTop = editor.getTopForLineNumber(sel.startLineNumber) - editor.getScrollTop();
+        const domRect = editor.getDomNode().getBoundingClientRect();
+        box.style.left = (domRect.left + 24) + "px";
+        box.style.top = (domRect.top + selTop + 24) + "px";
+        const input = box.querySelector(".ie-input");
+        const acceptBtn = box.querySelector(".ie-accept");
+        const rejectBtn = box.querySelector(".ie-reject");
+        const closeBtn = box.querySelector(".ie-close");
+        const preview = box.querySelector(".ie-preview");
+        const title = box.querySelector(".ie-title");
+        input.focus();
+        let modifiedText = null;
+        async function runEdit() {
+          const instruction = input.value.trim();
+          if (!instruction) return;
+          input.disabled = true;
+          title.textContent = "AI 编辑中…";
+          try {
+            const r = await fetch("/api/edit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ filePath, language: lang, selectedText, instruction, beforeContext: beforeText, afterContext: afterText }),
+              signal: AbortSignal.timeout(35000),
+            });
+            const data = await r.json();
+            if (!data || !data.ok || !data.text) { title.textContent = data && data.error ? data.error : "AI 返回为空"; input.disabled = false; return; }
+            modifiedText = data.text;
+            preview.style.display = "block";
+            preview.textContent = modifiedText;
+            acceptBtn.disabled = false;
+            title.textContent = "AI 编辑（预览）";
+            input.disabled = false;
+          } catch (e) { title.textContent = "失败：" + e.message.slice(0, 40); input.disabled = false; }
+        }
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runEdit(); }
+          if (e.key === "Escape") { closeBox(); }
+        });
+        acceptBtn.addEventListener("click", () => {
+          if (!modifiedText) return;
+          editor.executeEdits("inline-edit", [{ range: sel, text: modifiedText }]);
+          closeBox();
+        });
+        rejectBtn.addEventListener("click", closeBox);
+        closeBtn.addEventListener("click", closeBox);
+        function closeBox() { if (box) { box.remove(); box = null; } editor.focus(); }
+      }
+    }
+
     editor = monaco.editor.create($("monacoHost"), {
-      theme: getTheme() === "light" ? "vs" : "vs-dark",
+      theme: monacoTheme(),
       automaticLayout: true,
       minimap: { enabled: true, renderCharacters: true },
       fontSize: 13.5,
@@ -227,12 +417,22 @@ function bootMonaco() {
       renderLineHighlight: "all",
       scrollBeyondLastLine: false,
       padding: { top: 8 },
+      inlineSuggest: { enabled: true },
     });
     editor.onDidChangeCursorPosition((e) => {
       $("sbCursor").textContent = "行 " + e.position.lineNumber + ", 列 " + e.position.column;
     });
     /* Ctrl+S 真实保存到服务端 */
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveActiveFile);
+    /* 用户编辑文件时清除 Agent diff 高亮 */
+    editor.onDidChangeModelContent(function() {
+      if (state.diffDecos) { state.diffDecos = editor.deltaDecorations(state.diffDecos, []); }
+    });
+
+    /* 内联 Tab 补全：注册 InlineCompletionsProvider */
+    initInlineComplete(monaco, editor);
+    /* Cmd+K 内联编辑 */
+    initInlineEdit(monaco, editor);
     if (state.booted && !state.openTabs.length) {
       const names = Object.keys(state.files);
       const first = names.find((p) => /^readme\.md$/i.test(p)) || names[0];
@@ -344,8 +544,8 @@ function applyTheme(t) {
   localStorage.setItem("cw-theme", t);
   const btn = $("btnTheme");
   if (btn) btn.innerHTML = ico(t === "light" ? "moon" : "sun");
-  if (state.monacoReady && editor) editor.updateOptions({ theme: t === "light" ? "vs" : "vs-dark" });
-  if (diffEditor) diffEditor.updateOptions({ theme: t === "light" ? "vs" : "vs-dark" });
+  if (state.monacoReady && editor) editor.updateOptions({ theme: t === "light" ? "pancode-light" : "pancode-dark" });
+  if (diffEditor) diffEditor.updateOptions({ theme: t === "light" ? "pancode-light" : "pancode-dark" });
 }
 $("btnTheme").onclick = () => applyTheme(getTheme() === "light" ? "dark" : "light");
 
@@ -887,6 +1087,7 @@ function openFile(path, revealLine) {
     if (!isPreviewable(path)) { previewOn = false; $("htmlPreview").classList.remove("show"); const _pv = $("previewResizer"); if (_pv) _pv.classList.remove("show"); }
     if (state.monacoReady) {
       editor.setModel(getModel(path));
+      if (state.diffDecos) { state.diffDecos = editor.deltaDecorations(state.diffDecos, []); }
       editor.updateOptions({ readOnly: false });
       if (revealLine) { editor.revealLineInCenter(revealLine); editor.setPosition({ lineNumber: revealLine, column: 1 }); }
       editor.layout();
@@ -916,14 +1117,30 @@ function closeTab(path, ev) {
 function renderTabs() {
   const bar = $("tabbar");
   bar.innerHTML = "";
-  state.openTabs.forEach((path) => {
+  state.openTabs.forEach((path, idx) => {
     const t = document.createElement("div");
     t.className = "tab" + (path === state.activeFile ? " active" : "");
+    t.draggable = true;
+    t.dataset.idx = idx;
     t.innerHTML = fileIco(path) + "<span>" + esc(path.split("/").pop()) + "</span>" +
       (state.dirty.has(path) ? '<span class="tab-dot" title="未保存 (Ctrl+S 保存)">●</span>' : "") +
       '<span class="tab-close">' + ico("close") + "</span>";
     t.onclick = () => openFile(path);
     t.querySelector(".tab-close").onclick = (e) => closeTab(path, e);
+    t.addEventListener("dragstart", (e) => { dragTabIdx = idx; e.dataTransfer.effectAllowed = "move"; t.classList.add("dragging"); });
+    t.addEventListener("dragend", () => { t.classList.remove("dragging"); bar.querySelectorAll(".tab").forEach(x => x.classList.remove("drag-over")); });
+    t.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; });
+    t.addEventListener("dragenter", (e) => { e.preventDefault(); if (idx !== dragTabIdx) t.classList.add("drag-over"); });
+    t.addEventListener("dragleave", () => t.classList.remove("drag-over"));
+    t.addEventListener("drop", (e) => {
+      e.preventDefault();
+      t.classList.remove("drag-over");
+      if (dragTabIdx === null || dragTabIdx === idx) return;
+      const moved = state.openTabs.splice(dragTabIdx, 1)[0];
+      state.openTabs.splice(idx, 0, moved);
+      dragTabIdx = null;
+      renderTabs();
+    });
     bar.appendChild(t);
   });
 }
@@ -1202,8 +1419,9 @@ function showDiff(path) {
   $("diffTitle").textContent = path + (f.isNew ? " — 新文件" : " — 相对基线的改动");
   if (diffEditor) diffEditor.dispose();
   diffEditor = monaco.editor.createDiffEditor($("diffHost"), {
-    theme: getTheme() === "light" ? "vs" : "vs-dark", readOnly: true, automaticLayout: true, fontSize: 13,
+    theme: getTheme() === "light" ? "pancode-light" : "pancode-dark", readOnly: true, automaticLayout: true, fontSize: 13,
     renderSideBySide: true, minimap: { enabled: false },
+    ignoreTrimWhitespace: false, renderIndicators: true,
   });
   diffEditor.setModel({
     original: monaco.editor.createModel(f.original, f.lang),
@@ -1313,8 +1531,9 @@ function renderPatchDiff(path) {
   const preview = previewModified(f);
   if (patchDiffEditor) patchDiffEditor.dispose();
   patchDiffEditor = monaco.editor.createDiffEditor($("patchHost"), {
-    theme: getTheme() === "light" ? "vs" : "vs-dark", readOnly: true, automaticLayout: true, fontSize: 13,
+    theme: getTheme() === "light" ? "pancode-light" : "pancode-dark", readOnly: true, automaticLayout: true, fontSize: 13,
     renderSideBySide: true, minimap: { enabled: false },
+    ignoreTrimWhitespace: false, renderIndicators: true,
   });
   patchDiffEditor.setModel({
     original: monaco.editor.createModel(f.original, monacoLangOf(f.path)),
@@ -1533,12 +1752,77 @@ const blocks = {};
 let answerBlock = null;   // 跨轮聚合的最终回答气泡（一次任务 = 一个气泡）
 let thinkCount = 0;       // 本次任务的思考步序号
 let lastThink = null;     // 当前正在流式输出的思考块（用于自动折叠上一个）
+let dragTabIdx = null;    // 拖拽排序中的源标签索引
 function scrollChat() {
   chatStream.scrollTop = chatStream.scrollHeight;
   // 每次消息变化都触发上下文实时刷新（rAF 节流，避免流式输出时频繁重排）
   if (_ctxRaf) return;
   _ctxRaf = requestAnimationFrame(() => { _ctxRaf = null; refreshCtx(); });
 }
+
+/* ---------------- 消息节点快速跳转 ---------------- */
+let _msgNavRaf = null;
+function buildMsgNav() {
+  if (_msgNavRaf) return;
+  _msgNavRaf = requestAnimationFrame(() => {
+    _msgNavRaf = null;
+    _doBuildMsgNav();
+  });
+}
+function _doBuildMsgNav() {
+  const rail = msgNavRail;
+  if (!rail) return;
+  const msgs = [];
+  chatStream.querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { msgs.push(el); });
+  if (msgs.length < 2) { rail.innerHTML = ""; return; }
+  rail.innerHTML = "";
+  const count = msgs.length;
+  msgs.forEach((el, i) => {
+    const isUser = el.classList.contains("msg-user");
+    const dot = document.createElement("div");
+    dot.className = "msg-nav-item" + (isUser ? " user" : " ai");
+    dot.style.top = ((i / (count - 1)) * 100) + "%";
+    const txt = (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 80);
+    dot.onclick = (e) => {
+      e.stopPropagation();
+      chatStream.scrollTo({ top: el.offsetTop - 10, behavior: "smooth" });
+    };
+    dot.onmouseenter = () => { _showNavTip(dot, isUser, txt); };
+    dot.onmouseleave = () => { _hideNavTip(); };
+    rail.appendChild(dot);
+  });
+  updateMsgNavActive();
+}
+let _navTip = null;
+function _showNavTip(dot, isUser, txt) {
+  if (!_navTip) { _navTip = document.createElement("div"); _navTip.className = "msg-nav-tip"; document.body.appendChild(_navTip); }
+  _navTip.textContent = (isUser ? "👤 " : "🤖 ") + txt;
+  _navTip.style.display = "block";
+  const r = dot.getBoundingClientRect();
+  _navTip.style.top = (r.top + r.height / 2 - 10) + "px";
+}
+function _hideNavTip() { if (_navTip) _navTip.style.display = "none"; }
+function updateMsgNavActive() {
+  const rail = msgNavRail;
+  if (!rail || !rail.children.length) return;
+  const scrollTop = chatStream.scrollTop;
+  const viewH = chatStream.clientHeight;
+  let activeIdx = -1;
+  const dots = Array.from(rail.children);
+  const msgs = [];
+  chatStream.querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { msgs.push(el); });
+  for (let i = 0; i < msgs.length; i++) {
+    if (msgs[i].offsetTop - 10 <= scrollTop + viewH * 0.3) activeIdx = i;
+  }
+  dots.forEach((d, i) => d.classList.toggle("active", i === activeIdx));
+}
+let _navHideTimer;
+chatStream.addEventListener("scroll", () => {
+  msgNavRail.classList.add("nav-visible");
+  clearTimeout(_navHideTimer);
+  _navHideTimer = setTimeout(() => msgNavRail.classList.remove("nav-visible"), 800);
+  updateMsgNavActive();
+});
 
 /* 追加任务内容块：若最终回答气泡已出现，则插到它之前，保证「思考/工具在前、最终结论在最后」 */
 function appendChatBlock(el) {
@@ -1547,6 +1831,7 @@ function appendChatBlock(el) {
   } else {
     chatStream.appendChild(el);
   }
+  buildMsgNav();
 }
 
 function mdLite(s) {
@@ -1817,6 +2102,36 @@ function renderApproval(ev) {
   };
 }
 
+/* 交互式选项列表弹窗：Agent 调 ask_user_choice 时渲染候选方案 */
+function renderChoice(ev) {
+  const el = document.createElement("div");
+  el.className = "chat-tool";
+  const opts = Array.isArray(ev.options) ? ev.options : [];
+  el.innerHTML =
+    '<div class="t-head"><span class="t-ico">' + ico("sparkle") + '</span><span class="t-label">需要你做个决策</span><span class="t-status pending">等待选择</span></div>' +
+    '<div class="tool-body choice-body">' +
+      '<div class="choice-question">' + esc(ev.question || "") + '</div>' +
+      '<div class="choice-list">' + opts.map((o, i) =>
+        '<button class="choice-opt" data-idx="' + i + '">' +
+          '<span class="choice-opt-label">' + esc(o.label || "") + '</span>' +
+          (o.description ? '<span class="choice-opt-desc">' + esc(o.description) + '</span>' : '') +
+        '</button>'
+      ).join("") + '</div>' +
+    '</div>';
+  appendChatBlock(el); scrollChat();
+  const statusEl = el.querySelector(".t-status");
+  el.querySelectorAll(".choice-opt").forEach((btn) => {
+    btn.onclick = () => {
+      const idx = parseInt(btn.dataset.idx, 10);
+      const choice = opts[idx].label;
+      send({ type: "tool.choice_result", id: ev.id, choice });
+      statusEl.className = "t-status done";
+      statusEl.innerHTML = ico("check") + " 已选择: " + esc(choice);
+      el.querySelectorAll(".choice-opt").forEach((b) => { b.disabled = true; b.classList.toggle("selected", b === btn); });
+    };
+  });
+}
+
 function handleEvent(ev) {
   switch (ev.type) {
     case "hello": {
@@ -1895,7 +2210,7 @@ function handleEvent(ev) {
       appendChatBlock(el); scrollChat();
       const body = el.querySelector(".think-body");
       body.classList.add("type-caret");
-      blocks[ev.id] = { el, body, buf: "", step: thinkCount };
+      blocks[ev.id] = { el, body, buf: "", step: thinkCount, startTime: Date.now() };
       lastThink = el;
       break;
     }
@@ -1907,7 +2222,8 @@ function handleEvent(ev) {
     case "think.end": {
       const b = blocks[ev.id]; if (!b) break;
       b.body.classList.remove("type-caret");
-      b.el.querySelector(".tk-label").textContent = "已深度思考（第 " + (b.step || thinkCount) + " 步，点击展开 / 收起）";
+      const dur = b.startTime ? Math.max(1, Math.round((Date.now() - b.startTime) / 1000)) : null;
+      b.el.querySelector(".tk-label").textContent = "思考" + (dur ? " · " + dur + "s" : "") + "（第 " + (b.step || thinkCount) + " 步，点击展开）";
       b.el.classList.remove("open", "live");   // 完成后默认折叠，避免堆叠
       scrollChat();
       break;
@@ -1951,12 +2267,19 @@ function handleEvent(ev) {
     case "tool.start": {
       const el = document.createElement("div");
       el.className = "tool-card";
+      const roundBadge = ev.round ? '<span class="t-round">R' + ev.round + '</span>' : '';
       el.innerHTML = '<div class="tool-head"><span class="t-kind">' + ico(KIND_ICO[ev.kind] || "files") + '</span>' +
         '<span class="t-name">' + esc(ev.name) + '</span><span class="t-target">' + esc(ev.target) + "</span>" +
-        '<span class="t-status running">' + ico("spin") + "执行中</span></div><div class=\"tool-body\"></div>";
+        roundBadge + '<span class="t-status running">' + ico("spin") + "执行中</span></div><div class=\"tool-body\"></div>";
       el.querySelector(".tool-head").onclick = () => el.classList.toggle("open");
       appendChatBlock(el); scrollChat();
       blocks[ev.id] = { el };
+      // 实时进度：状态栏显示当前轮次 + 工具名
+      const liveTxt = $("agLiveTxt");
+      if (liveTxt && ev.round) liveTxt.textContent = "第 " + ev.round + " 轮 · " + ev.name;
+      const sbTxt = $("sbAgentTxt");
+      if (sbTxt && ev.round) sbTxt.textContent = "R" + ev.round + " · " + ev.name;
+
       break;
     }
     case "tool.body": {
@@ -1970,11 +2293,13 @@ function handleEvent(ev) {
       s.className = "t-status " + (ev.ok ? "done" : "fail");
       s.innerHTML = (ev.ok ? ico("check") : ico("error")) + esc(ev.label || (ev.ok ? "完成" : "失败"));
       if (ev.open) b.el.classList.add("open");
+
       scrollChat();
       break;
     }
 
     case "tool.pending": renderApproval(ev); break;
+    case "tool.ask_choice": renderChoice(ev); break;
 
     case "term.cmd": termPrompt(ev.text, ev.tabId); if (state.mode === "editor") $("bottomPanel").classList.remove("collapsed"); break;
     case "term.line": termLine('<span class="' + (ev.cls || "tl-cmd") + '">' + esc(ev.text) + "</span>", ev.tabId); break;
@@ -1999,21 +2324,19 @@ function handleEvent(ev) {
       break;
     }
     case "editor.open": if (state.mode === "editor" && state.files[ev.path]) openFile(ev.path, ev.line); break;
+    case "editor.diff": {
+      if (state.mode === "editor" && state.activeTab === ev.path && editor && monaco) {
+        const decos = ev.added.map(function(ln) {
+          return { range: new monaco.Range(ln, 1, ln, 1), options: { isWholeLine: true, className: "agent-diff-added", linesDecorationsClassName: "agent-diff-added-gutter" } };
+        });
+        state.diffDecos = editor.deltaDecorations(state.diffDecos || [], decos);
+      }
+      break;
+    }
 
     case "changes": {
       if (!ev.convId || ev.convId === convId) renderChanges(ev.list);
-      if (ev.card && ev.list.length) {
-        const el = document.createElement("div");
-        el.className = "change-summary";
-        let inner = '<div class="cs-title">' + ico("diff") + "本次任务改动了 " + ev.list.length + " 个文件（点击查看 Diff）</div>";
-        ev.list.forEach((it) => {
-          inner += '<div class="cs-file" data-p="' + esc(it.path) + '">' + fileIco(it.path) + " " + esc(it.path) +
-            '<span class="cs-stat"><span class="stat-add">+' + it.add + '</span> <span class="stat-del">−' + it.del + "</span></span></div>";
-        });
-        el.innerHTML = inner;
-        el.querySelectorAll(".cs-file").forEach((f) => (f.onclick = () => showDiff(f.dataset.p)));
-        appendChatBlock(el); scrollChat();
-      }
+
       break;
     }
 
@@ -2042,6 +2365,14 @@ function handleEvent(ev) {
 
     case "agent.done": state.round = ev.round; answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx(); break;
     case "agent.reset": state.round = 0; answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx(); break;
+
+    /* ----- 多 Agent 编排 ----- */
+    case "orch.start": onOrchStart(ev); break;
+    case "orch.step.start": onOrchStepStart(ev); break;
+    case "orch.step.done": onOrchStepDone(ev); break;
+    case "orch.step.fail": onOrchStepFail(ev); break;
+    case "orch.done": onOrchDone(ev); break;
+
 
     /* C6：服务端确认会话上下文已切换 */
     case "conv.switched":
@@ -2090,15 +2421,18 @@ function refreshCtx() {
   else { used = estTokensFromDom(); budget = 1000000; }
   const pct = Math.min(100, Math.round((used / budget) * 100));
   wrap.style.display = "flex";
-  const fill = wrap.querySelector("#ctxBarFill");
-  fill.style.width = pct + "%";
-  fill.className = pct >= 85 ? "warn" : pct >= 60 ? "mid" : "";
+  const R = 15, C = 2 * Math.PI * R;
+  const fg = wrap.querySelector(".ctx-ring-fg");
+  fg.style.strokeDasharray = C;
+  fg.style.strokeDashoffset = C * (1 - pct / 100);
+  fg.classList.toggle("mid", pct >= 60 && pct < 85);
+  fg.classList.toggle("warn", pct >= 85);
+  wrap.querySelector("#ctxRingTxt").textContent = pct + "%";
   const usedK = used > 1000 ? (used / 1000).toFixed(1) + "k" : used;
   const budK = Math.round(budget / 1000);
-  wrap.querySelector("#ctxBarTxt").textContent =
-    "上下文 " + msgCount + " 条消息 · " + usedK + "/" + budK + "k tokens（" + pct + "%" +
-    (fromServer ? "" : "，估算") + (pct >= 85 ? "，即将自动压缩" : "") + "）";
-  wrap.title = "上下文用量" + (fromServer ? "（服务端实测）" : "（本地估算，服务端会校正）") + "；超过 85% 时自动摘要压缩早期消息";
+  wrap.title = "上下文 " + msgCount + " 条消息 · " + usedK + "/" + budK + "k tokens（" + pct + "%" +
+    (fromServer ? "" : "，估算") + (pct >= 85 ? "，即将自动压缩" : "") + "）" +
+    (fromServer ? "（服务端实测）" : "（本地估算，服务端会校正）");
 }
 /* 服务端 context.usage 事件 → 存储实测值并刷新 */
 function updateCtxBar(used, budget) {
@@ -2141,6 +2475,107 @@ function setRunning(running, label) {
     }
   }
 }
+
+/* ---------------- 多 Agent 编排面板 ---------------- */
+let orchSteps = {};
+function onOrchStart(ev) {
+  orchSteps = {};
+  const overlay = $("orchOverlay");
+  $("orchTitle").textContent = ev.title || "多 Agent 编排";
+  $("orchSummary").style.display = "none";
+  const container = $("orchSteps");
+  container.innerHTML = "";
+  (ev.steps || []).forEach((s) => {
+    orchSteps[s.id] = { name: s.name, status: "pending" };
+    const el = document.createElement("div");
+    el.className = "orch-step pending";
+    el.dataset.id = s.id;
+    el.innerHTML = '<div class="orch-step-head">' +
+      '<span class="orch-step-ico">' + ico("spin") + '</span>' +
+      '<span class="orch-step-name">' + esc(s.name) + '</span>' +
+      '<span class="orch-step-status">等待中</span></div>' +
+      '<div class="orch-step-out"></div>';
+    container.appendChild(el);
+  });
+  overlay.style.display = "";
+  replaceIcons();
+}
+function onOrchStepStart(ev) {
+  const el = $("orchSteps").querySelector('[data-id="' + ev.stepId + '"]');
+  if (!el) return;
+  el.className = "orch-step running";
+  el.querySelector(".orch-step-ico").innerHTML = ico("spin");
+  el.querySelector(".orch-step-status").textContent = "执行中" + (ev.parallel ? "（并行）" : "");
+  replaceIcons();
+}
+function onOrchStepDone(ev) {
+  const el = $("orchSteps").querySelector('[data-id="' + ev.stepId + '"]');
+  if (!el) return;
+  el.className = "orch-step done";
+  el.querySelector(".orch-step-ico").innerHTML = ico("check");
+  el.querySelector(".orch-step-status").textContent = "完成";
+  if (ev.output) {
+    const out = el.querySelector(".orch-step-out");
+    out.textContent = ev.output.slice(0, 500);
+    out.style.display = "";
+  }
+  replaceIcons();
+}
+function onOrchStepFail(ev) {
+  const el = $("orchSteps").querySelector('[data-id="' + ev.stepId + '"]');
+  if (!el) return;
+  el.className = "orch-step fail";
+  el.querySelector(".orch-step-ico").innerHTML = ico("error");
+  el.querySelector(".orch-step-status").textContent = "失败";
+  if (ev.error) {
+    const out = el.querySelector(".orch-step-out");
+    out.textContent = ev.error;
+    out.style.display = "";
+  }
+  replaceIcons();
+}
+function onOrchDone(ev) {
+  const summary = $("orchSummary");
+  summary.style.display = "";
+  summary.className = "orch-summary " + (ev.ok ? "ok" : "fail");
+  summary.innerHTML = '<span class="orch-sum-ico">' + ico(ev.ok ? "check" : "error") + '</span>' + esc(ev.summary || "编排完成");
+  replaceIcons();
+  // 保存编排历史
+  try {
+    const key = "pancode:orch-hist:" + _wsHash();
+    let hist = JSON.parse(localStorage.getItem(key) || "[]");
+    hist.unshift({ title: ev.summary || "编排", ok: ev.ok, elapsed: ev.elapsed, ts: Date.now() });
+    hist = hist.slice(0, 20);
+    localStorage.setItem(key, JSON.stringify(hist));
+    renderOrchHistory();
+  } catch (e) {}
+}
+function renderOrchHistory() {
+  const host = $("agOrchHistory");
+  if (!host) return;
+  try {
+    const key = "pancode:orch-hist:" + _wsHash();
+    const hist = JSON.parse(localStorage.getItem(key) || "[]");
+    if (!hist.length) { host.innerHTML = '<div class="ag-orch-empty">暂无编排记录</div>'; return; }
+    host.innerHTML = "";
+    hist.forEach((h) => {
+      const el = document.createElement("div");
+      el.className = "ag-orch-item";
+      const d = new Date(h.ts);
+      const meta = (d.getMonth() + 1) + "/" + d.getDate() + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+      el.innerHTML = '<div class="ag-orch-item-head">' +
+        '<span class="ag-orch-item-badge ' + (h.ok ? "ok" : "fail") + '">' + (h.ok ? "✓" : "✗") + '</span>' +
+        '<span class="ag-orch-item-title">' + esc((h.title || "编排").slice(0, 40)) + '</span>' +
+        '</div><div class="ag-orch-item-meta">' + meta + (h.elapsed ? " · " + h.elapsed + "s" : "") + '</div>';
+      host.appendChild(el);
+    });
+  } catch (e) {}
+}
+(function () {
+  const closeBtn = $("orchClose");
+  if (closeBtn) closeBtn.onclick = () => { $("orchOverlay").style.display = "none"; };
+  renderOrchHistory();
+})();
 
 /* ---------------- 本地鉴权 ---------------- */
 const AUTH = { token: "" };
@@ -2350,6 +2785,48 @@ function bindInput() {
   };
   ta.addEventListener("input", onAtInput);
 
+  // /斜杠命令：快速执行常见任务
+  const SLASH_COMMANDS = [
+    { cmd: "/explain", desc: "解释当前文件", expand: "请阅读并解释当前打开的文件，说明其功能、关键逻辑和设计思路。" },
+    { cmd: "/test", desc: "生成单元测试", expand: "请为当前打开的文件生成单元测试，覆盖主要功能和边界情况。先查看项目中已有的测试风格并保持一致。" },
+    { cmd: "/fix", desc: "修复错误", expand: "请检查当前打开的文件中的错误和问题，并修复它们。先运行测试确认问题，修复后再验证。" },
+    { cmd: "/refactor", desc: "重构代码", expand: "请重构当前打开的文件，改善代码结构、可读性和可维护性，但不改变功能。改完跑测试验证。" },
+    { cmd: "/review", desc: "代码审查", expand: "请对当前打开的文件进行代码审查，指出潜在问题、改进建议和最佳实践。" },
+    { cmd: "/docs", desc: "生成文档", expand: "请为当前打开的文件生成文档注释（JSDoc/docstring 等），包括函数说明、参数和返回值。" },
+    { cmd: "/optimize", desc: "优化性能", expand: "请分析当前打开的文件的性能瓶颈，并提出和实施优化方案。改完验证功能不变。" },
+  ];
+  const slashMenu = document.createElement("div");
+  slashMenu.className = "at-menu"; slashMenu.style.display = "none";
+  document.body.appendChild(slashMenu);
+  let slashIdx = 0, slashItems = [];
+  const hideSlashMenu = () => { slashMenu.style.display = "none"; };
+  const refreshSlashActive = () => slashMenu.querySelectorAll(".at-item").forEach((el, i) => el.classList.toggle("active", i === slashIdx));
+  const pickSlash = (i) => {
+    const it = slashItems[i]; if (!it) return;
+    ta.value = it.expand; ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    hideSlashMenu();
+  };
+  const showSlashMenu = (items) => {
+    slashItems = items; slashIdx = 0;
+    if (!items.length) { hideSlashMenu(); return; }
+    slashMenu.innerHTML = items.map((it, i) => '<div class="at-item' + (i === 0 ? " active" : "") + '" data-i="' + i + '"><span class="at-kind">命令</span>' + esc(it.cmd) + ' <span style="color:var(--text-dim)">' + esc(it.desc) + '</span></div>').join("");
+    slashMenu.style.display = "block";
+    const r = ta.getBoundingClientRect();
+    slashMenu.style.left = Math.max(8, r.left) + "px";
+    slashMenu.style.top = Math.max(8, r.top - slashMenu.offsetHeight - 6) + "px";
+    slashMenu.querySelectorAll(".at-item").forEach((el) => el.onclick = () => pickSlash(parseInt(el.dataset.i, 10)));
+  };
+  const onSlashInput = () => {
+    if (atMenu && atMenu.style.display !== "none") { hideSlashMenu(); return; }
+    const pos = ta.selectionStart, before = ta.value.slice(0, pos);
+    const m = before.match(/^\/(\w*)$/);
+    if (!m) { hideSlashMenu(); return; }
+    const q = m[1].toLowerCase();
+    showSlashMenu(SLASH_COMMANDS.filter((c) => c.cmd.slice(1).startsWith(q)));
+  };
+  ta.addEventListener("input", onSlashInput);
+
   // 上下键浏览当前会话已发消息：↑ 更旧 / ↓ 更新（回到最新后继续 ↓ 清空输入框）
   const navHistory = (dir) => {
     const curConv = (typeof convId !== "undefined" && convId) || "default";
@@ -2376,6 +2853,13 @@ function bindInput() {
       else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickAtItem(atIdx); }
       return;
     }
+    if (slashMenu && slashMenu.style.display !== "none") {
+      if (e.key === "Escape") hideSlashMenu();
+      else if (e.key === "ArrowDown") { e.preventDefault(); slashIdx = (slashIdx + 1) % slashItems.length; refreshSlashActive(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); slashIdx = (slashIdx - 1 + slashItems.length) % slashItems.length; refreshSlashActive(); }
+      else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSlash(slashIdx); }
+      return;
+    }
     // 历史消息浏览（@ 菜单未打开时）
     // 仅在「不会妨碍多行编辑」时接管方向键：单行内容随时可翻历史；
     // 多行内容只在光标处于最开头（↑）/ 最末尾（↓）时才翻历史，
@@ -2388,6 +2872,7 @@ function bindInput() {
     else if (e.key === "ArrowDown" && (singleLine || atEnd)) { e.preventDefault(); navHistory(-1); }
   });
   document.addEventListener("click", (e) => { if (atMenu && atMenu.style.display !== "none" && !atMenu.contains(e.target) && e.target !== ta) hideAtMenu(); });
+  document.addEventListener("click", (e) => { if (slashMenu && slashMenu.style.display !== "none" && !slashMenu.contains(e.target) && e.target !== ta) hideSlashMenu(); });
 
   // 附件：按钮选择 / 粘贴 / 拖拽
   const fileInput = document.createElement("input");
@@ -2510,37 +2995,134 @@ function initConvObserver() {
   convObs.observe(chatStream, { childList: true, subtree: true, characterData: true });
 }
 
+function loadPinnedConvs() { try { return JSON.parse(localStorage.getItem("pancode:pinned:" + _wsHash()) || "[]"); } catch (e) { return []; } }
+function savePinnedConvs(arr) { try { localStorage.setItem("pancode:pinned:" + _wsHash(), JSON.stringify(arr)); } catch (e) {} }
+function convTimeGroup(ts) {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (ts >= todayStart) return 0;
+  if (ts >= todayStart - 86400000) return 1;
+  if (ts >= todayStart - 7 * 86400000) return 2;
+  return 3;
+}
+const CONV_GROUP_LABELS = ["今天", "昨天", "本周", "更早"];
+function convSummary(c) {
+  if (c.id === convId && state.running) return { tag: "running", text: "R" + (state.round || 1) + " 运行中" };
+  if (c.dom) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = c.dom;
+    const msgs = tmp.querySelectorAll(".msg-user, .msg-ai");
+    const last = msgs[msgs.length - 1];
+    if (last) {
+      const text = (last.textContent || "").trim().replace(/\s+/g, " ").slice(0, 42);
+      if (text) return { tag: "", text: text };
+    }
+  }
+  return { tag: "", text: "" };
+}
+
 function renderConvList() {
   const host = $("agSessionList");
   if (!host) return;
   const list = loadConvList();
-  list.sort((a, b) => b.ts - a.ts);          // 按创建时间排序，不重新保存
+  list.sort((a, b) => b.ts - a.ts);
+  const _q = ($("convSearch") && $("convSearch").value || "").toLowerCase().trim();
+  const filtered = _q ? list.filter((c) => (c.title || "新对话").toLowerCase().includes(_q)) : list;
+  const pinned = loadPinnedConvs();
   host.innerHTML = "";
-  if (!list.length) {
-    host.innerHTML = '<div class="ag-session"><div class="ag-sess-main"><div class="ag-sess-name ag-sess-empty">暂无历史对话</div></div></div>';
+  if (!filtered.length) {
+    host.innerHTML = '<div class="ag-session"><div class="ag-sess-main"><div class="ag-sess-name ag-sess-empty">' + (_q ? "未找到匹配的会话" : "暂无历史对话") + '</div></div></div>';
     return;
   }
-  list.forEach((c) => {
-    const item = document.createElement("div");
-    item.className = "ag-session" + (c.id === convId ? " active" : "");
-    const d = new Date(c.ts);
-    const meta = (d.getMonth() + 1) + "/" + d.getDate() + " " +
-      String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-    item.innerHTML =
-      '<span class="ag-sess-dot' + (c.id === convId ? "" : " done") + '" title="' + (c.id === convId ? "进行中" : "历史对话") + '"></span>' +
-      '<div class="ag-sess-main">' +
-        '<div class="ag-sess-name">' + esc(c.title || "新对话") + '</div>' +
-        '<div class="ag-sess-meta">' + meta + '</div>' +
-      '</div>' +
-      '<button class="ag-sess-del" title="删除此对话"><i data-ico="close"></i></button>';
-    item.querySelector(".ag-sess-name").ondblclick = (e) => { e.stopPropagation(); var newName = prompt("输入新名称：", c.title || "新对话"); if (newName && newName.trim()) { c.title = newName.trim(); var l2 = loadConvList(); var f = l2.find(function(x){return x.id===c.id;}); if(f){f.title=newName.trim();saveConvList(l2);} renderConvList(); } };
-    item.addEventListener("click", (e) => { if (e.target.closest(".ag-sess-del")) return; openConv(c.id); });
-    const del = item.querySelector(".ag-sess-del");
-    if (del) del.addEventListener("click", (e) => { e.stopPropagation(); deleteConv(c.id); });
-    host.appendChild(item);
-  });
+
+  // 固定会话置顶
+  const pinnedItems = filtered.filter((c) => pinned.includes(c.id));
+  const restItems = filtered.filter((c) => !pinned.includes(c.id));
+
+  function renderGroup(label, items) {
+    if (!items.length) return;
+    if (label) {
+      const g = document.createElement("div");
+      g.className = "ag-sess-group";
+      g.textContent = label;
+      host.appendChild(g);
+    }
+    items.forEach((c) => host.appendChild(buildConvItem(c, pinned.includes(c.id))));
+  }
+
+  renderGroup(pinnedItems.length ? "固定" : "", pinnedItems);
+
+  // 按时间分组
+  const groups = [[], [], [], []];
+  restItems.forEach((c) => { groups[convTimeGroup(c.ts)].push(c); });
+  groups.forEach((items, gi) => renderGroup(items.length ? CONV_GROUP_LABELS[gi] : "", items));
+
   replaceIcons();
 }
+
+function buildConvItem(c, isPinned) {
+  const item = document.createElement("div");
+  item.className = "ag-session" + (c.id === convId ? " active" : "") + (isPinned ? " pinned" : "");
+  const d = new Date(c.ts);
+  const meta = (d.getMonth() + 1) + "/" + d.getDate() + " " +
+    String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  const sm = convSummary(c);
+  const smHtml = sm.text ? '<div class="ag-sess-summary">' +
+    (sm.tag === "running" ? '<span class="ss-tag running">运行中</span>' : "") +
+    esc(sm.text) + '</div>' : "";
+  item.innerHTML =
+    '<span class="ag-sess-dot' + (c.id === convId ? "" : " done") + '" title="' + (c.id === convId ? "进行中" : "历史对话") + '"></span>' +
+    '<div class="ag-sess-main">' +
+      '<div class="ag-sess-name">' + esc(c.title || "新对话") + '</div>' +
+      '<div class="ag-sess-meta">' + meta + '</div>' +
+      smHtml +
+    '</div>' +
+    '<button class="ag-sess-pin" title="固定/取消固定"><i data-ico="pin"></i></button>' +
+    '<button class="ag-sess-del" title="删除此对话"><i data-ico="close"></i></button>';
+  item.querySelector(".ag-sess-name").ondblclick = (e) => { e.stopPropagation(); var newName = prompt("输入新名称：", c.title || "新对话"); if (newName && newName.trim()) { c.title = newName.trim(); var l2 = loadConvList(); var f = l2.find(function(x){return x.id===c.id;}); if(f){f.title=newName.trim();saveConvList(l2);} renderConvList(); } };
+  item.addEventListener("click", (e) => { if (e.target.closest(".ag-sess-del") || e.target.closest(".ag-sess-pin")) return; openConv(c.id); });
+  item.addEventListener("contextmenu", (e) => { e.preventDefault(); showConvCtxMenu(e, c); });
+  const del = item.querySelector(".ag-sess-del");
+  if (del) del.addEventListener("click", (e) => { e.stopPropagation(); deleteConv(c.id); });
+  const pin = item.querySelector(".ag-sess-pin");
+  if (pin) pin.addEventListener("click", (e) => { e.stopPropagation(); togglePinConv(c.id); });
+  return item;
+}
+
+function togglePinConv(id) {
+  let pinned = loadPinnedConvs();
+  if (pinned.includes(id)) pinned = pinned.filter((x) => x !== id);
+  else pinned.unshift(id);
+  savePinnedConvs(pinned);
+  renderConvList();
+}
+
+function showConvCtxMenu(e, c) {
+  const menu = $("ctxMenu");
+  if (!menu) return;
+  const pinned = loadPinnedConvs();
+  menu.innerHTML = "";
+  const items = [
+    { label: pinned.includes(c.id) ? "取消固定" : "固定到顶部", action: () => togglePinConv(c.id) },
+    { label: "重命名", action: () => { var n = prompt("输入新名称：", c.title || "新对话"); if (n && n.trim()) { var l = loadConvList(); var f = l.find(function(x){return x.id===c.id;}); if(f){f.title=n.trim();saveConvList(l);renderConvList();} } } },
+    { label: "复制标题", action: () => { navigator.clipboard && navigator.clipboard.writeText(c.title || "新对话"); } },
+    { label: "导出对话", action: () => { var blob = new Blob([c.dom || ""], {type:"text/html"}); var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (c.title||"对话") + ".html"; a.click(); } },
+    { label: "删除", danger: true, action: () => deleteConv(c.id) },
+  ];
+  items.forEach((it) => {
+    const el = document.createElement("div");
+    el.className = "ctx-item" + (it.danger ? " danger" : "");
+    el.textContent = it.label;
+    el.onclick = () => { menu.style.display = "none"; it.action(); };
+    menu.appendChild(el);
+  });
+  menu.style.display = "";
+  menu.style.left = Math.min(e.clientX, window.innerWidth - 160) + "px";
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 200) + "px";
+}
+
+/* 会话搜索框实时过滤 */
+(function() { const cs = $("convSearch"); if (cs) cs.addEventListener("input", renderConvList); })();
 
 function openConv(id) {
   if (id === convId) return;
@@ -2550,9 +3132,11 @@ function openConv(id) {
   loadTraceHistory(id);
   const c = loadConvList().find((x) => x.id === id);
   chatStream.innerHTML = c && c.dom ? c.dom : "";
+
   for (const k in blocks) delete blocks[k];
   answerBlock = null; thinkCount = 0; lastThink = null;
   scrollChat();
+  buildMsgNav();
   refreshCtx();
   loadPlan(convId);                                                      // 切换该会话的任务计划
   renderConvList();
@@ -2641,6 +3225,31 @@ function newConversation() {
 $("agNewTask").onclick = newConversation;
 $("agExport").onclick = exportConversation;
 
+/* 侧边栏增强：新建会话 / 手动计划 / 编排历史折叠 */
+(function () {
+  const nc = $("btnNewConv");
+  if (nc) nc.onclick = newConversation;
+
+  const np = $("btnNewPlan");
+  if (np) np.onclick = function () {
+    const title = prompt("计划标题：", "手动计划");
+    if (!title || !title.trim()) return;
+    const tasksStr = prompt("任务步骤（每行一个）：", "步骤一\n步骤二\n步骤三");
+    if (!tasksStr || !tasksStr.trim()) return;
+    const tasks = tasksStr.split("\n").filter((s) => s.trim()).map((s) => ({ text: s.trim(), status: "pending" }));
+    if (!tasks.length) return;
+    send({ type: "tool_call", tool: "create_plan", args: { title: title.trim(), tasks: tasks.map((t) => t.text) } });
+  };
+
+  const tog = $("btnToggleOrchHist");
+  if (tog) tog.onclick = function () {
+    const panel = $("agOrchHistory");
+    if (!panel) return;
+    panel.style.display = panel.style.display === "none" ? "" : "none";
+    tog.querySelector("i").style.transform = panel.style.display === "none" ? "rotate(-90deg)" : "";
+  };
+})();
+
 /* 通用确认弹窗：用于还原工作区等危险操作，让用户二次确认 */
 function showConfirm(title, msg, onOk) {
   const m = $("confirmModal");
@@ -2668,6 +3277,87 @@ $("btnReset").onclick = () => {
 };
 
 /* ---------------- 全局快捷键 ---------------- */
+/* ---------------- Ctrl+Shift+P 命令面板 ---------------- */
+function aiCurrentFile(text) {
+  if (!state.activeFile) { toast("请先打开一个文件"); return; }
+  aiFileAction(state.activeFile, text);
+}
+function openCommandPalette() {
+  const existing = $("cmdPalette");
+  if (existing) { existing.remove(); return; }
+  const commands = [
+    { label: "新建文件", hint: "", fn: () => promptNewFile("") },
+    { label: "新建文件夹", hint: "", fn: () => { const p = prompt("新建文件夹（相对路径）：", "newdir"); if (p) send({ type: "file.mkdir", path: p }); } },
+    { label: "保存文件", hint: "Ctrl+S", fn: saveActiveFile },
+    { label: "切换至编辑器窗口", hint: "Ctrl+.", fn: () => switchMode("editor") },
+    { label: "切换至 Agents 窗口", hint: "Ctrl+.", fn: () => switchMode("agents") },
+    { label: "AI 解释当前文件", hint: "/explain", fn: () => aiCurrentFile("请阅读并解释当前打开的文件，说明其功能、关键逻辑和设计思路。") },
+    { label: "AI 修复错误", hint: "/fix", fn: () => aiCurrentFile("请检查当前打开的文件中的错误和问题，并修复它们。先运行测试确认问题，修复后再验证。") },
+    { label: "AI 生成测试", hint: "/test", fn: () => aiCurrentFile("请为当前打开的文件生成单元测试，覆盖主要功能和边界情况。") },
+    { label: "AI 重构代码", hint: "/refactor", fn: () => aiCurrentFile("请重构当前打开的文件，改善代码结构、可读性和可维护性，但不改变功能。") },
+    { label: "AI 审查代码", hint: "/review", fn: () => aiCurrentFile("请对当前打开的文件进行代码审查，指出潜在问题和改进建议。") },
+    { label: "切换主题", hint: "深色/浅色", fn: () => applyTheme(getTheme() === "light" ? "dark" : "light") },
+    { label: "打开设置", hint: "", fn: () => $("btnSettings").click() },
+  ];
+  const pal = document.createElement("div");
+  pal.id = "cmdPalette";
+  pal.innerHTML = '<input class="cmd-input" placeholder="输入命令名称…" /><div class="cmd-list"></div>';
+  document.body.appendChild(pal);
+  const input = pal.querySelector(".cmd-input");
+  const list = pal.querySelector(".cmd-list");
+  let idx = 0, filtered = commands;
+  const updateActive = () => list.querySelectorAll(".cmd-item").forEach((el, i) => el.classList.toggle("active", i === idx));
+  const render = () => {
+    filtered = commands.filter((c) => c.label.toLowerCase().includes(input.value.toLowerCase()));
+    idx = 0;
+    list.innerHTML = filtered.map((c, i) => '<div class="cmd-item' + (i === 0 ? " active" : "") + '" data-i="' + i + '"><span class="cmd-label">' + esc(c.label) + '</span>' + (c.hint ? '<span class="cmd-hint">' + esc(c.hint) + '</span>' : '') + '</div>').join("");
+    list.querySelectorAll(".cmd-item").forEach((el) => el.onclick = () => pick(parseInt(el.dataset.i, 10)));
+  };
+  const pick = (i) => { const c = filtered[i]; if (!c) return; pal.remove(); c.fn(); };
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { pal.remove(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); idx = Math.min(idx + 1, filtered.length - 1); updateActive(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); idx = Math.max(idx - 1, 0); updateActive(); }
+    else if (e.key === "Enter") { e.preventDefault(); pick(idx); }
+  });
+  render();
+  input.focus();
+  setTimeout(() => { document.addEventListener("click", function close(e) { if (!pal.contains(e.target)) { pal.remove(); document.removeEventListener("click", close); } }); }, 100);
+}
+
+function openFilePalette() {
+  const existing = $("filePalette");
+  if (existing) { existing.remove(); return; }
+  const files = Object.keys(state.files).sort();
+  const pal = document.createElement("div");
+  pal.id = "filePalette";
+  pal.innerHTML = '<input class="cmd-input" placeholder="输入文件名快速跳转…" /><div class="cmd-list"></div>';
+  document.body.appendChild(pal);
+  const input = pal.querySelector(".cmd-input");
+  const list = pal.querySelector(".cmd-list");
+  let idx = 0, filtered = files;
+  const updateActive = () => list.querySelectorAll(".cmd-item").forEach((el, i) => el.classList.toggle("active", i === idx));
+  const render = () => {
+    const q = input.value.toLowerCase();
+    filtered = q ? files.filter((f) => f.toLowerCase().includes(q)) : files;
+    idx = 0;
+    list.innerHTML = filtered.slice(0, 50).map((f, i) => '<div class="cmd-item' + (i === 0 ? " active" : "") + '" data-i="' + i + '"><span class="cmd-label">' + esc(f) + '</span></div>').join("");
+    list.querySelectorAll(".cmd-item").forEach((el) => el.onclick = () => pick(parseInt(el.dataset.i, 10)));
+  };
+  const pick = (i) => { const f = filtered[i]; if (!f) return; pal.remove(); switchMode("editor"); openFile(f); };
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { pal.remove(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); idx = Math.min(idx + 1, Math.min(filtered.length, 50) - 1); updateActive(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); idx = Math.max(idx - 1, 0); updateActive(); }
+    else if (e.key === "Enter") { e.preventDefault(); pick(idx); }
+  });
+  render();
+  input.focus();
+  setTimeout(() => { document.addEventListener("click", function close(e) { if (!pal.contains(e.target)) { pal.remove(); document.removeEventListener("click", close); } }); }, 100);
+}
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && $("shortcutsModal") && $("shortcutsModal").style.display !== "none") {
     $("shortcutsModal").style.display = "none"; return;
@@ -2676,6 +3366,8 @@ document.addEventListener("keydown", (e) => {
     $("commitModal").style.display = "none"; return;
   }
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveActiveFile(); }
+  else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "P" || e.key === "p")) { e.preventDefault(); openCommandPalette(); }
+  else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); openFilePalette(); }
   else if ((e.ctrlKey || e.metaKey) && (e.key === "." || e.code === "Period")) {
     e.preventDefault();
     const target = state.mode === "editor" ? "agents" : "editor";
@@ -2773,14 +3465,36 @@ function renderPlan(plan) {
   const pct = total ? Math.round((done / total) * 100) : 0;
   const statusLabel = plan.status === "completed" ? "已完成" : "进行中";
   const statusClass = plan.status === "completed" ? "done" : "active";
-  let html = '<div class="plan-title">' + ico("tasklist") + '<span>' + esc(plan.title) + '</span><span class="plan-status ' + statusClass + '">' + statusLabel + '</span></div>';
+  let html = "";
+  // Goal 卡片（Goal 模式激活时在计划顶部显示）
+  if (goalMode) {
+    html += '<div class="plan-goal">' +
+      '<div class="plan-goal-title">' + ico("target") + '<span>目标驱动</span></div>' +
+      '<div class="plan-goal-text">' + esc(plan.title) + '</div>' +
+      '<div class="plan-goal-bar"><div class="plan-goal-fill" style="width:' + pct + '%"></div></div>' +
+      '<div class="plan-goal-meta"><span>' + done + '/' + total + ' 步骤完成</span><span>' + pct + '%</span></div>' +
+      '</div>';
+  }
+  html += '<div class="plan-title">' + ico("tasklist") + '<span>' + esc(plan.title) + '</span><span class="plan-status ' + statusClass + '">' + statusLabel + '</span></div>';
   plan.tasks.forEach((t, i) => {
     const cls = t.status;
     const icon = t.status === "done" ? "✓" : t.status === "in_progress" ? "●" : t.status === "skipped" ? "×" : "";
-    html += '<div class="plan-task ' + cls + '"><span class="plan-check">' + icon + '</span><span class="plan-text">' + esc(t.text) + (t.note ? ' <span style="color:var(--text-dim);font-size:10px">(' + esc(t.note) + ')</span>' : "") + '</span></div>';
+    html += '<div class="plan-task ' + cls + '" data-idx="' + i + '"><span class="plan-check">' + icon + '</span><span class="plan-text">' + esc(t.text) + (t.note ? ' <span style="color:var(--text-dim);font-size:10px">(' + esc(t.note) + ')</span>' : "") + '</span></div>';
   });
   html += '<div class="plan-progress"><span>' + done + '/' + total + '</span><div class="plan-progress-bar"><div class="plan-progress-fill" style="width:' + pct + '%"></div></div><span>' + pct + '%</span></div>';
   if (active) { active.innerHTML = html; replaceIcons(active); }
+  // 任务可点击勾选
+  active.querySelectorAll(".plan-task").forEach((el) => {
+    el.addEventListener("click", () => {
+      const idx = parseInt(el.dataset.idx, 10);
+      const task = plan.tasks[idx];
+      if (!task || task.status === "in_progress") return;
+      const newStatus = task.status === "done" ? "pending" : "done";
+      plan.tasks[idx].status = newStatus;
+      renderPlan(plan);
+      send({ type: "update_plan_task", convId: convId, planId: plan.id, taskIdx: idx, status: newStatus });
+    });
+  });
   // C1a：同步常驻进度条（计划进行中显示，完成则隐藏）
   const sticky = $("planSticky");
   if (sticky) {

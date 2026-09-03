@@ -114,8 +114,12 @@ function saveLlm(cfg, patch) {
   if (baseURL !== undefined) cfg.llm.baseURL = baseURL;
   if (apiKey !== undefined) { cfg.llm.apiKey = apiKey; setEnvVar("OPENAI_API_KEY", apiKey); }
   if (model !== undefined) cfg.llm.model = model;
+  if (patch.maxToolRounds !== undefined) {
+    const n = Number(patch.maxToolRounds);
+    if (Number.isInteger(n) && n >= 5 && n <= 500) cfg.llm.maxToolRounds = n;
+  }
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
-  onDisk.llm = { baseURL: cfg.llm.baseURL, model: cfg.llm.model };
+  onDisk.llm = { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds };
   writeJsonSafe(CONFIG_PATH, onDisk);
   return cfg;
 }
@@ -216,6 +220,7 @@ function publicInfo(cfg) {
     baseURL: cfg.llm.baseURL,
     hasKey: !!cfg.llm.apiKey,
     keyTail: cfg.llm.apiKey ? "…" + cfg.llm.apiKey.slice(-4) : "",
+    maxToolRounds: cfg.llm.maxToolRounds,
   };
 }
 

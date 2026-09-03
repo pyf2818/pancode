@@ -66,6 +66,7 @@ async function openSettings() {
     $("setModel").value = r.mode === "llm" ? r.model : ($("setModel").value || "");
     $("setApiKey").placeholder = r.hasKey ? "已保存 " + r.keyTail + "（留空表示不修改）" : "sk-…";
     $("setApiKey").value = "";
+    const mr = $("setMaxRounds"); if (mr) mr.value = r.maxToolRounds || 100;
     renderModelPresets();
   } catch (e) {}
 }
@@ -153,6 +154,8 @@ $("setFetchModels").onclick = async () => {
 $("setSave").onclick = async () => {
   const st = $("setStatus");
   const body = { baseURL: $("setBaseURL").value.trim(), model: $("setModel").value.trim() };
+  const rounds = parseInt($("setMaxRounds").value, 10);
+  if (Number.isFinite(rounds) && rounds >= 5 && rounds <= 500) body.maxToolRounds = rounds;
   const key = $("setApiKey").value.trim();
   if (key) body.apiKey = key;
   try {

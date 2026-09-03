@@ -95,6 +95,7 @@ const BUILTIN_WORKFLOWS = [
 
 /* ---------- YAML frontmatter 解析/序列化 ---------- */
 function parseFrontmatter(text) {
+  text = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!m) return { meta: {}, body: text.trim() };
   const meta = {};
@@ -379,7 +380,12 @@ trigger: 触发关键词1,关键词2
     return { total: all.length, market: this._marketSkills.length, local: this._localSkills.length, builtin: BUILTIN_WORKFLOWS.length + this._builtinSkills.length };
   }
   get size() { return this._marketSkills.length + this._localSkills.length + BUILTIN_WORKFLOWS.length + this._builtinSkills.length; }
-  get builtinWorkflows() { return [...BUILTIN_WORKFLOWS, ...this._builtinSkills]; }
+  get builtinWorkflows() {
+    if (!this._normalizedBuiltin) {
+      this._normalizedBuiltin = BUILTIN_WORKFLOWS.map((w, i) => normalize({ ...w, id: "wf_" + i }, "workflow"));
+    }
+    return [...this._normalizedBuiltin, ...this._builtinSkills.map((s) => ({ ...s, source: "workflow" }))];
+  }
 }
 
 module.exports = { SkillStore, BUILTIN_WORKFLOWS, parseFrontmatter, serializeFrontmatter };

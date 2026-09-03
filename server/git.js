@@ -20,7 +20,7 @@ class GitLayer {
   _git(args, opts) {
     return execFileSync("git", args, Object.assign({
       cwd: this.dir, encoding: "utf8", timeout: 8000,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
     }, opts));
   }
 
@@ -46,7 +46,7 @@ class GitLayer {
   baseline(rel) {
     if (this.available) {
       const r = spawnSync("git", ["show", "HEAD:" + rel], {
-        cwd: this.dir, encoding: "utf8", timeout: 8000,
+        cwd: this.dir, encoding: "utf8", timeout: 8000, windowsHide: true,
       });
       if (r.status === 0) return r.stdout;
       // HEAD 中不存在（新文件）→ 尝试快照，再没有就是全新文件
@@ -146,6 +146,65 @@ class GitLayer {
       try { committed = this._git(["show", "--stat", "--oneline", "HEAD", "-1"]).split("\n")
         .filter((l) => /\|\s*\d+/.test(l)).length; } catch (e) {}
       return { ok: true, summary: out, committed };
+    } catch (e) {
+      return { ok: false, error: (e.stderr || e.stdout || e.message || "").toString().slice(0, 300) };
+    }
+  }
+  /* ============ Agent Git 工具集（结构化封装，数组传参无 shell 注入） ============ */
+
+  /* 最近提交历史 */
+  log(n) {
+    if (!this.available) return { ok: false, error: "当前工作区不是 Git 仓库" };
+    const count = Math.min(Math.max(Number(n) || 15, 1), 100);
+    try {
+      const out = this._git(["log", "--oneline", "--decorate", "-" + count]).trim();
+      return { ok: true, log: out };
+    } catch (e) {
+      return { ok: false, error: (e.stderr || e.message || "").toString().slice(0, 300) };
+    }
+  }
+
+  /* 改动概览（--stat）；path 提供时输出该文件的完整 diff 文本 */
+  diff(path) {
+    if (!this.available) return { ok: false, error: "当前工作区不是 Git 仓库（快照模式下可用 git_status 的快照差异）" };
+    try {
+      if (path) {
+        const rel = String(path).replace(/\\/g, "/").replace(/^\/+/, "");
+        if (/^\.\./.test(rel) || path.isAbsolute(rel)) return { ok: false, error: "非法路径" };
+        const txt = this._git(["diff", "HEAD", "--", rel]).trim();
+        return { ok: true, diff: txt || "(该文件相对 HEAD 无文本差异)" };
+      }
+      const stat = this._git(["diff", "HEAD", "--stat"]).trim();
+      return { ok: true, stat: stat || "(相对 HEAD 无已跟踪改动；新文件请看 git_status)" };
+    } catch (e) {
+      return { ok: false, error: (e.stderr || e.message || "").toString().slice(0, 300) };
+    }
+  }
+
+  /* 分支清单（当前分支带 * 标记） */
+  branches() {
+    if (!this.available) return { ok: false, error: "当前工作区不是 Git 仓库" };
+    try {
+      const out = this._git(["branch", "--list"]).trim();
+      return { ok: true, branches: out, current: this.branch };
+    } catch (e) {
+      return { ok: false, error: (e.stderr || e.message || "").toString().slice(0, 300) };
+    }
+  }
+
+  /* 创建 / 切换分支。name 严格校验，杜绝引用注入 */
+  checkout(name, create) {
+    if (!this.available) return { ok: false, error: "当前工作区不是 Git 仓库" };
+    const b = String(name || "").trim();
+    if (!/^[A-Za-z0-9._\-/]{1,80}$/.test(b) || b.startsWith("-") || b.includes("..")) {
+      return { ok: false, error: "非法分支名：" + b };
+    }
+    try {
+      if (this.changes().length) return { ok: false, error: "存在未提交改动，请先 git_commit 或让用户还原后再切换分支" };
+      const args = create ? ["checkout", "-b", b] : ["checkout", b];
+      this._git(args);
+      this.branch = this._git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+      return { ok: true, branch: this.branch, created: !!create };
     } catch (e) {
       return { ok: false, error: (e.stderr || e.stdout || e.message || "").toString().slice(0, 300) };
     }

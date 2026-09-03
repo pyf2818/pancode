@@ -128,8 +128,8 @@ class TerminalLayer {
       const env = _sanitizeEnv();   // Windows 环境兜底：修复 ComSpec 缺失 / unix 风格 PATH
       try {
         child = argv
-          ? spawn(argv[0], argv.slice(1), { cwd: this.dir, env })
-          : spawn(displayCmd, { cwd: this.dir, shell: true, env });
+          ? spawn(argv[0], argv.slice(1), { cwd: this.dir, env, windowsHide: true })
+          : spawn(displayCmd, { cwd: this.dir, shell: true, env, windowsHide: true });
       } catch (err) {
         this.emit({ type: "term.line", tabId, text: String(err), cls: "tl-err" });
         return resolve({ code: -1, out: String(err), timedOut: false });
@@ -206,4 +206,4 @@ class TerminalLayer {
   }
 }
 
-module.exports = { TerminalLayer, classify, AI_TERM_TAB };
+module.exports = { TerminalLayer, classify, AI_TERM_TAB, _sanitizeEnv };
