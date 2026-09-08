@@ -62,14 +62,7 @@ function modifiedSet() {
   }
   return s;
 }
-function diffStat(a, b) {
-  const cnt = (arr) => { const m = {}; arr.forEach((l) => (m[l] = (m[l] || 0) + 1)); return m; };
-  const A = cnt(a.split("\n")), B = cnt(b.split("\n"));
-  let add = 0, del = 0;
-  for (const l in B) { const d = B[l] - (A[l] || 0); if (d > 0) add += d; }
-  for (const l in A) { const d = A[l] - (B[l] || 0); if (d > 0) del += d; }
-  return { add, del };
-}
+
 
 /* ---------------- 共享组件（双窗口间搬运） ---------------- */
 const chatStream = document.createElement("div");
@@ -506,12 +499,6 @@ function bootMonaco() {
   });
 }
 
-function fmtSize(n) {
-  if (!n) return "0 B";
-  if (n < 1024) return n + " B";
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-  return (n / 1024 / 1024).toFixed(1) + " MB";
-}
 
 function getModel(path) {
   const f = state.files[path];
@@ -601,7 +588,7 @@ function saveActiveFile() {
 }
 
 /* ---------- 主题（浅色 / 深色） ---------- */
-function getTheme() { return localStorage.getItem("cw-theme") || "dark"; }
+
 function applyTheme(t) {
   document.documentElement.setAttribute("data-theme", t);
   localStorage.setItem("cw-theme", t);
@@ -943,7 +930,8 @@ function initResizers() {
 
 /* ---------- 二进制预览（对齐 VS Code：图片内置预览 / Word 类似 Office Viewer） ---------- */
 const IMG_EXTS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"]);
-function extOf(p) { return String(p).split(".").pop().toLowerCase(); }
+
+
 
 function showBinPreview(path) {
   const host = $("binPreview"), body = $("binPreviewBody");
@@ -1528,13 +1516,6 @@ $("diffClose").onclick = () => {
 
 /* ---------------- 补丁审阅面板（agent apply_edit 的改动审阅） ---------------- */
 let patchDiffEditor = null;
-function escHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-function monacoLangOf(p) {
-  const ext = (p.split(".").pop() || "").toLowerCase();
-  return ({ js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript", ts: "typescript", tsx: "typescript",
-    json: "json", html: "html", htm: "html", css: "css", scss: "scss", md: "markdown", py: "python",
-    sh: "shell", yml: "yaml", yaml: "yaml", txt: "plaintext" })[ext] || "plaintext";
-}
 
 function openPatchReview(ev) {
   if (!state.monacoReady) { toast("编辑器尚未就绪，稍后可在 SCM 查看改动"); return; }
@@ -1735,7 +1716,7 @@ function traceDetail(ev) {
     default: return JSON.stringify(d);
   }
 }
-function fmtTok(n) { n = n || 0; return n >= 1000 ? (Math.round(n / 100) / 10) + "k" : "" + n; }
+
 function setTraceText(id, v) { const el = $(id); if (el) el.textContent = v; }
 
 function onTraceEvent(ev, isHistory) {
@@ -2119,14 +2100,6 @@ function exportConversation() {
   toast("对话已导出为 Markdown");
 }
 
-/* 轻量 toast 提示 */
-function toast(msg) {
-  let t = $("toast");
-  if (!t) { t = document.createElement("div"); t.id = "toast"; t.className = "toast"; document.body.appendChild(t); }
-  t.textContent = msg; t.classList.add("show");
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove("show"), 1800);
-}
 
 function addMsgCopyBtn(el, text) {
   const btn = document.createElement("button");
@@ -2145,13 +2118,6 @@ function addUserMsg(text) {
   chatPane().appendChild(el); scrollChat(true);
 }
 
-function colorizeDiffText(text) {
-  return text.split("\n").map((l) => {
-    if (l.startsWith("+")) return '<span class="add">' + esc(l) + "</span>";
-    if (l.startsWith("-")) return '<span class="del">' + esc(l) + "</span>";
-    return esc(l);
-  }).join("\n");
-}
 
 const KIND_ICO = { read: "read", edit: "edit", terminal: "terminal" };
 
@@ -3506,19 +3472,7 @@ $("agExport").onclick = exportConversation;
   };
 })();
 
-/* 通用确认弹窗：用于还原工作区等危险操作，让用户二次确认 */
-function showConfirm(title, msg, onOk) {
-  const m = $("confirmModal");
-  if (!m) { if (confirm(msg.replace(/<[^>]+>/g, ""))) onOk(); return; }
-  $("confirmTitle").textContent = title;
-  $("confirmMsg").innerHTML = msg;
-  replaceIcons(m);
-  m.style.display = "flex";
-  const ok = $("confirmOk"), cancel = $("confirmCancel");
-  const cleanup = () => { m.style.display = "none"; ok.onclick = null; cancel.onclick = null; };
-  ok.onclick = () => { cleanup(); onOk(); };
-  cancel.onclick = cleanup;
-}
+
 $("btnReset").onclick = () => {
   if (state.running) { toast("Agent 正在运行，请先停止再还原"); return; }
   const n = state.dirty ? state.dirty.size : 0;
