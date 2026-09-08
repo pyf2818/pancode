@@ -25,7 +25,7 @@ const { LspManager, setActiveManager } = require("./lsp-bridge");
 const codeIndex = require("./code-index");
 const { SoulStore } = require("./soul-store");
 const { SkillStore } = require("./skill-store");
-const { TeamStore, PRESET_AGENTS } = require("./team-store");
+
 const { ProgressionStore } = require("./progression-store");
 const { computeProgression } = require("./progression");
 const auth = require("./auth");
@@ -49,7 +49,7 @@ function broadcast(ev) {
 
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
-let files = null, git = null, term = null, procs = null, engine = null, soulStore = null, progressionStore = null, skillStore = null, teamStore = null;
+let files = null, git = null, term = null, procs = null, engine = null, soulStore = null, progressionStore = null, skillStore = null;
 
 function buildEngine() {
   // 服务器级 SkillStore 单例（带打包内置 builtin-skills 目录），两种引擎共享，
@@ -58,7 +58,7 @@ function buildEngine() {
   const marketDir = path.join(configMod.ROOT, ".pancode", "skills", "market");
   const skillDir = path.join(configMod.ROOT, ".pancode", "skills");
   skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"));
-  teamStore = new TeamStore(path.join(configMod.ROOT, ".pancode", "teams", wsHash + ".json"));
+
   const ctx = { emit: broadcast, files, git, term, procs, cfg, skills: skillStore };
   engine = configMod.engineMode(cfg) === "llm" ? new LlmAgent(ctx) : new DemoAgent(ctx);
   // 统一灵魂实例：复用引擎内部的 soul（指向同文件），避免双实例内存不一致
@@ -117,6 +117,29 @@ function snapshotFiles() {
   return out;
 }
 
+/* 增量快照：只读取指定路径，避免大工作区全量读盘 */
+function snapshotFilesIncremental(paths) {
+  const out = {};
+  for (const rel of paths) {
+    if (files.isBinary(rel)) {
+      let size = 0;
+      try { size = fs.statSync(files.safePath(rel)).size; } catch (e) {}
+      out[rel] = { content: "", original: "", isNew: false, lang: "binary", binary: true, size };
+      continue;
+    }
+    let content;
+    try { content = files.read(rel); } catch (e) { continue; }
+    const base = git.baseline(rel);
+    out[rel] = {
+      content,
+      original: base === null ? "" : base,
+      isNew: base === null,
+      lang: langOf(rel),
+    };
+  }
+  return out;
+}
+
 function _wsIdHash(p) { let h = 0; for (let i = 0; i < p.length; i++) h = (h * 31 + p.charCodeAt(i)) >>> 0; return h.toString(36); }
 
 function helloPayload() {
@@ -140,6 +163,8 @@ function helloPayload() {
 /* ---------- HTTP ---------- */
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+// vendor/（Monaco 等）长缓存 immutable，版本升级时靠 URL 查询参数 ?v= 强制刷新
+app.use("/vendor", express.static(path.join(__dirname, "..", "public", "vendor"), { maxAge: "1y", immutable: true }));
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 /* A8：CORS 收紧——本地优先工具只允许同源或本机回环访问，拒绝跨站请求（防 CSRF 式滥用） */
@@ -170,8 +195,7 @@ const NO_AUTH = new Set([
   "/api/index/status",  // 本地代码索引状态查询（本地优先工具，与 health 同级）
   "/api/index/build",   // 本地代码索引构建
   "/api/index/search",  // 本地代码索引检索
-  "/api/team/presets",  // 预设智能体列表（只读）
-  "/api/team/list",     // 团队列表（只读）
+
 ]);
 /* A1：用户会话闸门——仅校验登录后下发的 userToken（auth.verify）；AUTH_TOKEN 仅用于本机 bootstrap 与 WS 环回 */
 function userAuthed(req) {
@@ -646,34 +670,14 @@ app.post("/api/agent-settings", (req, res) => {
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
-/* ======================= Agent Team API ======================= */
-app.get("/api/team/presets", (req, res) => res.json({ agents: PRESET_AGENTS }));
-app.get("/api/team/list", (req, res) => res.json({ teams: teamStore ? teamStore.list() : [] }));
-app.post("/api/team/create", (req, res) => {
+app.get("/api/embedding", (req, res) => res.json(configMod.embeddingInfo(cfg)));
+app.post("/api/embedding", (req, res) => {
   try {
-    const t = teamStore.create(req.body.name, req.body.members);
-    res.json({ ok: true, team: t });
+    configMod.saveEmbedding(cfg, req.body || {});
+    res.json({ ok: true, embedding: configMod.embeddingInfo(cfg) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
-app.get("/api/team/:id", (req, res) => {
-  const t = teamStore && teamStore.find(req.params.id);
-  if (!t) return res.status(404).json({ ok: false, error: "团队不存在" });
-  res.json({ team: t });
-});
-app.post("/api/team/:id/members", (req, res) => {
-  try {
-    const t = teamStore.addMember(req.params.id, req.body.agentId);
-    res.json({ ok: true, team: t });
-  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
-});
-app.delete("/api/team/:id/members/:agentId", (req, res) => {
-  const t = teamStore.removeMember(req.params.id, req.params.agentId);
-  res.json({ ok: true, team: t });
-});
-app.delete("/api/team/:id", (req, res) => {
-  const ok = teamStore.remove(req.params.id);
-  res.json({ ok });
-});
+
 
 /* MCP 服务器管理（外部工具）：
    GET  → 当前所有 server 的连接状态 + 已发现工具
@@ -713,6 +717,13 @@ app.delete("/api/memory/:id", (req, res) => {
   try {
     const ok = engine.memory.remove(req.params.id);
     res.json({ ok });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.put("/api/memory/:id", (req, res) => {
+  try {
+    const entry = engine.memory.update(req.params.id, req.body || {});
+    if (!entry) return res.status(404).json({ ok: false, error: "条目不存在" });
+    res.json({ ok: true, entry });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
@@ -941,7 +952,11 @@ server.on("upgrade", (req, socket, head) => {
 
 function safe(fn, ws) {
   try { return fn(); }
-  catch (e) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "op.error", error: e.message })); }
+  catch (e) {
+    const { classifyError } = require("./app-error");
+    const info = classifyError(e);
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "op.error", error: info.message, code: info.code, kind: info.kind, userHint: info.userHint }));
+  }
 }
 
 wss.on("connection", (ws) => {
@@ -955,42 +970,18 @@ wss.on("connection", (ws) => {
     switch (m.type) {
       case "chat":
         if (typeof m.text === "string" && m.text.trim()) {
-          if (m.convId && typeof engine.switchConversation === "function") {
-            engine.switchConversation(m.convId);
-          }
-          engine.handleChat(m.text.slice(0, 8000), { attachments: Array.isArray(m.attachments) ? m.attachments : [] });
+          // 多会话并行：不切换会话，直接传 convId 给 handleChat
+          engine.handleChat(m.text.slice(0, 8000), { convId: m.convId, attachments: Array.isArray(m.attachments) ? m.attachments : [] });
         }
         break;
 
-      case "team.message": {
-        const team = teamStore && teamStore.find(m.teamId);
-        if (!team || typeof m.text !== "string" || !m.text.trim()) break;
-        const userMsg = { role: "user", text: m.text.slice(0, 8000), mentions: m.mentions || [], ts: Date.now() };
-        teamStore.addMessage(m.teamId, userMsg);
-        broadcast({ type: "team.msg", teamId: m.teamId, msg: userMsg });
-        const agents = (m.mentions || []).map((id) => PRESET_AGENTS.find((a) => a.id === id)).filter(Boolean);
-        if (!agents.length || !engine.runSubAgent) break;
-        (async () => {
-          let sharedCtx = "";
-          for (const agent of agents) {
-            broadcast({ type: "team.agent.start", teamId: m.teamId, agentId: agent.id, agentName: agent.name, icon: agent.icon, color: agent.color });
-            const task = "【你的角色】" + agent.systemPrompt + "\n\n【用户任务】" + m.text +
-              (sharedCtx ? "\n\n【团队协作上下文 — 其他成员的产出】\n" + sharedCtx : "");
-            try {
-              const result = await engine.runSubAgent(task, { subagent_type: agent.id });
-              const output = (result || "(无返回)").slice(0, 6000);
-              const agentMsg = { role: "agent", agentId: agent.id, agentName: agent.name, icon: agent.icon, color: agent.color, text: output, ts: Date.now() };
-              teamStore.addMessage(m.teamId, agentMsg);
-              broadcast({ type: "team.msg", teamId: m.teamId, msg: agentMsg });
-              sharedCtx += "— " + agent.name + " —\n" + output + "\n\n";
-            } catch (e) {
-              const errMsg = { role: "agent", agentId: agent.id, agentName: agent.name, icon: agent.icon, color: agent.color, text: "执行失败: " + e.message, ts: Date.now() };
-              teamStore.addMessage(m.teamId, errMsg);
-              broadcast({ type: "team.msg", teamId: m.teamId, msg: errMsg });
-            }
-          }
-          broadcast({ type: "team.done", teamId: m.teamId });
-        })();
+      /* 前端主动查询上下文实测水位（页面加载 / 会话切换 / 收到回答后调用） */
+      case "ctx.query": {
+        try {
+          const used = (engine && typeof engine._estTokens === "function" && Array.isArray(engine.history))
+            ? engine._estTokens(engine.history) : 0;
+          ws.send(JSON.stringify({ type: "context.usage", used, budget: (cfg.context || {}).budgetTokens || 1000000 }));
+        } catch (e) { /* 引擎未就绪时静默 */ }
         break;
       }
 
@@ -1123,10 +1114,10 @@ wss.on("connection", (ws) => {
       case "abort":
         safe(() => {
           if (typeof engine.abort === "function") {
-            engine.abort();
+            engine.abort(m.convId);
             broadcast({ type: "term.line", text: "[pancode] Agent 已中断", cls: "tl-warn" });
-            broadcast({ type: "agent.state", running: false, label: "AI 空闲" });
-            broadcast({ type: "agent.done", round: engine.round });
+            broadcast({ type: "agent.state", running: false, label: "AI 空闲", convId: m.convId });
+            broadcast({ type: "agent.done", round: engine.round, convId: m.convId });
           }
         }, ws);
         break;
@@ -1149,11 +1140,12 @@ wss.on("connection", (ws) => {
         safe(() => {
           const convId = m.convId || engine._currentConv;
           const paths = Array.isArray(m.paths) ? m.paths : [];
-          const applied = typeof engine.applyPatch === "function"
-            ? engine.applyPatch(convId, paths, m.hunks) : [];
-          if (applied.length) {
-            broadcast({ type: "fs.sync", files: snapshotFiles() });
-            broadcast({ type: "patch.applied", paths: applied, convId });
+          const { applied, conflicts } = typeof engine.applyPatch === "function"
+            ? engine.applyPatch(convId, paths, m.hunks) : { applied: [], conflicts: [] };
+          if (applied.length || conflicts.length) {
+            // 增量同步：只发 applied 路径，避免大工作区全量读盘
+            broadcast({ type: "fs.sync", files: snapshotFilesIncremental(applied), incremental: true });
+            broadcast({ type: "patch.applied", paths: applied, convId, conflicts });
           } else {
             broadcast({ type: "patch.applied", paths: [], convId, empty: true });
           }

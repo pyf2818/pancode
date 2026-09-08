@@ -60,6 +60,7 @@ async function openSettings() {
   const modal = $("settingsModal");
   modal.style.display = "flex";
   $("setStatus").textContent = "";
+  replaceIcons(modal);
   try {
     const r = await fetch("/api/settings").then((x) => x.json());
     $("setBaseURL").value = r.baseURL || "";
@@ -69,13 +70,37 @@ async function openSettings() {
     const mr = $("setMaxRounds"); if (mr) mr.value = r.maxToolRounds || 100;
     renderModelPresets();
   } catch (e) {}
+  try {
+    const e = await fetch("/api/embedding").then((x) => x.json());
+    $("setEmbEndpoint").value = e.endpoint || "";
+    $("setEmbModel").value = e.model || "text-embedding-3-small";
+    $("setEmbDim").value = e.dim || 1536;
+    $("setEmbKey").placeholder = e.hasKey ? "已保存 " + e.keyTail + "（留空不修改）" : "sk-…";
+    $("setEmbKey").value = "";
+  } catch (e) {}
 }
 $("btnSettings").onclick = openSettings;
 $("setClose").onclick = () => ($("settingsModal").style.display = "none");
 // 弹窗只点 X 关闭，点击外部不关闭
 
+// API Key 密码显示/隐藏切换
+$("setToggleApiKey").onclick = () => {
+  const inp = $("setApiKey");
+  const isPwd = inp.type === "password";
+  inp.type = isPwd ? "text" : "password";
+  $("setToggleApiKey").innerHTML = ico(isPwd ? "eyeOff" : "eye");
+};
+$("setToggleEmbKey").onclick = () => {
+  const inp = $("setEmbKey");
+  const isPwd = inp.type === "password";
+  inp.type = isPwd ? "text" : "password";
+  $("setToggleEmbKey").innerHTML = ico(isPwd ? "eyeOff" : "eye");
+};
+
 $("setTest").onclick = async () => {
   const st = $("setStatus");
+  const btn = $("setTest");
+  btn.disabled = true; btn.textContent = "测试中…";
   st.className = "set-status"; st.textContent = "测试中…";
   try {
     const r = await fetch("/api/settings/test", {
@@ -85,6 +110,7 @@ $("setTest").onclick = async () => {
     if (r.ok) { st.className = "set-status ok"; st.textContent = "连接成功，模型响应: " + (r.sample || "ok"); }
     else { st.className = "set-status err"; st.textContent = "连接失败: " + r.error; }
   } catch (e) { st.className = "set-status err"; st.textContent = "请求异常: " + e.message; }
+  finally { btn.disabled = false; btn.textContent = "测试连接"; }
 };
 
 // 拉取模型列表功能
@@ -153,6 +179,8 @@ $("setFetchModels").onclick = async () => {
 
 $("setSave").onclick = async () => {
   const st = $("setStatus");
+  const btn = $("setSave");
+  btn.disabled = true; btn.classList.add("loading"); btn.textContent = "保存中…";
   const body = { baseURL: $("setBaseURL").value.trim(), model: $("setModel").value.trim() };
   const rounds = parseInt($("setMaxRounds").value, 10);
   if (Number.isFinite(rounds) && rounds >= 5 && rounds <= 500) body.maxToolRounds = rounds;
@@ -169,6 +197,13 @@ $("setSave").onclick = async () => {
       setTimeout(() => ($("settingsModal").style.display = "none"), 900);
     } else { st.className = "set-status err"; st.textContent = "保存失败: " + r.error; }
   } catch (e) { st.className = "set-status err"; st.textContent = "请求异常: " + e.message; }
+  finally { btn.disabled = false; btn.classList.remove("loading"); btn.textContent = "保存并切换引擎"; }
+  const embBody = { endpoint: $("setEmbEndpoint").value.trim(), model: $("setEmbModel").value.trim(), dim: parseInt($("setEmbDim").value, 10) || 1536 };
+  const embKey = $("setEmbKey").value.trim();
+  if (embKey) embBody.apiKey = embKey;
+  try {
+    await fetch("/api/embedding", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(embBody) });
+  } catch (e) {}
 };
 
 /* ---------------- Agent 设置面板（权限 / 人格 / 规则 / 上下文 / 记忆） ---------------- */
@@ -188,6 +223,8 @@ async function openAgentSettings() {
     $("agmMemory").checked = !(a.memory && a.memory.enabled === false);
     $("agmCompact").checked = !(a.context && a.context.autoCompact === false);
     $("agmBudget").value = (a.context && a.context.budgetTokens) || 120000;
+    $("agmPlanMode").checked = !!a.planMode;
+    $("agmLsp").checked = !(a.lsp && a.lsp.enabled === false);
     agmSyncPromptVis();
   } catch (e) { $("agmStatus").className = "set-status err"; $("agmStatus").textContent = "读取设置失败: " + e.message; }
   try { await refreshMcp(); } catch (e) {}
@@ -209,6 +246,8 @@ $("agmSave").onclick = async () => {
     rules: { enabled: $("agmRules").checked },
     memory: { enabled: $("agmMemory").checked },
     context: { budgetTokens: parseInt($("agmBudget").value, 10) || 120000, autoCompact: $("agmCompact").checked },
+    planMode: $("agmPlanMode").checked,
+    lsp: { enabled: $("agmLsp").checked },
   };
   try {
     const r = await fetch("/api/agent-settings", {
@@ -531,11 +570,51 @@ async function fmOpenFolder() {
   } catch (e) { st.className = "set-status err"; st.textContent = "请求异常: " + e.message; }
 }
 
-$("btnOpenFolder").onclick = () => {
-  $("folderModal").style.display = "flex";
-  $("fmStatus").textContent = "";
-  fmRenderRecent();
-  fmBrowse(fm.dir || "");
+$("btnOpenFolder").onclick = async (e) => {
+  // 下拉快速切换：先列出最近项目，点击直接切换；选「浏览其他…」打开文件夹弹窗
+  let menu = document.getElementById("wsDropdown");
+  if (menu) { menu.remove(); return; }
+  let recents = [];
+  try { const r = await (await fetch("/api/workspace")).json(); recents = r.recent || []; } catch (err) {}
+  menu = document.createElement("div");
+  menu.id = "wsDropdown";
+  menu.className = "ws-dropdown";
+  const cur = (typeof state !== "undefined" && state.workspace) || "";
+  menu.innerHTML = recents.map((p) =>
+    '<div class="ws-item' + (p === cur ? " active" : "") + '" data-dir="' + p.replace(/"/g, "&quot;") + '">' +
+      '<i data-ico="folder"></i><span>' + p.replace(/&/g, "&amp;").replace(/</g, "&lt;") + '</span>' +
+      (p === cur ? '<i data-ico="check"></i>' : "") + '</div>'
+  ).join("") +
+    '<div class="ws-item ws-more"><i data-ico="folderOpen"></i><span>浏览其他文件夹…</span></div>';
+  const btn = $("btnOpenFolder");
+  document.body.appendChild(menu);
+  const r = btn.getBoundingClientRect();
+  menu.style.top = (r.bottom + 4) + "px";
+  menu.style.left = r.left + "px";
+  if (typeof replaceIcons === "function") replaceIcons();
+  menu.querySelectorAll(".ws-item").forEach((item) => {
+    item.onclick = async () => {
+      menu.remove();
+      if (item.classList.contains("ws-more")) {
+        $("folderModal").style.display = "flex";
+        $("fmStatus").textContent = "";
+        if (typeof fmRenderRecent === "function") fmRenderRecent();
+        if (typeof fmBrowse === "function") fmBrowse(fm.dir || "");
+        return;
+      }
+      const dir = item.dataset.dir;
+      if (!dir || dir === cur) return;
+      try {
+        const res = await (await fetch("/api/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir }) })).json();
+        if (!res.ok) toast(res.error || "切换失败");
+      } catch (err) { toast("切换失败: " + err.message); }
+    };
+  });
+  // 点外部关闭
+  setTimeout(() => {
+    const close = (ev) => { if (!menu.contains(ev.target) && ev.target !== btn) { menu.remove(); document.removeEventListener("click", close); } };
+    document.addEventListener("click", close);
+  }, 0);
 };
 $("fmClose").onclick = () => ($("folderModal").style.display = "none");
 // 文件夹弹窗只点 X 关闭
@@ -557,5 +636,5 @@ function welcome() {
       : "当前为**内置演示引擎**（无需 API Key 即可体验完整闭环）。点击右上角「模型设置」接入任意 OpenAI 兼容 API 后，我就能处理你的**任意真实编程任务**。\n\n") +
     "**这个工作台是真实的：**\n- 编辑器可直接改代码，`Ctrl+S` 真实保存到磁盘\n- 文件树支持新建 / 重命名 / 删除（右键菜单）\n- 终端真实执行，`Ctrl+C` 可中断\n- 改动基于 Git/快照基线计算，随时可一键还原\n\n" +
     "随时在顶部切换 **Editor / Agents** 双窗口，状态完全同步。\n- 快捷键 `Ctrl/Cmd + .` 在「编辑器 / Agents」窗口间快速切换\n- 聊天输入框按 `↑ / ↓` 可浏览并回填当前对话已发的消息\n- 鼠标悬停消息气泡可一键复制内容");
-  chatStream.appendChild(el);
+  (typeof chatPane === "function" ? chatPane() : chatStream).appendChild(el);
 }

@@ -57,7 +57,7 @@ const LANGS = {
     currentChat: "当前对话",
     ready: "已就绪",
     running: "运行中",
-    newChat: "新建对话",
+
     exportChat: "导出",
     noHistory: "暂无历史对话",
     // 设置面板
@@ -199,7 +199,7 @@ const LANGS = {
     currentChat: "Current Chat",
     ready: "Ready",
     running: "Running",
-    newChat: "New Chat",
+
     exportChat: "Export",
     noHistory: "No history",
     openaiCompat: "Model Settings - OpenAI Compatible API",

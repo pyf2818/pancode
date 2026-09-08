@@ -69,6 +69,7 @@
     <button class="ab-btn" data-view="skills" data-i18n-title="skills" title="Skills 市场"><i data-ico="sparkle"></i></button>
     <button class="ab-btn" data-view="evolution" title="进化树"><i data-ico="tree"></i></button>
     <button class="ab-btn" data-view="ai" title="Agents Window"><i data-ico="robot"></i></button>
+    <button class="ab-btn ab-bottom" id="btnGlobalSettings" title="全局设置"><i data-ico="gear"></i></button>
   </div>
 
   <div id="sidebar">
@@ -176,6 +177,7 @@
       <span class="sb-item" id="sbLang">JavaScript</span>
       <span class="sb-item">UTF-8</span>
       <span class="sb-item" id="sbAgent"><i data-ico="sparkle"></i><span id="sbAgentTxt">AI 空闲</span></span>
+      <button class="sb-item" id="sbPatchReview" style="display:none;cursor:pointer;background:var(--warn)22;color:var(--warn);border-radius:5px;padding:2px 8px" title="点击重新打开审阅面板"><i data-ico="robot"></i> 待审阅</button>
     </div>
   </div>
 </div>
@@ -183,49 +185,25 @@
 <!-- ======================= Agents Window ======================= -->
 <div id="agentsWindow" class="window" style="display:none">
   <aside id="agSessions">
-    <div class="ag-brand">
-      <span class="ag-brand-ico">
-        <svg class="ag-glyph" viewBox="0 0 34 32" aria-hidden="true">
-          <defs><linearGradient id="pcGradAgBrand" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" style="stop-color:#ffffff"/>
-            <stop offset="1" style="stop-color:#d7ecff"/>
-          </linearGradient></defs>
-          <path d="M9 27 V5 H18 a7 7 0 0 1 0 14 H9" fill="none" stroke="url(#pcGradAgBrand)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M22 11 l3.4 4.2 -3.4 4.2" fill="none" stroke="url(#pcGradAgBrand)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </span>
-      <div class="ag-brand-txt">
-        <div class="ag-brand-name"><span class="bw-pan">pan</span><span class="bw-code">code</span> <span class="ag-brand-agent">Agent</span></div>
-        <div class="ag-brand-sub">AI 编程工作台</div>
-      </div>
-    </div>
     <div class="ag-side-row">
       <div class="ag-side-title">会话</div>
       <button id="btnNewConv" class="ag-side-btn" title="新建会话"><i data-ico="plus"></i></button>
     </div>
     <input id="convSearch" class="conv-search" placeholder="搜索会话…" />
-    <div id="agSessionList">
-      <div class="ag-session active">
-        <span class="ag-sess-dot" title="进行中"></span>
-        <div class="ag-sess-main">
-          <div class="ag-sess-name"><i data-ico="sparkle"></i>当前对话</div>
-          <div class="ag-sess-meta" id="agSessMeta">已就绪 · workspace</div>
-        </div>
-      </div>
-    </div>
-    <div class="ag-side-row" style="margin-top:20px">
+    <div id="agSessionList" class="ag-sess-scroll"></div>
+    <div class="ag-side-row ag-side-sep">
       <div class="ag-side-title" data-i18n="taskPlan">任务计划</div>
       <button id="btnNewPlan" class="ag-side-btn" title="手动创建计划"><i data-ico="plus"></i></button>
     </div>
-      <div id="agPlanBox" class="ag-plan-box">
+    <div id="agPlanBox" class="ag-plan-box ag-plan-scroll">
       <div id="agPlanEmpty" class="scm-empty" data-i18n="planEmpty">Agent 面对复杂任务时会自动创建计划，实时跟进进度。</div>
       <div id="agPlanActive" style="display:none"></div>
     </div>
-    <div class="ag-side-row" style="margin-top:16px">
+    <div class="ag-side-row ag-side-sep">
       <div class="ag-side-title">编排历史</div>
       <button id="btnToggleOrchHist" class="ag-side-btn" title="展开/折叠"><i data-ico="chevD"></i></button>
     </div>
-    <div id="agOrchHistory" class="ag-orch-hist" style="display:none"></div>
+    <div id="agOrchHistory" class="ag-orch-hist ag-orch-scroll"></div>
   </aside>
 
   <div id="agSessionsResizer" class="resizer resizer-v" title="拖动调整会话栏宽度（双击收起/展开）"></div>
@@ -248,7 +226,7 @@
           <div class="ag-head-sub"><span class="ag-live-dot"></span><span id="agLiveTxt">AI 空闲</span> · <span class="cp-model" id="cpModelAgents">…</span></div>
         </div>
       </div>
-      <button id="agNewTask" class="ag-new-btn" title="开始一个真正的新对话，清空当前聊天记录"><i data-ico="plus"></i>新建对话</button>
+
       <button id="agExport" class="ag-new-btn ghost" title="将当前对话导出为 Markdown 文件"><i data-ico="save"></i>导出</button>
     </header>
     <div id="chatSlotAgents" class="chat-slot"></div>
@@ -292,20 +270,45 @@
         <div class="set-subtitle">模型配置（点击切换 / 保存当前为预设）</div>
         <div id="modelPresetList" class="model-preset-list"></div>
       </div>
-      <label>Base URL<input id="setBaseURL" type="text" placeholder="https://api.deepseek.com/v1" spellcheck="false"></label>
-      <label>API Key<input id="setApiKey" type="password" placeholder="sk-…" spellcheck="false"></label>
-      <label>模型名
-        <div style="display:flex;gap:8px">
-          <input id="setModel" type="text" placeholder="deepseek-chat" spellcheck="false" style="flex:1">
-          <button id="setFetchModels" class="btn-sub" style="white-space:nowrap">拉取模型</button>
-        </div>
-      </label>
-      <label>单任务最大工具调用轮数
-        <div style="display:flex;align-items:center;gap:8px">
-          <input id="setMaxRounds" type="number" min="5" max="500" step="5" placeholder="100" style="flex:1">
-          <span style="font-size:11px;color:var(--text-dim)">轮数越大越能跑长任务，但耗 token 更多（5-500）</span>
-        </div>
-      </label>
+      <div class="set-section">
+        <div class="set-section-title"><i data-ico="robot"></i> LLM 主配置</div>
+        <label>Base URL<input id="setBaseURL" type="text" placeholder="https://api.deepseek.com/v1" spellcheck="false"></label>
+        <label>API Key
+          <div class="set-key-field">
+            <input id="setApiKey" type="password" placeholder="sk-…" spellcheck="false">
+            <button id="setToggleApiKey" class="set-eye-btn" title="显示/隐藏"><i data-ico="eye"></i></button>
+          </div>
+        </label>
+        <label>模型名
+          <div style="display:flex;gap:8px">
+            <input id="setModel" type="text" placeholder="deepseek-chat" spellcheck="false" style="flex:1">
+            <button id="setFetchModels" class="btn-sub" style="white-space:nowrap">拉取模型</button>
+          </div>
+        </label>
+        <label>单任务最大工具调用轮数
+          <div style="display:flex;align-items:center;gap:8px">
+            <input id="setMaxRounds" type="number" min="5" max="500" step="5" placeholder="100" style="flex:1">
+            <span style="font-size:11px;color:var(--text-dim)">5-500，越大越能跑长任务</span>
+          </div>
+        </label>
+      </div>
+      <div class="set-section">
+        <div class="set-section-title"><i data-ico="search"></i> Embedding 配置（代码向量索引）</div>
+        <div class="set-tip">配置后代码索引将从 BM25 词法兜底升级为语义向量检索。留空则使用 BM25。</div>
+        <label>Embedding 端点<input id="setEmbEndpoint" type="text" placeholder="https://api.openai.com/v1" spellcheck="false"></label>
+        <label>Embedding API Key
+          <div class="set-key-field">
+            <input id="setEmbKey" type="password" placeholder="sk-…" spellcheck="false">
+            <button id="setToggleEmbKey" class="set-eye-btn" title="显示/隐藏"><i data-ico="eye"></i></button>
+          </div>
+        </label>
+        <label>Embedding 模型
+          <div style="display:flex;gap:8px">
+            <input id="setEmbModel" type="text" placeholder="text-embedding-3-small" spellcheck="false" style="flex:1">
+            <input id="setEmbDim" type="number" min="1" max="8192" step="64" placeholder="1536" style="width:90px" title="向量维度">
+          </div>
+        </label>
+      </div>
       <div class="set-status" id="setStatus"></div>
       <div class="set-actions">
         <button id="setTest" class="btn-sub">测试连接</button>
@@ -400,9 +403,11 @@
             <textarea id="agmPrompt" rows="4" spellcheck="false" placeholder="你是一位……（将追加到系统提示词后）"></textarea>
           </label>
           <div class="agm-sec-title" style="margin-top:6px">上下文 / 记忆 / 规则</div>
+          <label class="agm-check"><input type="checkbox" id="agmPlanMode">规划模式（仅可读 / 检索 / 规划，禁止写入与执行）</label>
           <label class="agm-check"><input type="checkbox" id="agmRules">启用项目规则（.pancode/rules/*.md 强制注入）</label>
           <label class="agm-check"><input type="checkbox" id="agmMemory">启用自动记忆（记住你的纠正与偏好）</label>
           <label class="agm-check"><input type="checkbox" id="agmCompact">上下文超预算 85% 时自动摘要压缩</label>
+          <label class="agm-check"><input type="checkbox" id="agmLsp">启用 LSP 诊断（实时语言服务器错误提示）</label>
           <label>上下文预算（tokens）<input id="agmBudget" type="number" min="8000" step="1000" placeholder="120000"></label>
         </div>
       </div>
@@ -498,7 +503,7 @@
       <span class="patch-actions">
         <button id="patchAcceptAll" class="patch-btn ok"><i data-ico="check"></i>全部接受</button>
         <button id="patchRejectAll" class="patch-btn danger"><i data-ico="close"></i>全部拒绝</button>
-        <button id="patchClose" class="patch-btn"><i data-ico="close"></i>稍后</button>
+        <button id="patchClose" class="patch-btn"><i data-ico="close"></i>稍后审阅</button>
       </span>
     </div>
     <div class="patch-body">
@@ -517,15 +522,101 @@
 
 <!-- ======================= 登录/注册弹窗 ======================= -->
 <div id="authModal" style="display:none">
-  <div class="set-box" style="max-width:380px">
-    <div class="set-head"><span><i data-ico="robot"></i> <span id="authTitle">登录</span></span><button id="authClose"><i data-ico="close"></i></button></div>
+  <div class="auth-card">
+    <button id="authClose" class="auth-close" title="关闭"><i data-ico="close"></i></button>
+    <div class="auth-brand">
+      <div class="auth-logo">P</div>
+      <div class="auth-brand-text">
+        <div class="auth-brand-name">pancode</div>
+        <div class="auth-brand-sub">Web AI 编程工作台</div>
+      </div>
+    </div>
+    <div class="auth-title" id="authTitle">欢迎回来</div>
+    <div class="auth-sub" id="authSub">登录以进入你的工作区</div>
+    <div class="auth-field">
+      <i data-ico="user" class="auth-field-ico"></i>
+      <input id="authUser" type="text" placeholder="用户名" autocomplete="username">
+    </div>
+    <div class="auth-field">
+      <i data-ico="lock" class="auth-field-ico"></i>
+      <input id="authPass" type="password" placeholder="密码" autocomplete="current-password">
+      <button id="authTogglePass" class="auth-eye" title="显示/隐藏密码"><i data-ico="eye"></i></button>
+    </div>
+    <div class="auth-extra">
+      <label class="auth-remember"><input id="authRemember" type="checkbox"> 记住我</label>
+    </div>
+    <div id="authStatus" class="auth-status"></div>
+    <button id="authSubmit" class="auth-submit">登录</button>
+    <div class="auth-switch">
+      <span id="authSwitchLabel">还没有账号？</span>
+      <button id="authSwitch" class="auth-switch-btn">注册新账号</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 全局设置弹窗 ======================= -->
+<div id="globalSettingsModal" style="display:none">
+  <div class="set-box" style="width:520px">
+    <div class="set-head"><span><i data-ico="gear"></i> 全局设置</span><button id="gsClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
-      <div class="set-row"><label>用户名</label><input id="authUser" type="text" placeholder="请输入用户名" autocomplete="username"></div>
-      <div class="set-row"><label>密码</label><input id="authPass" type="password" placeholder="请输入密码" autocomplete="current-password"></div>
-      <div id="authStatus" class="set-status"></div>
-      <div class="set-row" style="display:flex;gap:8px;justify-content:flex-end">
-        <button id="authSubmit" class="set-btn" style="background:var(--accent);color:#fff">登录</button>
-        <button id="authSwitch" class="set-btn" style="background:var(--bg4)">注册新账号</button>
+      <!-- 外观 -->
+      <div class="set-section">
+        <div class="set-section-title"><i data-ico="sun"></i> 外观</div>
+        <div class="gs-row">
+          <div class="gs-row-label">主题</div>
+          <div class="gs-row-control">
+            <div class="gs-segment" id="gsThemeSeg">
+              <button data-val="dark" class="active">深色</button>
+              <button data-val="light">浅色</button>
+            </div>
+          </div>
+        </div>
+        <div class="gs-row">
+          <div class="gs-row-label">编辑器字体大小</div>
+          <div class="gs-row-control">
+            <input id="gsFontSize" type="range" min="11" max="22" step="0.5" value="13.5" class="gs-slider">
+            <span id="gsFontSizeVal" class="gs-slider-val">13.5px</span>
+          </div>
+        </div>
+        <div class="gs-row">
+          <div class="gs-row-label">界面字体大小</div>
+          <div class="gs-row-control">
+            <input id="gsUiFontSize" type="range" min="11" max="18" step="0.5" value="13" class="gs-slider">
+            <span id="gsUiFontSizeVal" class="gs-slider-val">13px</span>
+          </div>
+        </div>
+      </div>
+      <!-- 语言 -->
+      <div class="set-section">
+        <div class="set-section-title"><i data-ico="md"></i> 语言</div>
+        <div class="gs-row">
+          <div class="gs-row-label">界面语言</div>
+          <div class="gs-row-control">
+            <div class="gs-segment" id="gsLangSeg">
+              <button data-val="zh" class="active">中文</button>
+              <button data-val="en">English</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 项目管理 -->
+      <div class="set-section">
+        <div class="set-section-title"><i data-ico="folder"></i> 项目管理</div>
+        <div class="gs-row">
+          <div class="gs-row-label">当前工作区</div>
+          <div class="gs-row-control">
+            <span id="gsWorkspace" class="gs-workspace">加载中…</span>
+            <button id="gsBrowseFolder" class="btn-sub">切换</button>
+          </div>
+        </div>
+        <div class="gs-recent-label">最近打开</div>
+        <div id="gsRecentList" class="gs-recent-list"></div>
+      </div>
+      <!-- 高级设置入口 -->
+      <div class="set-section">
+        <div class="set-section-title"><i data-ico="tune"></i> 高级设置</div>
+        <div class="gs-link-row" id="gsOpenModelSettings"><i data-ico="robot"></i> 模型设置（LLM / Embedding）<i data-ico="chevR" class="gs-link-arrow"></i></div>
+        <div class="gs-link-row" id="gsOpenAgentSettings"><i data-ico="gear"></i> Agent 设置（权限 / 人格 / MCP）<i data-ico="chevR" class="gs-link-arrow"></i></div>
       </div>
     </div>
   </div>
@@ -692,5 +783,6 @@
 
 
   <script src="app.js"></script>
+  <script src="js/global-settings.js"></script>
 </body>
 </html>

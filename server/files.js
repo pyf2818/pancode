@@ -7,6 +7,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
+const { AppError } = require("./app-error");
 
 const IGNORE = new Set([
   "node_modules", ".git", ".omc", ".workbuddy",
@@ -139,15 +140,15 @@ class FileStore {
   read(rel) {
     const abs = this.safePath(rel);
     const st = fs.statSync(abs);
-    if (st.size > MAX_FILE) throw new Error("文件过大（>1MB）: " + rel);
-    if (this.isBinary(rel)) throw new Error("二进制文件无法作为文本打开: " + rel);
+    if (st.size > MAX_FILE) throw new AppError("FILE_TOO_LARGE", "文件过大（>1MB）: " + rel, "文件超过 1MB 限制，无法作为文本打开。请使用专用编辑器查看。");
+    if (this.isBinary(rel)) throw new AppError("FILE_BINARY", "二进制文件无法作为文本打开: " + rel, "该文件为二进制格式（图片/压缩包等），不能作为文本编辑。");
     return fs.readFileSync(abs, "utf8");
   }
 
   write(rel, content) {
     // 防线：绝不用文本内容覆盖二进制文件（会直接损坏 Word/图片等）
     if (this.exists(rel) && this.isBinary(rel)) {
-      throw new Error("二进制文件不能以文本方式保存（防止损坏）: " + rel);
+      throw new AppError("FILE_BINARY", "二进制文件不能以文本方式保存（防止损坏）: " + rel, "该文件为二进制格式，不能以文本方式保存。");
     }
     const abs = this.safePath(rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -157,7 +158,7 @@ class FileStore {
   }
 
   create(rel, content) {
-    if (this.exists(rel)) throw new Error("文件已存在: " + rel);
+    if (this.exists(rel)) throw new AppError("FILE_EXISTS", "文件已存在: " + rel, "目标路径已有同名文件，请改名后重试。");
     this.write(rel, content || "");
   }
 
@@ -167,7 +168,7 @@ class FileStore {
 
   remove(rel) {
     const abs = this.safePath(rel);
-    if (abs === path.resolve(this.dir)) throw new Error("不能删除工作区根目录");
+    if (abs === path.resolve(this.dir)) throw new AppError("ROOT_DELETE", "不能删除工作区根目录", "无法删除工作区根目录。");
     const st = fs.statSync(abs);
     this._selfWrites.set(rel.replace(/\\/g, "/"), Date.now());
     this._binCache && this._binCache.delete(rel.replace(/\\/g, "/"));

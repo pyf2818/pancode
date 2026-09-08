@@ -147,11 +147,13 @@ class PatchEngine {
   /* 写盘应用。
      paths 为空 = 应用全部文件；hunkSelections = { path: [hunkIndex,...] } 做逐 hunk 部分应用。
      某文件 hunkSelections[path] 为 []（空数组）= 该文件全部拒绝，不写盘。
-     返回已应用路径列表。 */
+     冲突检测：写盘前重新读当前文件，验证 old_string 仍存在；不匹配则跳过并记入 conflicts。
+     返回 { applied:[路径], conflicts:[路径] }。 */
   apply(convId, paths, hunkSelections) {
     const list = this.pending[convId] || [];
     const target = (paths && paths.length) ? paths : list.map((x) => x.path);
     const applied = [];
+    const conflicts = [];
     const remain = [];
     for (const s of list) {
       if (!target.includes(s.path)) { remain.push(s); continue; }
@@ -160,12 +162,35 @@ class PatchEngine {
       if (sel === undefined) chosen = s.edits;                       // 未指定 hunk → 应用全部
       else if (sel.length === 0) continue;                           // 空数组 → 整文件拒绝，跳过
       else chosen = s.edits.filter((_, i) => sel.includes(i));       // 仅应用选中的 hunk
-      const { modified } = applyEditsToString(s.original, chosen);
-      try { this.files.write(s.path, modified); applied.push(s.path); }
-      catch (e) { /* 写失败不阻塞其它文件 */ }
+
+      // 乐观锁：重新读当前文件，检测 stage→apply 窗口期间是否被其他会话改动
+      let current = null;
+      try { current = this.files.exists(s.path) ? this.files.read(s.path) : null; } catch (e) {}
+      if (!s.isNew && current != null) {
+        let stale = false;
+        for (const e of chosen) {
+          const oldS = e.old_string == null ? "" : String(e.old_string);
+          if (oldS === "") continue;                                 // 整文件重写，无需检测
+          if (!current.includes(oldS)) { stale = true; break; }
+        }
+        if (stale) {
+          conflicts.push(s.path);
+          remain.push(s);                                            // 保留在 pending，供用户重新审视
+          continue;
+        }
+        // 基于当前文件内容（而非过期快照）重新计算 modified
+        const { modified } = applyEditsToString(current, chosen);
+        try { this.files.write(s.path, modified); applied.push(s.path); }
+        catch (e) { /* 写失败不阻塞其它文件 */ }
+      } else {
+        // 新建文件或文件已被删除：用原快照逻辑
+        const { modified } = applyEditsToString(s.original, chosen);
+        try { this.files.write(s.path, modified); applied.push(s.path); }
+        catch (e) { /* 写失败不阻塞其它文件 */ }
+      }
     }
     this.pending[convId] = remain;
-    return applied;
+    return { applied, conflicts };
   }
 
   /* 拒绝。paths 为空 = 拒绝全部 */

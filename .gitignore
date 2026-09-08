@@ -39,3 +39,10 @@ scripts/_verify_out/
 # AI 工具本地产物（会话记忆 / 规则缓存，不入库）
 .omc/
 .workbuddy/
+# Local tool artifacts / temp scripts
+.arts/
+.codegraph/
+.tmp-tools.js
+start_srv.bat
+_srv*.log
+_srv*.err

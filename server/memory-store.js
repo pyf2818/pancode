@@ -94,6 +94,18 @@ class MemoryStore {
 
   getById(id) { return this._entries.find((e) => e.id === id) || null; }
 
+  /* ---------- 编辑 ---------- */
+  update(id, patch) {
+    const e = this._entries.find((x) => x.id === id);
+    if (!e) return null;
+    if (patch.topic !== undefined) e.topic = String(patch.topic).trim();
+    if (patch.content !== undefined) e.content = String(patch.content).trim();
+    if (patch.type && TYPES.has(patch.type)) e.type = patch.type;
+    e.ts = Date.now();
+    this._save();
+    return e;
+  }
+
   /* ---------- 删除 / 清理 ---------- */
   remove(id) {
     const idx = this._entries.findIndex((e) => e.id === id);

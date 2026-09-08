@@ -21,8 +21,11 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { AsyncLocalStorage } = require("async_hooks");
 const { AgentBase } = require("./agent-base");
 const { chatStream } = require("./llm");
+
+const convContext = new AsyncLocalStorage();
 const codeIndex = require("./code-index");
 const repoMap = require("./repo-map");
 const { MemoryStore } = require("./memory-store");
@@ -710,6 +713,15 @@ class LlmAgent extends AgentBase {
     this.convChanges = {};              // convId -> 该会话改动的文件清单（按会话记录显示）
     this._currentConv = "default";      // 当前活跃对话 ID
     this._abort = false;                // 中断标志
+    this.runningConvs = new Set();      // 并行会话：正在运行的 convId 集合
+    this._convAborts = {};              // convId -> abortRef（外部 abort 按会话中断）
+    // 包裹 emit：自动从 AsyncLocalStorage 注入 convId（多会话并行时深层调用也能正确标记）
+    const rawEmit = this.emit;
+    this.emit = (msg) => {
+      const ctx = convContext.getStore();
+      if (ctx && !msg.convId) msg.convId = ctx.convId;
+      rawEmit(msg);
+    };
     this._usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }; // P2 真实 token 用量累计（来自 LLM usage）
     this._trace = [];                   // P2 可观测：环形 trace 缓冲（最近 200 条事件）
     this._traceSeq = 0;
@@ -921,6 +933,14 @@ ${taskSummary}
     return this._repoCache;
   }
 
+  /* 多会话并行：覆写 state 注入 convId */
+  state(running, label) {
+    this.running = running;
+    const ctx = convContext.getStore();
+    const convId = ctx ? ctx.convId : this._currentConv;
+    this.emit({ type: "agent.state", running, label: label || (running ? "AI 运行中" : "AI 空闲"), convId });
+  }
+
   /* 文件变更 → 失效仓库索引缓存（重写基类以加缓存失效） */
   fileChanged(rel) {
     this._repoDirty = true;
@@ -958,11 +978,23 @@ ${taskSummary}
     this._persistConversations();
   }
 
-  abort() {
-    this._abort = true;
+  abort(convId) {
+    // 多会话并行：按 convId 中断指定会话
+    if (convId && this._convAborts && this._convAborts[convId]) {
+      this._convAborts[convId].value = true;
+    } else {
+      const ctx = convContext.getStore();
+      if (ctx) {
+        ctx.abortRef.value = true;
+      } else {
+        this._abort = true;
+      }
+    }
     this.running = false;
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
+      // 同步广播收尾：审批卡（ap_*）与选项卡（ch_*）进入「已中断」状态，避免前端永远显示等待中
+      this.emit({ type: "tool.end", id: (id.startsWith("ch") ? "choice_" : "ap_") + id, ok: false, label: "已中断" });
       p.resolve({ approved: false, reason: "用户中断" });
     }
     this.pending.clear();
@@ -972,15 +1004,17 @@ ${taskSummary}
      hunkSelections = { path: [hunkIndex,...] } 时仅应用选中的片段（逐 hunk 部分应用）。 */
   applyPatch(convId, paths, hunkSelections) {
     const snaps = (paths || []).map((p) => this._snapshotBefore(p));   // 落盘前快照（⑧ /undo）
-    const applied = this.patch.apply(convId, paths, hunkSelections);
-    this._pushCheckpoint(snaps, "应用补丁 " + applied.length + " 文件");
-    for (const p of applied) {
-      this.fileChanged(p);                 // 触发前端编辑器内容刷新
-      this.emit({ type: "editor.open", path: p });
-      codeIndex.queueFileUpdate(this.files.dir, p); // 增量刷新语义索引
+    const { applied, conflicts } = this.patch.apply(convId, paths, hunkSelections);
+    if (applied.length) {
+      this._pushCheckpoint(snaps, "应用补丁 " + applied.length + " 文件");
+      for (const p of applied) {
+        this.fileChanged(p);                 // 触发前端编辑器内容刷新
+        this.emit({ type: "editor.open", path: p });
+        codeIndex.queueFileUpdate(this.files.dir, p); // 增量刷新语义索引
+      }
+      this.pushChanges(false);               // 更新 SCM / 状态栏改动数
     }
-    this.pushChanges(false);               // 更新 SCM / 状态栏改动数
-    return applied;
+    return { applied, conflicts };
   }
 
   /* 用户在审阅面板「拒绝」暂存改动 */
@@ -1067,6 +1101,7 @@ ${taskSummary}
     const snap = this._workspaceSnapshot();
     try {
       for (let round = 0; round < maxRounds; round++) {
+        if (this._abort) { finalText = finalText || "(子智能体已随主任务中断)"; break; }
         const r = await this._chatStream(messages, subTools, {});
         if (r.content) finalText = r.content;
         if (!r.toolCalls || !r.toolCalls.length) break;
@@ -1082,8 +1117,9 @@ ${taskSummary}
         });
         const toolMsgs = [];
         for (let si = 0; si < r.toolCalls.length; si++) {
+          if (this._abort) break;
           const tc = r.toolCalls[si];
-          const res = await this.execTool(tc.name, tc.args || {});
+          const res = await this._runToolGuarded(tc.name, tc.args || {});
           toolMsgs.push({ role: "tool", tool_call_id: subIds[si], content: String(res) });
         }
         messages.push(...toolMsgs);
@@ -1164,13 +1200,15 @@ ${taskSummary}
     return { blocked: false, approved: ap.approved, reason: ap.reason };
   }
 
-  /* 请求人工确认：emit tool.pending 并等待前端 approve/reject（超时 120s 自动拒绝） */
+  /* 请求人工确认：emit tool.pending 并等待前端 approve/reject（超时 120s 自动拒绝并广播收尾） */
   requestApproval(toolName, args, danger) {
     const id = "ap" + (++this._apSeq);
     const preview = this._previewArgs(toolName, args);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        // 广播合成 tool.end，让前端审批卡片同步进入「已超时」状态
+        this.emit({ type: "tool.end", id: "ap_" + id, ok: false, label: "等待超时，已自动拒绝" });
         resolve({ approved: false, reason: "等待确认超时（120s），已自动拒绝" });
       }, 120000);
       this.pending.set(id, { resolve, timer });
@@ -1187,14 +1225,16 @@ ${taskSummary}
     return true;
   }
 
-  /* 交互式选项列表：emit tool.ask_choice 并等待前端 choice_result（超时 300s 自动取消） */
+  /* 交互式选项列表：emit tool.ask_choice 并等待前端 choice_result（超时 120s 自动取消并广播收尾） */
   requestChoice(question, options) {
     const id = "ch" + (++this._apSeq);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        resolve({ choice: null, reason: "等待用户选择超时（300s），已自动取消" });
-      }, 300000);
+        // 广播合成 tool.end，让前端对应的选项卡片同步进入「已超时」状态（否则永远显示等待中）
+        this.emit({ type: "tool.end", id: "choice_" + id, ok: false, label: "等待超时，已自动取消" });
+        resolve({ choice: null, reason: "等待用户选择超时（120s），已自动取消" });
+      }, 120000);
       this.pending.set(id, { resolve, timer });
       this.emit({ type: "tool.ask_choice", id, question, options });
     });
@@ -1357,17 +1397,18 @@ ${taskSummary}
     } catch (e) { return "(摘要生成失败)"; }
   }
 
-  async compactHistory() {
-    if (!this.cfg.context || !this.cfg.context.autoCompact) return;
+  async compactHistory(hist) {
+    const history = hist || this.history;
+    if (!this.cfg.context || !this.cfg.context.autoCompact) return history;
     const budget = (this.cfg.context.budgetTokens) || 1000000;
-    const used = this._estTokens(this.history);
-    if (used <= budget * 0.85) return;
+    const used = this._estTokens(history);
+    if (used <= budget * 0.85) return history;
     // 重要性加权压缩（P1-5/F4）：用户消息与"报错/关键改动"工具结果始终保留，
     // 其余较早的可压缩消息汇成摘要；最近 keep 条原样保留以维持对话连贯。
     const keep = 10;
-    if (this.history.length <= keep + 2) return;
-    const recent = this.history.slice(this.history.length - keep);
-    const head = this.history.slice(0, this.history.length - keep);
+    if (history.length <= keep + 2) return history;
+    const recent = history.slice(history.length - keep);
+    const head = history.slice(0, history.length - keep);
     const isCritical = (m) => {
       if (m.role === "user") return true; // 用户意图永远保留
       if (m.role === "tool") {
@@ -1379,16 +1420,17 @@ ${taskSummary}
     const criticalKept = head.filter(isCritical);                 // 关键旧消息（用户/报错/改动）保留在摘要之后
     const compressibleOld = head.filter((m) => !isCritical(m));    // 真正可压缩的较早消息
     const summary = await this._summarize(compressibleOld.length ? compressibleOld : head);
-    this.history = [
+    const newHist = [
       { role: "system", content: "[历史摘要] " + summary },
       ...criticalKept,
       ...recent,
     ];
-    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(this._estTokens(this.history)/1000) + "k，保留最近 " + keep + " 条 + 关键消息）", cls: "tl-info" });
+    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(this._estTokens(newHist)/1000) + "k，保留最近 " + keep + " 条 + 关键消息）", cls: "tl-info" });
     // 压缩后同时归纳记忆
     if (this.cfg.memory && this.cfg.memory.enabled) {
       this._consolidateMemory(head);
     }
+    return newHist;
   }
 
   /* 定期归纳记忆：把多条零散记忆合并为主题摘要，防止记忆爆炸 */
@@ -1448,11 +1490,14 @@ ${taskSummary}
     else if (/(应该|正确的是|建议|最佳实践|推荐)/.test(clean)) { type = "pattern"; topic = "最佳实践"; }
     else if (/(记住|备忘|以后|下次|将来)/.test(clean)) { type = "decision"; topic = "决策约定"; }
     else if (/(不要|禁止|不能|不允许|避免)/.test(clean)) { type = "preference"; topic = "禁止事项"; }
+    // 价值评分门槛：只记录有价值的记忆，过滤碎碎念
+    const score = this._memoryValueScore(clean, type);
+    if (score < 2) return;
     // 跨会话软去重：相似要点已存在则不再重复写入（记忆去噪）
     if (this._similarMemoryExists(topic, clean)) return;
-    const entry = this.memory.add(type, topic, clean.slice(0, 300));
+    const entry = this.memory.add(type, topic, clean.slice(0, 300), { valueScore: score });
     if (entry) {
-      this.emit({ type: "term.line", text: "[Agent] 已将你的偏好记入项目记忆（" + type + "）", cls: "tl-info" });
+      this.emit({ type: "term.line", text: "[Agent] 已将你的偏好记入项目记忆（" + type + "，价值" + score + "）", cls: "tl-info" });
     }
   }
 
@@ -1466,9 +1511,34 @@ ${taskSummary}
     let type = "decision", topic = "AI 结论/决策";
     if (/(踩坑|教训|错误|失败)/.test(clean)) { type = "lesson"; topic = "经验教训"; }
     else if (/(选型|采用|框架|技术栈|库)/.test(clean)) { type = "pattern"; topic = "技术选型"; }
+    // 价值评分门槛：AI 输出要求更高（≥3 分）
+    const score = this._memoryValueScore(clean, type);
+    if (score < 3) return;
     if (this._similarMemoryExists(topic, clean)) return;
-    const entry = this.memory.add(type, topic, clean.slice(0, 300));
-    if (entry) this.emit({ type: "term.line", text: "[Agent] 已从本次结论沉淀记忆（" + type + "）", cls: "tl-info" });
+    const entry = this.memory.add(type, topic, clean.slice(0, 300), { valueScore: score });
+    if (entry) this.emit({ type: "term.line", text: "[Agent] 已从本次结论沉淀记忆（" + type + "，价值" + score + "）", cls: "tl-info" });
+  }
+
+  /* 记忆价值评分：信息密度 + 关键词强度 + 结构性 + 可操作性 */
+  _memoryValueScore(text, type) {
+    let score = 0;
+    const t = String(text || "");
+    // 1) 信息密度：长度适中有价值，太短或太长价值低
+    if (t.length >= 15) score += 1;
+    if (t.length >= 30) score += 1;
+    if (t.length > 150) score -= 1; // 过长可能是碎碎念
+    // 2) 关键词强度：强信号词加分
+    if (/(踩坑|教训|最佳实践|选型|技术栈|最终方案|正确做法)/.test(t)) score += 2;
+    if (/(不要|禁止|必须|应该|记住|下次|错误|失败|纠正)/.test(t)) score += 1;
+    // 3) 结构性：包含因果/条件/列表更有价值
+    if (/(因为|所以|由于|导致|如果|则|否则|当)/.test(t)) score += 1;
+    if (/[：；]\s|第一|第二|首先|其次|1\.|2\.|- /.test(t)) score += 1; // 列表结构
+    // 4) 可操作性：包含具体技术名词/路径/命令
+    if (/[a-zA-Z]{3,}[/.][a-zA-Z]/.test(t)) score += 1; // 路径/包名
+    if (/(`|'|")/.test(t)) score += 1; // 引号标记具体术语
+    // 5) 类型加权：教训/决策 > 偏好
+    if (type === "lesson" || type === "decision") score += 1;
+    return Math.max(0, score);
   }
 
   /* ---------- 工具实现 ---------- */
@@ -1602,6 +1672,19 @@ ${taskSummary}
           return "编辑未应用：" + res.error + "。请修正 old_string 使其「逐字、唯一且存在于文件中」，然后重试同一处修改。";
         }
         const files = res.staged;
+        const permMode = (this.cfg.permissions || {}).mode || "ask";
+        // auto 权限模式：跳过审阅弹窗，直接落盘
+        if (permMode === "auto") {
+          const paths = files.map((f) => f.path);
+          const { applied, conflicts } = this.applyPatch(this._currentConv, paths);
+          t.body(paths.join("\n"));
+          if (conflicts.length) {
+            t.done(true, "已应用 " + applied.length + " 个文件，" + conflicts.length + " 个冲突跳过", false);
+            return "已写入 " + applied.length + " 个文件改动；冲突跳过：" + conflicts.join(", ") + "（文件已被其他会话修改，请重新执行 apply_edit）。";
+          }
+          t.done(true, "已自动接受 " + applied.length + " 个文件改动", false);
+          return "已自动写入 " + applied.length + " 个文件改动（" + paths.join(", ") + "）。";
+        }
         this.emit({
           type: "patch.review",
           convId: this._currentConv,
@@ -2109,9 +2192,30 @@ ${taskSummary}
      P1 健壮性 / P2 可观测 辅助方法
      ============================================================ */
 
-  /* 工具结果结构化截断：保留头部 + 尾部（报错通常在尾部），避免丢关键结论 */
+  /* 统一工具执行守卫：中断检查 + 超时保护。
+     等用户输入的工具（ask_user_choice）与可能弹审批门的 mutating 工具不设超时；
+     读类工具 120s 超时兜底，防止挂起卡死整轮 ReAct 循环。 */
+  _runToolGuarded(name, args) {
+    const ctx = convContext.getStore();
+    const aborted = ctx ? ctx.abortRef.value : this._abort;
+    if (aborted) return Promise.resolve("[已中断] 用户停止了本次任务，工具未执行。");
+    const waitUser = name === "ask_user_choice" || MUTATING_TOOLS.has(name);
+    const p = Promise.resolve().then(() => this.execTool(name, args));
+    if (waitUser) return p;
+    const MS = 120000;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve("[超时] 工具 " + name + " 执行超过 " + (MS / 1000)
+        + " 秒未返回，已中止等待。请缩小查询范围（如指定更短的路径/更少的条数）后重试，或改用其他工具。"), MS);
+      p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+    });
+  }
+
+  /* 工具结果结构化截断：保留头部 + 尾部（报错通常在尾部），避免丢关键结论。
+     预算感知：历史用量超过预算 60% / 80% 时分级收紧截断阈值，提前给上下文减压。 */
   _truncateToolResult(str) {
-    const MAX = 24000;
+    const budget = (this.cfg.context || {}).budgetTokens || 1000000;
+    const ratio = this._estTokens(this.history) / budget;
+    const MAX = ratio > 0.8 ? 4000 : ratio > 0.6 ? 8000 : 24000;
     const s = String(str == null ? "" : str);
     if (s.length <= MAX) return s;
     const head = Math.floor(MAX * 0.75);
@@ -2119,7 +2223,7 @@ ${taskSummary}
     const headPart = s.slice(0, head);
     const tailPart = s.slice(s.length - tail);
     return headPart
-      + "\n\n[工具结果过长，已结构化截断 " + (s.length - MAX) + " 字符；保留头部与尾部（报错/结论通常在尾部）。"
+      + "\n\n[工具结果过长，已结构化截断 " + (s.length - MAX) + " 字符（当前上下文水位 " + Math.round(ratio * 100) + "%，截断阈值已收紧）；保留头部与尾部（报错/结论通常在尾部）。"
       + "如需完整内容，请缩小查询范围、分页查看，或先用 search_code 定位关键片段]\n\n"
       + tailPart;
   }
@@ -2257,248 +2361,272 @@ ${taskSummary}
     } catch (e) { return { missing: [], orphan: [] }; }
   }
 
-  /* ---------- 主循环 ---------- */
+  /* ---------- 主循环（多会话并行） ---------- */
   async handleChat(text, opts) {
-    if (this.running) return;
     opts = opts || {};
+    const convId = opts.convId || this._currentConv || "default";
+    if (this.runningConvs.has(convId)) return;   // 同一会话不重复启动
+    this.runningConvs.add(convId);
     const attachments = Array.isArray(opts.attachments) ? opts.attachments : [];
-    this._abort = false;
+
+    // 加载会话上下文到局部变量（隔离并行会话状态）
+    const saved = this.conversations.get(convId);
+    let history = saved ? saved.history : [];
+    let round = saved ? saved.round : 0;
+    const abortRef = { value: false };
+    this._convAborts[convId] = abortRef;          // 注册 abortRef 供外部 abort(convId) 使用
+    let toolLoop = { fp: null, count: 0 };
+    let failStreak = 0;
+
+    // 临时设置 _currentConv（供 this.plan.getActive 等使用）
+    const prevConv = this._currentConv;
+    this._currentConv = convId;
 
     const { clean, block } = this._resolveMentions(text);
     this._maybeRemember(text);
-    this.emit({ type: "user.msg", text });
+    this.emit({ type: "user.msg", text, convId });
     this.state(true, "AI 思考中");
 
     const content = this._buildUserContent(clean + (block ? "\n\n" + block : ""), attachments);
-    this.history.push({ role: "user", content });
+    history.push({ role: "user", content });
 
-    await this.compactHistory();
-    this.emit({ type: "context.usage", used: this._estTokens(this.history), budget: (this.cfg.context || {}).budgetTokens || 1000000 });
+    // 用 convContext.run 包裹：深层调用（execTool/emit/_runToolGuarded）自动获取 convId + abortRef
+    await convContext.run({ convId, abortRef }, async () => {
+      history = await this.compactHistory(history) || history;
+      this.emit({ type: "context.usage", used: this._estTokens(history), budget: (this.cfg.context || {}).budgetTokens || 1000000 });
 
-    // 控制上下文长度：最多保留最近 100 条（压缩后通常远低于此）
-    if (this.history.length > 100) this.history = this.history.slice(-100);
+      // 控制上下文长度：最多保留最近 100 条（压缩后通常远低于此）
+      if (history.length > 100) history = history.slice(-100);
 
-    // Phase 2：智能上下文检索（替代全量注入）
-    const smartCtx = this.contextRetriever.buildSmartContext(clean, { files: this.files });
-    const aug = this.buildSystemAugment(clean);
-    const messages = [{ role: "system", content: SYSTEM_PROMPT }];
-    if (aug) messages.push({ role: "system", content: aug });
-    // .pancoderules：项目规则（用户自定义约束，每次会话读取保证新鲜度）
-    if (this.files.exists(".pancoderules")) {
-      try {
-        const rules = this.files.read(".pancoderules");
-        if (rules && rules.trim()) {
-          messages.push({ role: "system", content: "【项目规则 .pancoderules】\n以下是本项目用户定义的规则与约定，请严格遵守：\n\n" + rules.trim() });
-        }
-      } catch (e) { /* 读取失败（二进制/过大），忽略 */ }
-    }
-    if (smartCtx) messages.push({ role: "system", content: smartCtx });
-    // 规划模式：注入只读约束指令，并从可见工具集中移除所有会改动工作区的工具
-    if (this.cfg.planMode) {
-      messages.push({ role: "system", content: "【规划模式已开启】你当前只能阅读、检索代码，并用 create_plan 输出实施计划。严禁调用 write_file / apply_edit / delete_file / run_command 等任何会改动工作区或执行命令的工具。完成计划后请停止，等待用户审阅并切回执行模式。" });
-    }
-    // 外部 MCP 工具：从管理器取当前已连接的工具定义；规划模式下不暴露（避免改动外部服务）
-    const mcpDefs = (!this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
-    const baseTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
-    const activeTools = baseTools.concat(mcpDefs);
-    // 目标驱动：把会话目标注入每轮系统提示，让 Agent 围绕目标自主推进
-    if (this._goal) {
-      let g = "【本次会话目标】" + this._goal + "\n";
-      g += "请在每一步推进时对齐该目标；当目标达成（相关计划任务全部完成，或你判断已实质性满足）时，明确汇报「目标已完成」并停止。";
-      const ap = this.plan.getActive(this._currentConv);
-      if (ap) {
-        const done = ap.tasks.filter((t) => t.status === "done" || t.status === "skipped").length;
-        g += " 当前执行计划「" + ap.title + "」已完成 " + done + "/" + ap.tasks.length + " 步。";
+      // Phase 2：智能上下文检索（替代全量注入）
+      const smartCtx = this.contextRetriever.buildSmartContext(clean, { files: this.files });
+      const aug = this.buildSystemAugment(clean);
+      const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+      if (aug) messages.push({ role: "system", content: aug });
+      // .pancoderules：项目规则（用户自定义约束，每次会话读取保证新鲜度）
+      if (this.files.exists(".pancoderules")) {
+        try {
+          const rules = this.files.read(".pancoderules");
+          if (rules && rules.trim()) {
+            messages.push({ role: "system", content: "【项目规则 .pancoderules】\n以下是本项目用户定义的规则与约定，请严格遵守：\n\n" + rules.trim() });
+          }
+        } catch (e) { /* 读取失败（二进制/过大），忽略 */ }
       }
-      messages.push({ role: "system", content: g });
-    }
-    for (const h of this.history) messages.push(h);
-
-    let rounds = 0;
-    let r = null;   // LLM 调用返回值（提到循环外，避免循环提前 break 时 2173 行 r 未定义触发 ReferenceError）
-    try {
-      for (;;) {
-        rounds++;
-        if (this._abort) { await this.say("已中断"); break; }
-        if (rounds > this.cfg.llm.maxToolRounds) {
-          await this.say("已达到单任务最大工具调用轮数（" + this.cfg.llm.maxToolRounds + "），先停在这里。如果还需要继续，请再发一条消息。");
-          break;
+      if (smartCtx) messages.push({ role: "system", content: smartCtx });
+      // 规划模式：注入只读约束指令，并从可见工具集中移除所有会改动工作区的工具
+      if (this.cfg.planMode) {
+        messages.push({ role: "system", content: "【规划模式已开启】你当前只能阅读、检索代码，并用 create_plan 输出实施计划。严禁调用 write_file / apply_edit / delete_file / run_command 等任何会改动工作区或执行命令的工具。完成计划后请停止，等待用户审阅并切回执行模式。" });
+      }
+      // 外部 MCP 工具：从管理器取当前已连接的工具定义；规划模式下不暴露（避免改动外部服务）
+      const mcpDefs = (!this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
+      const baseTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
+      const activeTools = baseTools.concat(mcpDefs);
+      // 目标驱动：把会话目标注入每轮系统提示，让 Agent 围绕目标自主推进
+      if (this._goal) {
+        let g = "【本次会话目标】" + this._goal + "\n";
+        g += "请在每一步推进时对齐该目标；当目标达成（相关计划任务全部完成，或你判断已实质性满足）时，明确汇报「目标已完成」并停止。";
+        const ap = this.plan.getActive(convId);
+        if (ap) {
+          const done = ap.tasks.filter((t) => t.status === "done" || t.status === "skipped").length;
+          g += " 当前执行计划「" + ap.title + "」已完成 " + done + "/" + ap.tasks.length + " 步。";
         }
+        messages.push({ role: "system", content: g });
+      }
+      for (const h of history) messages.push(h);
 
-        let tk = null, mg = null;
-        let llmErr = null;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            r = await chatStream(this.cfg.llm, messages, activeTools, {
-              onReasoning: (d) => { if (!tk) tk = this.thinkStart(); tk.delta(d); },
-              onContent: (d) => {
-                if (tk) { tk.end(); tk = null; }
-                if (!mg) mg = this.msgStart();
-                mg.delta(d);
-              },
-            });
-            llmErr = null;
+      let rounds = 0;
+      let r = null;   // LLM 调用返回值（提到循环外，避免循环提前 break 时 r 未定义触发 ReferenceError）
+      try {
+        for (;;) {
+          rounds++;
+          if (abortRef.value) { await this.say("已中断"); break; }
+          if (rounds > this.cfg.llm.maxToolRounds) {
+            await this.say("已达到单任务最大工具调用轮数（" + this.cfg.llm.maxToolRounds + "），先停在这里。如果还需要继续，请再发一条消息。");
             break;
-          } catch (e) {
-            llmErr = e;
-            if (attempt < 2) {
-              const wait = Math.pow(2, attempt) * 5;
-              this.emit({ type: "term.line", text: "[Agent] LLM 调用失败（" + e.message.slice(0, 80) + "），第 " + (attempt + 1) + " 次重试，等待 " + wait + " 秒…", cls: "tl-warn" });
-              await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+          }
+
+          let tk = null, mg = null;
+          let llmErr = null;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              r = await chatStream(this.cfg.llm, messages, activeTools, {
+                onReasoning: (d) => { if (!tk) tk = this.thinkStart(); tk.delta(d); },
+                onContent: (d) => {
+                  if (tk) { tk.end(); tk = null; }
+                  if (!mg) mg = this.msgStart();
+                  mg.delta(d);
+                },
+              });
+              llmErr = null;
+              break;
+            } catch (e) {
+              llmErr = e;
+              if (attempt < 2) {
+                const wait = Math.pow(2, attempt) * 5;
+                this.emit({ type: "term.line", text: "[Agent] LLM 调用失败（" + e.message.slice(0, 80) + "），第 " + (attempt + 1) + " 次重试，等待 " + wait + " 秒…", cls: "tl-warn" });
+                await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+              }
             }
           }
-        }
-        if (llmErr) throw llmErr;
-        // P2 真实 token 用量累计（chatStream 在 include_usage 时返回尾包 usage）
-        this._accumUsage(r.usage);
-        this._traceEvent("llm.round", { rounds, tools: r.toolCalls.length, finish: r.finish });
-        if (tk) tk.end();
-        if (mg) mg.end();
+          if (llmErr) throw llmErr;
+          // P2 真实 token 用量累计（chatStream 在 include_usage 时返回尾包 usage）
+          this._accumUsage(r.usage);
+          this._traceEvent("llm.round", { rounds, tools: r.toolCalls.length, finish: r.finish });
+          if (tk) tk.end();
+          if (mg) mg.end();
 
-        const assistantMsg = { role: "assistant", content: r.content || "" };
-        // 预先解析每个 tool_call 的兜底 id，保证 assistant.tool_calls 与后续 tool 消息的
-        // tool_call_id 严格配对（并行调用尤为关键：模型可能不返回 id）。
-        const resolvedIds = r.toolCalls.map((t, i) => t.id || "call_" + i);
-        if (r.toolCalls.length) {
-          assistantMsg.tool_calls = r.toolCalls.map((t, i) => ({
-            id: resolvedIds[i],
-            type: "function",
-            // 商汤 SenseNova 等网关严格校验：tool_call 的 name / arguments 不可为空，否则返回 400 invalid arguments。
-            // 无参工具（list_files/repo_map/undo…）模型常流式给出空 arguments，这里兜底为 "{}"，避免回传时被网关拒绝。
-            function: {
-              name: t.name || "unknown",
-              arguments: (t.arguments && String(t.arguments).trim()) ? t.arguments : "{}",
-            },
-          }));
-        }
-        messages.push(assistantMsg);
-        this.history.push(assistantMsg);
-
-        if (!r.toolCalls.length) break;
-
-        this.state(true, "第 " + (this.round + 1) + " 轮 · 调用 " + r.toolCalls.length + " 个工具");
-        for (let ci = 0; ci < r.toolCalls.length; ci++) {
-          const call = r.toolCalls[ci];
-          const callName = call.name || "unknown";
-
-          // P1-1：参数解析失败不再静默成 {}（会让工具收到空参、行为不可预期），
-          // 而是显式回传给模型，让它自我纠正。
-          let args = {};
-          let parseErr = null;
-          try { args = JSON.parse(call.arguments || "{}"); }
-          catch (e) { parseErr = e.message; }
-          if (parseErr) {
-            const errMsg = "[参数解析失败] 工具 " + callName + " 的 arguments 不是合法 JSON：" + parseErr
-              + "\n原始内容（前 500 字符）：" + (call.arguments || "").slice(0, 500)
-              + "\n请根据工具 schema 修正参数（注意引号转义、逗号、括号配对）后重试。";
-            this._traceEvent("tool.arg_err", { name: callName, err: parseErr });
-            const toolMsg = { role: "tool", tool_call_id: resolvedIds[ci], content: this._wrapToolData(callName, errMsg) };
-            messages.push(toolMsg); this.history.push(toolMsg);
-            continue;
+          const assistantMsg = { role: "assistant", content: r.content || "" };
+          // 预先解析每个 tool_call 的兜底 id，保证 assistant.tool_calls 与后续 tool 消息的
+          // tool_call_id 严格配对（并行调用尤为关键：模型可能不返回 id）。
+          const resolvedIds = r.toolCalls.map((t, i) => t.id || "call_" + i);
+          if (r.toolCalls.length) {
+            assistantMsg.tool_calls = r.toolCalls.map((t, i) => ({
+              id: resolvedIds[i],
+              type: "function",
+              // 商汤 SenseNova 等网关严格校验：tool_call 的 name / arguments 不可为空，否则返回 400 invalid arguments。
+              // 无参工具（list_files/repo_map/undo…）模型常流式给出空 arguments，这里兜底为 "{}"，避免回传时被网关拒绝。
+              function: {
+                name: t.name || "unknown",
+                arguments: (t.arguments && String(t.arguments).trim()) ? t.arguments : "{}",
+              },
+            }));
           }
+          messages.push(assistantMsg);
+          history.push(assistantMsg);
 
-          // P1-5：循环检测 —— 跨轮追踪相同 (tool,args) 指纹，连续重复到阈值即阻断死循环
-          const fp = callName + "::" + JSON.stringify(args);
-          if (fp === this._toolLoop.fp) this._toolLoop.count++;
-          else { this._toolLoop.fp = fp; this._toolLoop.count = 1; }
-          if (this._toolLoop.count >= 4) {
-            const warn = "[循环检测] 检测到连续 " + this._toolLoop.count + " 次完全相同的工具调用（" + callName
-              + " + 相同参数）。已停止重复执行以防止死循环。请先分析已有结果，换个思路或改用不同参数/工具推进；"
-              + "若确有必要重复，请调整参数使其不同。";
-            this._traceEvent("tool.loop", { name: callName, count: this._toolLoop.count });
-            const toolMsg = { role: "tool", tool_call_id: resolvedIds[ci], content: this._wrapToolData(callName, warn) };
-            messages.push(toolMsg); this.history.push(toolMsg);
-            continue;
+          if (!r.toolCalls.length) break;
+
+          this.state(true, "第 " + (round + 1) + " 轮 · 调用 " + r.toolCalls.length + " 个工具");
+          for (let ci = 0; ci < r.toolCalls.length; ci++) {
+            const call = r.toolCalls[ci];
+            const callName = call.name || "unknown";
+
+            // P1-1：参数解析失败不再静默成 {}（会让工具收到空参、行为不可预期），
+            // 而是显式回传给模型，让它自我纠正。
+            let args = {};
+            let parseErr = null;
+            try { args = JSON.parse(call.arguments || "{}"); }
+            catch (e) { parseErr = e.message; }
+            if (parseErr) {
+              const errMsg = "[参数解析失败] 工具 " + callName + " 的 arguments 不是合法 JSON：" + parseErr
+                + "\n原始内容（前 500 字符）：" + (call.arguments || "").slice(0, 500)
+                + "\n请根据工具 schema 修正参数（注意引号转义、逗号、括号配对）后重试。";
+              this._traceEvent("tool.arg_err", { name: callName, err: parseErr });
+              const toolMsg = { role: "tool", tool_call_id: resolvedIds[ci], content: this._wrapToolData(callName, errMsg) };
+              messages.push(toolMsg); history.push(toolMsg);
+              continue;
+            }
+
+            // P1-5：循环检测 —— 跨轮追踪相同 (tool,args) 指纹，连续重复到阈值即阻断死循环
+            const fp = callName + "::" + JSON.stringify(args);
+            if (fp === toolLoop.fp) toolLoop.count++;
+            else { toolLoop.fp = fp; toolLoop.count = 1; }
+            if (toolLoop.count >= 4) {
+              const warn = "[循环检测] 检测到连续 " + toolLoop.count + " 次完全相同的工具调用（" + callName
+                + " + 相同参数）。已停止重复执行以防止死循环。请先分析已有结果，换个思路或改用不同参数/工具推进；"
+                + "若确有必要重复，请调整参数使其不同。";
+              this._traceEvent("tool.loop", { name: callName, count: toolLoop.count });
+              const toolMsg = { role: "tool", tool_call_id: resolvedIds[ci], content: this._wrapToolData(callName, warn) };
+              messages.push(toolMsg); history.push(toolMsg);
+              continue;
+            }
+
+            const result = await this._runToolGuarded(call.name, args);
+            // P1-2 结构化截断（保留头部 + 尾部，报错/结论通常在尾部）+ P1-4 注入防护包裹
+            const toolMsg = {
+              role: "tool",
+              tool_call_id: resolvedIds[ci],
+              content: this._wrapToolData(callName, this._truncateToolResult(result)),
+            };
+            messages.push(toolMsg);
+            history.push(toolMsg);
+            this._traceEvent("tool.call", { name: callName, len: String(result).length });
+
+            // P1-5：连续失败干预 —— 工具连续报错时注入反思提示，打破"报错→重试"惯性
+            const head = String(result).slice(0, 300);
+            const looksErr = /(错误|error|exception|failed|失败|拒绝|denied|not found|不存在|无权限|permission)/i.test(head) && String(result).length < 600;
+            failStreak = looksErr ? failStreak + 1 : 0;
+            if (failStreak >= 3) {
+              const refl = "[自我纠错] 最近多个工具调用连续返回错误/异常。请先停下来分析根因，不要机械重试同一操作；"
+                + "若缺少必要信息或授权，请直接向用户说明当前障碍并请求更明确的输入。";
+              messages.push({ role: "system", content: refl });
+              this._traceEvent("tool.failstreak", { streak: failStreak });
+              failStreak = 0; // 注入一次后重置，避免每条消息都重复追加
+            }
           }
-
-          const result = await this.execTool(call.name, args);
-          // P1-2 结构化截断（保留头部 + 尾部，报错/结论通常在尾部）+ P1-4 注入防护包裹
-          const toolMsg = {
-            role: "tool",
-            tool_call_id: resolvedIds[ci],
-            content: this._wrapToolData(callName, this._truncateToolResult(result)),
-          };
-          messages.push(toolMsg);
-          this.history.push(toolMsg);
-          this._traceEvent("tool.call", { name: callName, len: String(result).length });
-
-          // P1-5：连续失败干预 —— 工具连续报错时注入反思提示，打破"报错→重试"惯性
-          const head = String(result).slice(0, 300);
-          const looksErr = /(错误|error|exception|failed|失败|拒绝|denied|not found|不存在|无权限|permission)/i.test(head) && String(result).length < 600;
-          this._failStreak = looksErr ? this._failStreak + 1 : 0;
-          if (this._failStreak >= 3) {
-            const refl = "[自我纠错] 最近多个工具调用连续返回错误/异常。请先停下来分析根因，不要机械重试同一操作；"
-              + "若缺少必要信息或授权，请直接向用户说明当前障碍并请求更明确的输入。";
-            messages.push({ role: "system", content: refl });
-            this._traceEvent("tool.failstreak", { streak: this._failStreak });
-            this._failStreak = 0; // 注入一次后重置，避免每条消息都重复追加
-          }
+          // 工具调用后检查是否需要压缩（长任务中间也会膨胀）
+          history = await this.compactHistory(history) || history;
+          this.emit({ type: "context.usage", used: this._estTokens(history), budget: (this.cfg.context || {}).budgetTokens || 1000000 });
+          this.state(true, "AI 思考中");
         }
-        // 工具调用后检查是否需要压缩（长任务中间也会膨胀）
-        await this.compactHistory();
-        this.emit({ type: "context.usage", used: this._estTokens(this.history), budget: (this.cfg.context || {}).budgetTokens || 1000000 });
-        this.state(true, "AI 思考中");
-      }
 
-      // P2 记忆去噪增强：从模型最终结论中沉淀可复用决策/选型（仅命中强信号时）
-      if (this.cfg.memory && this.cfg.memory.enabled && r && r.content) {
-        this._maybeRememberFromAssistant(r.content);
-      }
+        // P2 记忆去噪增强：从模型最终结论中沉淀可复用决策/选型（仅命中强信号时）
+        if (this.cfg.memory && this.cfg.memory.enabled && r && r.content) {
+          this._maybeRememberFromAssistant(r.content);
+        }
 
-      const changes = this.pushChanges(true);
-      if (changes.length) {
-        // 按会话记录本次改动，切换会话时各自显示
-        this.convChanges[this._currentConv] = changes;
-      }
-      this.round++;
+        const changes = this.pushChanges(true);
+        if (changes.length) {
+          // 按会话记录本次改动，切换会话时各自显示
+          this.convChanges[convId] = changes;
+        }
+        round++;
 
-      /* Phase 2：任务完成后 → 自我进化 + Skill 自动提取（异步，不阻塞主流程；
-         统一合并为一条「沉淀」摘要，避免终端连弹多条信息刷屏，提升一站式收口体验） */
-      if (this.cfg.memory && this.cfg.memory.enabled && this.history.length >= 2) {
-        const taskTopic = text.slice(0, 60);
-        const sediment = [];
-        if (changes.length) sediment.push("改动 " + changes.length + " 个文件");
-        Promise.all([
-          this.evolution.processTaskCompletion(chatStream, this.cfg.llm, this.history, taskTopic, "成功完成")
-            .then((r) => { if (r && r.saved) sediment.push("提取 " + r.saved + " 条经验教训"); })
-            .catch(() => {}),
-          this.skills.autoExtract(chatStream, this.cfg.llm, this.history, taskTopic)
-            .then((sk) => { if (sk) sediment.push("沉淀 Skill：" + sk.name); })
-            .catch(() => {}),
-          this.proposeSoul(chatStream, this.cfg.llm, this.history, taskTopic)
-            .then((sp) => { if (sp) sediment.push("灵魂微调提案×1（待确认）"); })
-            .catch(() => {}),
-        ]).then(() => {
-          // 记忆归纳：每完成一次任务检查是否需要压缩
-          this._consolidateMemory(this.history);
-          if (sediment.length) this.emit({ type: "term.line", text: "[沉淀] 本次任务" + sediment.join("；"), cls: "tl-info" });
-        });
+        /* Phase 2：任务完成后 → 自我进化 + Skill 自动提取（异步，不阻塞主流程；
+           统一合并为一条「沉淀」摘要，避免终端连弹多条信息刷屏，提升一站式收口体验） */
+        if (this.cfg.memory && this.cfg.memory.enabled && history.length >= 2) {
+          const taskTopic = text.slice(0, 60);
+          const sediment = [];
+          if (changes.length) sediment.push("改动 " + changes.length + " 个文件");
+          Promise.all([
+            this.evolution.processTaskCompletion(chatStream, this.cfg.llm, history, taskTopic, "成功完成")
+              .then((r) => { if (r && r.saved) sediment.push("提取 " + r.saved + " 条经验教训"); })
+              .catch(() => {}),
+            this.skills.autoExtract(chatStream, this.cfg.llm, history, taskTopic)
+              .then((sk) => { if (sk) sediment.push("沉淀 Skill：" + sk.name); })
+              .catch(() => {}),
+            this.proposeSoul(chatStream, this.cfg.llm, history, taskTopic)
+              .then((sp) => { if (sp) sediment.push("灵魂微调提案×1（待确认）"); })
+              .catch(() => {}),
+          ]).then(() => {
+            // 记忆归纳：每完成一次任务检查是否需要压缩
+            this._consolidateMemory(history);
+            if (sediment.length) this.emit({ type: "term.line", text: "[沉淀] 本次任务" + sediment.join("；"), cls: "tl-info" });
+          });
+        }
+    } catch (err) {
+      const msg = (err && err.message ? err.message : String(err)).toLowerCase();
+      let kind = "unknown";
+      let hint = "请检查右上角「模型设置」中的 Base URL / API Key / 模型名，或切换到内置演示引擎体验。";
+      if (err && err.status === 429 || msg.includes("429") || msg.includes("rate") || msg.includes("quota") || msg.includes("too many") || msg.includes("limit reached")) {
+        kind = "quota";
+        hint = "API 配额已耗尽或触发限流。请稍后重试，或在「模型设置」中更换 Key / 降低并发请求。";
+      } else if (msg.includes("econn") || msg.includes("timeout") || msg.includes("network") || msg.includes("fetch failed") || msg.includes("enotfound") || msg.includes("socket") || msg.includes("aborted")) {
+        kind = "network";
+        hint = "网络异常，无法连接模型服务。请检查网络连接与 Base URL 是否正确可用。";
+      } else if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("invalid api key") || msg.includes("incorrect api key") || msg.includes("authentication") || msg.includes("api key")) {
+        kind = "key";
+        hint = "API Key 无效或未授权。请检查「模型设置」中填写的 Key 是否正确。";
+      } else if (msg.includes("404") || (msg.includes("model") && (msg.includes("not found") || msg.includes("does not exist") || msg.includes("not exist")))) {
+        kind = "model";
+        hint = "模型不存在或无访问权限。请确认「模型设置」中填写的模型名是否正确。";
       }
-  } catch (err) {
-    const msg = (err && err.message ? err.message : String(err)).toLowerCase();
-    let kind = "unknown";
-    let hint = "请检查右上角「模型设置」中的 Base URL / API Key / 模型名，或切换到内置演示引擎体验。";
-    if (err && err.status === 429 || msg.includes("429") || msg.includes("rate") || msg.includes("quota") || msg.includes("too many") || msg.includes("limit reached")) {
-      kind = "quota";
-      hint = "API 配额已耗尽或触发限流。请稍后重试，或在「模型设置」中更换 Key / 降低并发请求。";
-    } else if (msg.includes("econn") || msg.includes("timeout") || msg.includes("network") || msg.includes("fetch failed") || msg.includes("enotfound") || msg.includes("socket") || msg.includes("aborted")) {
-      kind = "network";
-      hint = "网络异常，无法连接模型服务。请检查网络连接与 Base URL 是否正确可用。";
-    } else if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("invalid api key") || msg.includes("incorrect api key") || msg.includes("authentication") || msg.includes("api key")) {
-      kind = "key";
-      hint = "API Key 无效或未授权。请检查「模型设置」中填写的 Key 是否正确。";
-    } else if (msg.includes("404") || (msg.includes("model") && (msg.includes("not found") || msg.includes("does not exist") || msg.includes("not exist")))) {
-      kind = "model";
-      hint = "模型不存在或无访问权限。请确认「模型设置」中填写的模型名是否正确。";
-    }
-    this.emit({ type: "term.line", text: "[LLM 引擎异常] " + (err && err.message || err), cls: "tl-err" });
-    this.emit({ type: "agent.error", kind, message: err && err.message || String(err), hint });
-    await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
-  } finally {
-      this.state(false);
-      this.saveConversations();   // C6：每轮对话结束落盘，重启后可恢复 AI 上下文
-      this.emit({ type: "agent.done", round: this.round });
-    }
+      this.emit({ type: "term.line", text: "[LLM 引擎异常] " + (err && err.message || err), cls: "tl-err" });
+      this.emit({ type: "agent.error", kind, message: err && err.message || String(err), hint });
+      await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
+    } finally {
+        // 保存局部 history 到 conversations Map
+        this.conversations.set(convId, { history, round, ts: Date.now(), changes: this.convChanges[convId] || [] });
+        // 如果是当前活跃会话，同步 this.history/this.round（供 ctx.query 等读取）
+        if (this._currentConv === convId) { this.history = history; this.round = round; }
+        this._persistConversations();
+        this.state(false);
+        this.emit({ type: "agent.done", round, convId });
+      }
+    });
+
+    this.runningConvs.delete(convId);
+    delete this._convAborts[convId];
   }
 }
 

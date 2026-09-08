@@ -54,7 +54,10 @@ class ProcessLayer {
     if (!name || !command) return { ok: false, error: "name 与 command 必填" };
     if (!/^[a-zA-Z0-9_-]{1,40}$/.test(name)) return { ok: false, error: "name 仅允许字母/数字/下划线/连字符（≤40 字符）" };
     if (this.procs.has(name)) { try { this.stop(name); } catch (e) {} }
-    const child = spawn(command, { cwd: this.dir, shell: true, env: _sanitizeEnv(), windowsHide: true });
+    // Windows：显式 cmd.exe /c 替代 shell:true，规避 cmd 窗口闪现
+    const child = process.platform === "win32"
+      ? spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], { cwd: this.dir, env: _sanitizeEnv(), windowsHide: true })
+      : spawn(command, { cwd: this.dir, shell: true, env: _sanitizeEnv(), windowsHide: true });
     const mp = new ManagedProcess(name, command, child.pid, child, this.emit);
     this.procs.set(name, mp);
     if (this.auditDir) this._audit(command);

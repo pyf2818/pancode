@@ -86,93 +86,314 @@ function renderCodex() {
 function renderCodexTree() {
   const root = $("evoCodexTree");
   if (!root || !evoData) return;
-  root.innerHTML = buildCodexSVG(evoData.tree, evoData.progression);
-  root.querySelectorAll('[data-node]').forEach((n) => {
-    const k = n.dataset.kind;
-    if (k === "soul") n.onclick = () => openSoulEditor();
-    else n.onclick = (e) => { e.stopPropagation(); openNodeDetail(k, n.dataset.id); };
-  });
-  root.querySelectorAll('[data-cat]').forEach((n) => {
-    n.onclick = () => openCategoryDetail(n.dataset.cat);
-  });
-  root.querySelectorAll('[data-unlock-id]').forEach((n) => { n.onclick = () => openUnlockDetail(n.dataset.unlockId); });
+  root.innerHTML = buildCodexBubble(evoData.tree, evoData.progression);
+  initBubblePhysics(root);
 }
 
-function buildCodexSVG(t, prog) {
+function buildCodexBubble(t, prog) {
   const C = {
-    soul:   { f: "#9b3fb0", s: "#6a2a86" },
-    memory: { f: "#0a6ebd", s: "#084c7a" },
-    skills: { f: "#1a8c6e", s: "#0f5a45" },
-    exp:    { f: "#b58a00", s: "#8a6a00" },
-    lesson: { f: "#d94343", s: "#a32d2d" },
+    soul:   { f: "#9b3fb0", s: "#6a2a86", glow: "#b18cff" },
+    memory: { f: "#0a6ebd", s: "#084c7a", glow: "#3ee0ff" },
+    skills: { f: "#1a8c6e", s: "#0f5a45", glow: "#2dd4a7" },
+    exp:    { f: "#b58a00", s: "#8a6a00", glow: "#fbbf24" },
+    lesson: { f: "#d94343", s: "#a32d2d", glow: "#fb7185" },
   };
-  const W = 360, H = 470;
-  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" preserveAspectRatio="xMidYMid meet" font-family="-apple-system,Segoe UI,sans-serif" role="img">';
+  const W = 440, H = 600;
 
-  const root_ = { x: 180, y: 34 };
+  const nodes = [];
+  const edges = [];
+
+  // 根节点（固定）
+  nodes.push({ id: "soul", x: W / 2, y: 55, r: 26, c: C.soul, label: t.soul.name || "Agent", kind: "soul", fixed: true, lv: 0 });
+
+  // 分类节点
   const cats = [
-    { key: "memory", x: 64, y: 150, label: "记忆", items: t.memory.memory.items, c: C.memory },
-    { key: "skills", x: 296, y: 150, label: "技能", items: t.skills.reduce((a, g) => a.concat(g.items), []), c: C.skills },
-    { key: "exp", x: 64, y: 300, label: "经验", items: t.memory.experience.items, c: C.exp },
-    { key: "lesson", x: 296, y: 300, label: "教训", items: t.memory.lesson.items, c: C.lesson },
+    { key: "memory", x: 90,  y: 200, label: "记忆", items: t.memory.memory.items, c: C.memory },
+    { key: "skills", x: 350, y: 200, label: "技能", items: t.skills.reduce((a, g) => a.concat(g.items), []), c: C.skills },
+    { key: "exp",    x: 90,  y: 410, label: "经验", items: t.memory.experience.items, c: C.exp },
+    { key: "lesson", x: 350, y: 410, label: "教训", items: t.memory.lesson.items, c: C.lesson },
   ];
-  cats.forEach((cat) => {
-    s += '<path class="evo-branch" d="M' + root_.x + ' ' + root_.y + ' C' + root_.x + ' ' + (root_.y + 40) + ' ' + cat.x + ' ' + (cat.y - 50) + ' ' + cat.x + ' ' + cat.y + '" stroke="' + cat.c.s + '" stroke-width="3" fill="none" opacity="0.7"/>';
-  });
-
-  // 根：灵魂（内联人形 SVG，替代 emoji）
-  s += '<g class="evo-node-root" data-node data-kind="soul" data-id="soul" style="cursor:pointer">' +
-    '<circle cx="' + root_.x + '" cy="' + root_.y + '" r="22" fill="' + C.soul.f + '" stroke="' + C.soul.s + '" stroke-width="1.5"/>' +
-    '<circle cx="' + root_.x + '" cy="' + (root_.y - 5) + '" r="4.6" fill="#fff"/>' +
-    '<path d="M' + (root_.x - 8.5) + ' ' + (root_.y + 7) + 'c0-4.8 3.8-8 8.5-8s8.5 3.2 8.5 8" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/></g>';
-  s += '<text x="' + root_.x + '" y="' + (root_.y + 42) + '" font-size="12" font-weight="600" style="fill:var(--text)" text-anchor="middle">' + esc(t.soul.name || "Agent") + '</text>';
 
   cats.forEach((cat) => {
-    const lv = Math.min(9, 1 + Math.floor(cat.items.length / 3));
-    const r = 14 + Math.min(lv, 5);
-    const top = cat.items.slice(0, 3);
-    s += '<g class="evo-cat-group" data-cat="' + cat.key + '" style="cursor:pointer">';
-    s += '<circle class="evo-node-cat" cx="' + cat.x + '" cy="' + cat.y + '" r="' + r + '" fill="' + cat.c.f + '" stroke="' + cat.c.s + '" stroke-width="1.5"/>';
-    s += '<text x="' + cat.x + '" y="' + (cat.y + 4) + '" font-size="11" font-weight="600" fill="#fff" text-anchor="middle">L' + lv + '</text>';
-    s += '<text x="' + cat.x + '" y="' + (cat.y + r + 16) + '" font-size="11.5" font-weight="600" style="fill:var(--text)" text-anchor="middle">' + cat.label + ' ' + cat.items.length + '</text>';
+    const seen = new Set();
+    const unique = cat.items.filter((it) => { const k = it.id || it.topic || it.name || it.type; if (seen.has(k)) return false; seen.add(k); return true; });
+    const lv = Math.min(9, 1 + Math.floor(unique.length / 3));
+    const r = 18 + Math.min(lv, 5);
+    const catId = "cat-" + cat.key;
+    nodes.push({ id: catId, x: cat.x, y: cat.y, r: r, c: cat.c, label: cat.label + " " + unique.length, kind: "cat", catKey: cat.key, lv: lv, fixed: false, parent: "soul" });
+    edges.push({ from: "soul", to: catId });
 
+    const top = unique.slice(0, 5);
     top.forEach((it, i) => {
-      const ox = cat.x + (i - 1) * 34;
-      const oy = cat.y + r + 34 + (i % 2) * 16;
-      const ir = 8;
-      const id = it.id;
-      const kind = cat.key === "skills" ? "skill" : "mem";
+      const angle = (i / top.length) * Math.PI * 2 - Math.PI / 2;
+      const dist = r + 35;
+      const lx = cat.x + Math.cos(angle) * dist;
+      const ly = cat.y + Math.sin(angle) * dist;
+      const leafId = "leaf-" + cat.key + "-" + i;
       const nm = (cat.key === "skills" ? it.name : (it.topic || it.type || ""));
-      s += '<g class="evo-node-leaf" data-node data-kind="' + kind + '" data-id="' + esc(id) + '" style="cursor:pointer">';
-      s += '<title>' + esc((nm || "").slice(0, 30)) + '</title>';
-      s += '<circle cx="' + ox + '" cy="' + oy + '" r="' + ir + '" fill="' + cat.c.f + '" opacity="0.85" stroke="' + cat.c.s + '" stroke-width="1"/>';
-      s += '</g>';
+      const label = (nm || "").slice(0, 10);
+      const kind = cat.key === "skills" ? "skill" : "mem";
+      nodes.push({ id: leafId, x: lx, y: ly, r: 7, c: cat.c, label: label, kind: kind, leafId: it.id, fixed: false, parent: catId, isLeaf: true });
+      edges.push({ from: catId, to: leafId });
     });
-    s += '</g>';
   });
 
-  // 进阶称号（虚线锁定态，可点击查看说明）
-  s += '<text x="64" y="412" font-size="10.5" font-weight="600" style="fill:var(--text-dim)" text-anchor="start">进阶称号 · 达成条件后解锁</text>';
+  // 进阶称号节点
   const un = (prog && prog.unlockNodes) || [];
   un.forEach((u, i) => {
-    const ux = 64 + i * 116;
-    const uy = 432;
-    const cls = u.met ? "evo-unlock-on" : "";
-    s += '<g class="' + cls + '" data-unlock-id="' + esc(u.id) + '" style="cursor:pointer">';
-    s += '<title>' + esc(u.label + "：" + (u.met ? "已解锁" : u.req)) + '</title>';
-    s += '<circle cx="' + ux + '" cy="' + uy + '" r="16" fill="' + (u.met ? "#1a8c6e" : "#eef0f2") + '" stroke="' + (u.met ? "#0f5a45" : "#b0b6bd") + '" stroke-width="1.5" stroke-dasharray="4 3"/>';
-    if (u.met) {
-      s += '<path d="M' + (ux - 5) + ' ' + uy + 'l3.4 3.4L' + (ux + 5.5) + ' ' + (uy - 4) + '" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
-    } else {
-      s += '<rect x="' + (ux - 4.5) + '" y="' + (uy - 1) + '" width="9" height="7" rx="1.4" fill="none" stroke="#8a9098" stroke-width="1.6"/>';
-      s += '<path d="M' + (ux - 2.6) + ' ' + (uy - 1) + 'v-2.2a2.6 2.6 0 0 1 5.2 0v2.2" fill="none" stroke="#8a9098" stroke-width="1.6"/>';
-    }
-    s += '</g>';
-    s += '<text x="' + ux + '" y="' + (uy + 30) + '" font-size="9.5" style="fill:var(--text-dim)" text-anchor="middle">' + esc(u.label) + '</text>';
+    const ux = W / 2 - (un.length - 1) * 65 / 2 + i * 65;
+    const uy = 560;
+    nodes.push({ id: "unlock-" + u.id, x: ux, y: uy, r: 16, c: u.met ? { f: "#1a8c6e", s: "#0f5a45", glow: "#2dd4a7" } : { f: "#6a7078", s: "#4a5058", glow: "#8a9098" }, label: u.label, kind: "unlock", unlockId: u.id, met: u.met, fixed: false, isUnlock: true });
   });
 
+  // 构建 HTML
+  let s = '<div class="evo-bubble-canvas" style="width:100%;height:' + H + 'px;position:relative;overflow:hidden">';
+  // 背景网格
+  s += '<svg class="evo-bubble-bg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">';
+  s += '<defs><pattern id="hexgrid-b" width="30" height="26" patternUnits="userSpaceOnUse"><path d="M15 0L30 7.5L30 18.5L15 26L0 18.5L0 7.5Z" fill="none" stroke="var(--border)" stroke-width="0.5" opacity="0.25"/></pattern>';
+  s += '<radialGradient id="bg-glow"><stop offset="0%" stop-color="var(--accent-glow)" stop-opacity="0.08"/><stop offset="100%" stop-color="transparent" stop-opacity="0"/></radialGradient></defs>';
+  s += '<rect width="' + W + '" height="' + H + '" fill="url(#hexgrid-b)"/>';
+  s += '<rect width="' + W + '" height="' + H + '" fill="url(#bg-glow)"/>';
   s += '</svg>';
+
+  // 连线 SVG 层
+  s += '<svg class="evo-bubble-edges" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">';
+  edges.forEach((e) => {
+    s += '<path id="edge-' + e.from + '-' + e.to + '" class="evo-bubble-edge" stroke="' + (nodes.find(n => n.id === e.to) || {}).c?.s + '" stroke-width="1.5" fill="none" opacity="0.4"/>';
+  });
+  s += '</svg>';
+
+  // 节点数据（JSON 嵌入）
+  s += '<script type="application/json" id="evo-bubble-data">' + esc(JSON.stringify({ nodes: nodes.map(n => ({ id: n.id, x: n.x, y: n.y, r: n.r, fixed: n.fixed, parent: n.parent })), edges: edges, W: W, H: H })) + '</script>';
+
+  // 节点球 div
+  nodes.forEach((n) => {
+    const cls = ["evo-bubble"];
+    if (n.fixed) cls.push("evo-bubble-root");
+    if (n.isLeaf) cls.push("evo-bubble-leaf");
+    if (n.isUnlock) cls.push("evo-bubble-unlock");
+    if (n.isUnlock && n.met) cls.push("met");
+    const bg = 'background:radial-gradient(circle at 35% 30%, ' + n.c.glow + ', ' + n.c.f + ' 60%, ' + n.c.s + ')';
+    const shadow = 'box-shadow:0 0 ' + (n.r * 0.8) + 'px ' + n.c.glow + '88, inset 0 1px 0 #fff3';
+    s += '<div class="' + cls.join(" ") + '" data-id="' + esc(n.id) + '" data-kind="' + esc(n.kind) + '" data-fixed="' + (n.fixed ? "1" : "0") + '"';
+    if (n.kind === "cat") s += ' data-cat="' + esc(n.catKey) + '"';
+    if (n.kind === "unlock") s += ' data-unlock-id="' + esc(n.unlockId) + '"';
+    if (n.kind === "skill" || n.kind === "mem") s += ' data-leaf-id="' + esc(n.leafId || "") + '"';
+    s += ' style="left:' + (n.x - n.r) + 'px;top:' + (n.y - n.r) + 'px;width:' + (n.r * 2) + 'px;height:' + (n.r * 2) + 'px;' + bg + ';' + shadow + '" title="' + esc(n.label) + '">';
+    if (n.kind === "soul") {
+      s += '<span class="evo-bubble-icon">' + ico("soul") + '</span>';
+    } else if (n.kind === "cat") {
+      s += '<span class="evo-bubble-lv">L' + n.lv + '</span>';
+    } else if (n.isUnlock) {
+      s += '<span class="evo-bubble-icon">' + ico(n.met ? "check" : "lock") + '</span>';
+    }
+    s += '<span class="evo-bubble-label">' + esc(n.label) + '</span>';
+    s += '</div>';
+  });
+
+  s += '<div class="evo-bubble-hint">拖动节点可自由排列 · 根节点固定</div>';
+  s += '</div>';
   return s;
+}
+
+function initBubblePhysics(container) {
+  const dataEl = container.querySelector("#evo-bubble-data");
+  if (!dataEl) return;
+  let data;
+  try { data = JSON.parse(dataEl.textContent); } catch (e) { return; }
+  const W = data.W, H = data.H;
+  const canvas = container.querySelector(".evo-bubble-canvas");
+  const edgeSvg = container.querySelector(".evo-bubble-edges");
+  if (!canvas || !edgeSvg) return;
+
+  // 获取实际渲染尺寸比例
+  const rect = canvas.getBoundingClientRect();
+  const scale = rect.width / W;
+
+  // 节点状态
+  const nodes = {};
+  data.nodes.forEach((n) => { nodes[n.id] = { x: n.x, y: n.y, vx: 0, vy: 0, r: n.r, fixed: n.fixed, parent: n.parent }; });
+
+  const nodeEls = {};
+  container.querySelectorAll(".evo-bubble").forEach((el) => { nodeEls[el.dataset.id] = el; });
+
+  // 更新连线
+  function updateEdges() {
+    data.edges.forEach((e) => {
+      const a = nodes[e.from], b = nodes[e.to];
+      if (!a || !b) return;
+      const path = edgeSvg.querySelector("#edge-" + e.from + "-" + e.to);
+      if (!path) return;
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const dy = b.y - a.y;
+      const cp1x = a.x, cp1y = a.y + dy * 0.3;
+      const cp2x = b.x, cp2y = b.y - dy * 0.3;
+      path.setAttribute("d", "M" + a.x + " " + a.y + " C" + cp1x + " " + cp1y + " " + cp2x + " " + cp2y + " " + b.x + " " + b.y);
+    });
+  }
+
+  // 更新节点位置
+  function updateNodes() {
+    for (const id in nodes) {
+      const n = nodes[id], el = nodeEls[id];
+      if (!el) continue;
+      el.style.left = (n.x - n.r) + "px";
+      el.style.top = (n.y - n.r) + "px";
+    }
+  }
+
+  // 物理模拟
+  const REPULSION = 6000;
+  const SPRING = 0.015;
+  const DAMPING = 0.82;
+  const MAX_V = 8;
+  let animId = null;
+  let dragging = null;
+
+  function step() {
+    const ids = Object.keys(nodes);
+    for (const id of ids) {
+      const n = nodes[id];
+      if (n.fixed || (dragging && dragging.id === id)) { n.vx = 0; n.vy = 0; continue; }
+      let fx = 0, fy = 0;
+      // 斥力
+      for (const oid of ids) {
+        if (oid === id) continue;
+        const o = nodes[oid];
+        let dx = n.x - o.x, dy = n.y - o.y;
+        let dist2 = dx * dx + dy * dy + 1;
+        let dist = Math.sqrt(dist2);
+        if (dist < n.r + o.r + 4) { dist = n.r + o.r + 4; dist2 = dist * dist; }
+        const f = REPULSION / dist2;
+        fx += (dx / dist) * f;
+        fy += (dy / dist) * f;
+      }
+      // 弹簧力（连向 parent）
+      if (n.parent && nodes[n.parent]) {
+        const p = nodes[n.parent];
+        const dx = p.x - n.x, dy = p.y - n.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+        const rest = 80;
+        const f = SPRING * (dist - rest);
+        fx += (dx / dist) * f * dist;
+        fy += (dy / dist) * f * dist;
+      }
+      // 边界
+      const margin = n.r + 4;
+      if (n.x < margin) fx += (margin - n.x) * 0.3;
+      if (n.x > W - margin) fx -= (n.x - (W - margin)) * 0.3;
+      if (n.y < margin) fy += (margin - n.y) * 0.3;
+      if (n.y > H - margin) fy -= (n.y - (H - margin)) * 0.3;
+
+      n.vx = (n.vx + fx * 0.001) * DAMPING;
+      n.vy = (n.vy + fy * 0.001) * DAMPING;
+      if (n.vx > MAX_V) n.vx = MAX_V; if (n.vx < -MAX_V) n.vx = -MAX_V;
+      if (n.vy > MAX_V) n.vy = MAX_V; if (n.vy < -MAX_V) n.vy = -MAX_V;
+      n.x += n.vx;
+      n.y += n.vy;
+    }
+    updateEdges();
+    updateNodes();
+    animId = requestAnimationFrame(step);
+  }
+
+  // 拖拽（用移动距离区分拖拽和点击，不阻止事件传播）
+  const DRAG_THRESHOLD = 4;
+  container.querySelectorAll(".evo-bubble").forEach((el) => {
+    if (el.dataset.fixed === "1") return;
+    el.addEventListener("mousedown", (e) => {
+      const id = el.dataset.id;
+      const n = nodes[id];
+      if (!n) return;
+      const startX = e.clientX, startY = e.clientY;
+      const origX = n.x, origY = n.y;
+      let moved = false;
+      function onMove(ev) {
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        if (!moved && (dx * dx + dy * dy) > DRAG_THRESHOLD * DRAG_THRESHOLD) {
+          moved = true;
+          dragging = { id: id };
+          el.classList.add("dragging");
+        }
+        if (moved) {
+          e.preventDefault();
+          n.x = origX + dx / scale;
+          n.y = origY + dy / scale;
+          n.x = Math.max(n.r, Math.min(W - n.r, n.x));
+          n.y = Math.max(n.r, Math.min(H - n.r, n.y));
+          n.vx = 0; n.vy = 0;
+          updateEdges();
+          updateNodes();
+        }
+      }
+      function onUp() {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        el.classList.remove("dragging");
+        dragging = null;
+        if (moved) { el._justDragged = true; setTimeout(() => { el._justDragged = false; }, 50); }
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+    // 触摸支持
+    el.addEventListener("touchstart", (e) => {
+      if (el.dataset.fixed === "1") return;
+      const touch = e.touches[0];
+      const id = el.dataset.id;
+      const n = nodes[id];
+      if (!n) return;
+      const startX = touch.clientX, startY = touch.clientY;
+      const origX = n.x, origY = n.y;
+      let moved = false;
+      function onMove(ev) {
+        const t = ev.touches[0];
+        const dx = t.clientX - startX, dy = t.clientY - startY;
+        if (!moved && (dx * dx + dy * dy) > DRAG_THRESHOLD * DRAG_THRESHOLD) {
+          moved = true;
+          dragging = { id: id };
+          el.classList.add("dragging");
+        }
+        if (moved) {
+          ev.preventDefault();
+          n.x = origX + dx / scale;
+          n.y = origY + dy / scale;
+          n.x = Math.max(n.r, Math.min(W - n.r, n.x));
+          n.y = Math.max(n.r, Math.min(H - n.r, n.y));
+          n.vx = 0; n.vy = 0;
+          updateEdges();
+          updateNodes();
+        }
+      }
+      function onEnd() {
+        document.removeEventListener("touchmove", onMove);
+        document.removeEventListener("touchend", onEnd);
+        el.classList.remove("dragging");
+        dragging = null;
+      }
+      document.addEventListener("touchmove", onMove, { passive: false });
+      document.addEventListener("touchend", onEnd);
+    }, { passive: false });
+  });
+
+  // 点击事件（分类/叶子/解锁/灵魂）
+  container.querySelectorAll(".evo-bubble").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (el._justDragged || el.classList.contains("dragging")) return;
+      const kind = el.dataset.kind;
+      if (kind === "soul") { openSoulEditor(); return; }
+      if (kind === "cat") { openCategoryDetail(el.dataset.cat); return; }
+      if (kind === "unlock") { openUnlockDetail(el.dataset.unlockId); return; }
+      if (kind === "skill" || kind === "mem") { openNodeDetail(kind, el.dataset.leafId); return; }
+    });
+  });
+
+  updateEdges();
+  animId = requestAnimationFrame(step);
+
+  // 清理旧动画（切换 tab 时）
+  if (container._evoAnimId) cancelAnimationFrame(container._evoAnimId);
+  container._evoAnimId = animId;
 }
 
 function renderCodexSide() {
@@ -300,10 +521,44 @@ function openNodeDetail(kind, id) {
   }
   if (!entry) { modal.style.display = "none"; return; }
   title.textContent = "记忆条目";
-  body.innerHTML = '<div class="evo-detail"><div class="evo-d-k">类型</div><div>' + esc(entry.type) + '</div><div class="evo-d-k">主题</div><div>' + esc(entry.topic || "") + '</div><div class="evo-d-k">内容</div><div>' + esc(entry.content) + '</div></div>';
+  const renderMemDetail = (e) => {
+    body.innerHTML = '<div class="evo-detail">' +
+      '<div class="evo-d-k">类型</div><div>' + esc(e.type) + '</div>' +
+      '<div class="evo-d-k">主题</div><div>' + esc(e.topic || "") + '</div>' +
+      '<div class="evo-d-k">内容</div><div>' + esc(e.content) + '</div>' +
+      '<div class="evo-d-k">来源</div><div>' + esc(e.source || "手动") + ' · 访问 ' + (e.accessCount || 0) + ' 次</div>' +
+      '</div>';
+  };
+  renderMemDetail(entry);
+  // 编辑按钮
+  const edit = document.createElement("button"); edit.className = "set-btn"; edit.innerHTML = ico("edit") + " 编辑";
+  edit.onclick = () => {
+    title.textContent = "编辑记忆条目";
+    body.innerHTML =
+      '<div style="margin-bottom:8px"><label class="set-label">主题</label><input id="memTopic" class="set-input" value="' + esc(entry.topic || "") + '"></div>' +
+      '<div style="margin-bottom:8px"><label class="set-label">内容</label><textarea id="memContent" class="set-input" rows="6" style="width:100%;resize:vertical">' + esc(entry.content) + '</textarea></div>';
+    foot.innerHTML = "";
+    const save = document.createElement("button"); save.className = "set-btn"; save.style.background = "var(--ok)"; save.style.color = "#000"; save.textContent = "保存";
+    save.onclick = async () => {
+      try {
+        const r = await fetch("/api/memory/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic: $("memTopic").value.trim(), content: $("memContent").value.trim() }) });
+        const j = await r.json();
+        if (j.ok) { toast("已保存"); modal.style.display = "none"; loadEvolutionTree(); }
+        else toast("保存失败：" + (j.error || ""));
+      } catch (e2) { toast("保存失败：" + e2.message); }
+    };
+    const cancel = document.createElement("button"); cancel.className = "set-btn"; cancel.textContent = "取消";
+    cancel.onclick = () => { title.textContent = "记忆条目"; renderMemDetail(entry); foot.innerHTML = ""; foot.appendChild(edit); foot.appendChild(del); replaceIcons(); };
+    foot.appendChild(save); foot.appendChild(cancel);
+  };
+  // 删除按钮（带确认）
   const del = document.createElement("button"); del.className = "set-btn danger"; del.innerHTML = ico("trash") + " 删除";
-  del.onclick = async () => { await fetch("/api/memory/" + id, { method: "DELETE" }); modal.style.display = "none"; loadEvolutionTree(); };
-  foot.appendChild(del);
+  del.onclick = async () => {
+    if (!confirm("确认删除这条记忆？删除后不可恢复。")) return;
+    await fetch("/api/memory/" + id, { method: "DELETE" });
+    modal.style.display = "none"; loadEvolutionTree();
+  };
+  foot.appendChild(edit); foot.appendChild(del);
   modal.style.display = "flex"; replaceIcons();
 }
 
@@ -388,8 +643,10 @@ function openSoulEditor() {
         boundaries: get("soulBoundaries"),
         principles: get("soulPrinciples"),
       };
-
-      modal.style.display = "none"; loadEvolutionTree(); toast("灵魂已更新");
+      try {
+        await fetch("/api/soul", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+        modal.style.display = "none"; loadEvolutionTree(); toast("灵魂已更新");
+      } catch (e) { toast("保存失败：" + e.message); }
     };
   }
   const body = modal.querySelector("#soulEditorBody");

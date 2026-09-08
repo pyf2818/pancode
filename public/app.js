@@ -40,6 +40,7 @@ const state = {
   activeFile: null,
   dirty: new Set(),     // 有未保存编辑的文件
   running: false,
+  convRunning: {},       // 多会话并行：convId -> boolean（该会话是否正在运行）
   round: 0,
   monacoReady: false,
   booted: false,
@@ -74,6 +75,76 @@ function diffStat(a, b) {
 const chatStream = document.createElement("div");
 chatStream.id = "chatStream";
 
+/* ---------------- 多会话并行：每会话独立 DOM pane ----------------
+   convPanes[convId]  = 该会话的 .conv-pane 容器；活跃 pane 挂在 chatStream 下，
+   后台会话 pane 处于 detached 状态但保留 DOM 引用，流式输出照常写入。
+   切换会话 = mountPane（move DOM），不再 innerHTML 快照恢复。 */
+const convPanes = {};       // convId -> pane 元素
+const convBlocks = {};      // convId -> blocks 映射（think/msg/tool DOM 引用）
+const convMeta = {};        // convId -> { answerBlock, thinkCount, lastThink }
+const convPersistTimers = {}; // convId -> 后台会话节流持久化定时器
+
+function ensureConvCtx(id) {
+  const cvid = id || convId || "default";
+  if (!convPanes[cvid]) {
+    const pane = document.createElement("div");
+    pane.className = "conv-pane";
+    pane.dataset.convId = cvid;
+    convPanes[cvid] = pane;
+  }
+  if (!convBlocks[cvid]) convBlocks[cvid] = {};
+  if (!convMeta[cvid]) convMeta[cvid] = { answerBlock: null, thinkCount: 0, lastThink: null };
+  return { pane: convPanes[cvid], blocks: convBlocks[cvid], meta: convMeta[cvid] };
+}
+
+let _boundConvId = null;    // withConv 期间的消息目标会话
+function chatPane() { return (convPanes[_boundConvId || convId]) || chatStream; }
+
+/* 在指定会话上下文中执行 fn：动态绑定 blocks/answerBlock/thinkCount/lastThink，
+   聊天 DOM 写入该会话的 pane；结束后回写 meta 并恢复原上下文 */
+function withConv(cvid, fn) {
+  const id = cvid || convId;
+  const ctx = ensureConvCtx(id);
+  const prevBound = _boundConvId;
+  const prevBlocks = blocks, prevAB = answerBlock, prevTC = thinkCount, prevLT = lastThink;
+  _boundConvId = id;
+  blocks = ctx.blocks; answerBlock = ctx.meta.answerBlock; thinkCount = ctx.meta.thinkCount; lastThink = ctx.meta.lastThink;
+  try {
+    fn(ctx.pane);
+  } finally {
+    ctx.meta.answerBlock = answerBlock; ctx.meta.thinkCount = thinkCount; ctx.meta.lastThink = lastThink;
+    _boundConvId = prevBound;
+    blocks = prevBlocks; answerBlock = prevAB; thinkCount = prevTC; lastThink = prevLT;
+    if (id !== convId) scheduleConvPersist(id);
+  }
+}
+
+/* 把指定会话的 pane 挂载进 chatStream（卸下其他 pane）；返回 pane */
+function mountPane(id) {
+  const ctx = ensureConvCtx(id);
+  for (const child of Array.from(chatStream.children)) {
+    if (child !== ctx.pane && child.classList && child.classList.contains("conv-pane")) chatStream.removeChild(child);
+  }
+  if (ctx.pane.parentNode !== chatStream) chatStream.appendChild(ctx.pane);
+  return ctx.pane;
+}
+
+/* 从 localStorage 快照重建 pane（页面刷新后首次打开该会话时调用） */
+function hydratePane(id, html) {
+  const ctx = ensureConvCtx(id);
+  if (!ctx.pane.childNodes.length && html) ctx.pane.innerHTML = html;
+  return ctx.pane;
+}
+
+/* 后台会话节流持久化：写消息后 800ms 内保存一次 pane 内容 */
+function scheduleConvPersist(id) {
+  clearTimeout(convPersistTimers[id]);
+  convPersistTimers[id] = setTimeout(() => {
+    delete convPersistTimers[id];
+    persistConv(id);
+  }, 800);
+}
+
 const msgNavRail = document.createElement("div");
 msgNavRail.id = "msgNavRail";
 
@@ -99,11 +170,7 @@ inputBox.innerHTML =
     "</select>" +
     '<span class="ci-hint">Enter 发送</span>' +
   '<div id="ctxBarWrap" title="上下文用量" style="display:none">' +
-    '<svg id="ctxRing" viewBox="0 0 36 36">' +
-      '<circle class="ctx-ring-bg" cx="18" cy="18" r="15" fill="none" stroke-width="3.5"/>' +
-      '<circle class="ctx-ring-fg" cx="18" cy="18" r="15" fill="none" stroke-width="3.5" stroke-linecap="round" transform="rotate(-90 18 18)"/>' +
-    '</svg>' +
-    '<span id="ctxRingTxt">0%</span>' +
+    '<span id="ctxPct">0%</span>' +
   '</div>' +
   '<button id="btnSend">' + ico("send") + "发送</button></div>";
 
@@ -224,13 +291,8 @@ function showCtxMenu(e, path, isDir) {
 function aiFileAction(path, text) {
   openFile(path);
   switchMode("agents");
-  if (state.running) {
-    msgQueue.push({ text, attachments: [] });
-    renderQueueBadge();
-    toast("已加入队列（第 " + msgQueue.length + " 条）");
-  } else {
-    lastUserText = text; send({ type: "chat", text, attachments: [] });
-  }
+  // 多会话并行：直接发送
+  lastUserText = text; send({ type: "chat", text, attachments: [], convId });
 }
 function hideCtxMenu() { $("ctxMenu").style.display = "none"; }
 document.addEventListener("click", hideCtxMenu);
@@ -258,6 +320,7 @@ function bootMonaco() {
   require.config({ paths: { vs: "/vendor/monaco/vs" } });
   require(["vs/editor/editor.main"], () => {
     state.monacoReady = true;
+    document.dispatchEvent(new Event("monaco-ready"));
     /* Bio-luminal 配套 Monaco 主题：编辑器融入深渊/晨光视觉，diff 修前修后行背景显式加强 */
     monaco.editor.defineTheme("pancode-dark", {
       base: "vs-dark", inherit: true, rules: [],
@@ -410,7 +473,7 @@ function bootMonaco() {
       theme: monacoTheme(),
       automaticLayout: true,
       minimap: { enabled: true, renderCharacters: true },
-      fontSize: 13.5,
+      fontSize: (typeof getEditorFontSize === "function" ? getEditorFontSize() : 13.5),
       fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
       smoothScrolling: true,
       cursorBlinking: "smooth",
@@ -993,6 +1056,30 @@ function injectPreviewBridge(html) {
   return html + PREVIEW_BRIDGE;
 }
 
+/* 重写 HTML 中的相对资源路径为 /api/raw?path= 绝对端点，使预览能加载关联 CSS/JS/图片 */
+function rewriteResourcePaths(html, filePath) {
+  const dir = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/") + 1) : "";
+  const resolve = (ref) => {
+    if (!ref || /^(https?:|\/\/|data:|blob:|mailto:|#)/i.test(ref)) return ref; // 绝对/外链/锚点不改
+    let rel;
+    if (ref.startsWith("/")) rel = ref.slice(1);
+    else if (ref.startsWith("./")) rel = dir + ref.slice(2);
+    else rel = dir + ref;
+    return "/api/raw?path=" + encodeURIComponent(rel);
+  };
+  // <link href="...">
+  html = html.replace(/(<link[^>]*\shref=["'])([^"']*)(["'])/gi, (m, pre, ref, post) => pre + resolve(ref) + post);
+  // <script src="...">
+  html = html.replace(/(<script[^>]*\ssrc=["'])([^"']*)(["'])/gi, (m, pre, ref, post) => pre + resolve(ref) + post);
+  // <img src="...">
+  html = html.replace(/(<img[^>]*\ssrc=["'])([^"']*)(["'])/gi, (m, pre, ref, post) => pre + resolve(ref) + post);
+  // <source src="..."> (video/audio/picture)
+  html = html.replace(/(<source[^>]*\ssrc=["'])([^"']*)(["'])/gi, (m, pre, ref, post) => pre + resolve(ref) + post);
+  // url("...") in <style>
+  html = html.replace(/url\(["']?([^"')]+)["']?\)/gi, (m, ref) => "url(" + resolve(ref) + ")");
+  return html;
+}
+
 let _previewScrollRAF = null, _pvSh = 1000, _pvSyncing = false, _pvMsgAttached = false;
 function _onPreviewMessage(e) {
   const d = e.data;
@@ -1037,7 +1124,8 @@ function renderPreview() {
   if (!previewOn || !path || !isPreviewable(path) || !models[path]) return;
   const val = models[path].getValue();
   if (extOf(path) === "html" || extOf(path) === "htm") {
-    frame.srcdoc = injectPreviewBridge(val);
+    const rewritten = rewriteResourcePaths(val, path);
+    frame.srcdoc = injectPreviewBridge(rewritten);
   } else {
     frame.srcdoc = injectPreviewBridge("<!DOCTYPE html><html><head><meta charset='utf-8'><style>" + MD_CSS + "</style></head><body class='md-body'>" + renderMarkdown(val) + "</body></html>");
   }
@@ -1353,6 +1441,7 @@ function initAgRightResizers() {
 
 /* ---------------- 活动栏 ---------------- */
 document.querySelectorAll(".ab-btn").forEach((btn) => {
+  if (!btn.dataset.view) return;  // 跳过无 data-view 的按钮（如全局设置齿轮）
   btn.onclick = () => {
     const v = btn.dataset.view;
     if (v === "ai") { switchMode("agents"); return; }
@@ -1457,6 +1546,16 @@ function openPatchReview(ev) {
   $("patchModal").style.display = "flex";
   renderPatchList();
   renderPatchDiff(files[0].path);
+  const btn = $("sbPatchReview"); if (btn) btn.style.display = "none";
+}
+
+function reopenPatchReview() {
+  if (!state.patch || !state.patch.files || !state.patch.files.length) return;
+  if (!state.monacoReady) { toast("编辑器尚未就绪"); return; }
+  $("patchModal").style.display = "flex";
+  renderPatchList();
+  renderPatchDiff(state.patch._sel || state.patch.files[0].path);
+  const btn = $("sbPatchReview"); if (btn) btn.style.display = "none";
 }
 
 /* 仅应用被勾选（accepted）的 hunk，算出"预览用"的修改后内容 */
@@ -1556,12 +1655,20 @@ function closePatchModal() {
     patchDiffEditor.dispose(); patchDiffEditor = null;
     if (m) { m.original.dispose(); m.modified.dispose(); }
   }
+  const btn = $("sbPatchReview");
+  if (btn) btn.style.display = (state.patch && state.patch.files && state.patch.files.length) ? "inline-flex" : "none";
 }
 
 $("patchAcceptAll").onclick = () => patchApply(state.patch.files.map((f) => f.path));
 $("patchRejectAll").onclick = () => patchReject(state.patch.files.map((f) => f.path));
 $("patchApplySelected").onclick = () => { if (state.patch && state.patch._sel) patchApplySelected(state.patch._sel); };
 $("patchClose").onclick = closePatchModal;
+{ const b = $("sbPatchReview"); if (b) b.onclick = reopenPatchReview; }
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("patchModal").style.display !== "none" && !e.target.closest("input,textarea")) {
+    closePatchModal();
+  }
+});
 
 /* ---------------- 终端渲染（多标签页） ----------------
    每个标签是独立的输出缓冲（与聊天会话解耦，可随意开多个终端）。
@@ -1748,14 +1855,16 @@ function initTermTabs(tabs) {
 }
 
 /* ---------------- 聊天流渲染 ---------------- */
-const blocks = {};
-let answerBlock = null;   // 跨轮聚合的最终回答气泡（一次任务 = 一个气泡）
-let thinkCount = 0;       // 本次任务的思考步序号
+let blocks = {};          // 当前绑定会话的块映射（withConv 动态指向 convBlocks[convId]）
+let answerBlock = null;   // 跨轮聚合的最终回答气泡（一次任务 = 一个气泡；按会话隔离）
+let thinkCount = 0;       // 本次任务的思考步序号（withConv 按会话绑定）
 let lastThink = null;     // 当前正在流式输出的思考块（用于自动折叠上一个）
 let dragTabIdx = null;    // 拖拽排序中的源标签索引
-function scrollChat() {
-  chatStream.scrollTop = chatStream.scrollHeight;
-  // 每次消息变化都触发上下文实时刷新（rAF 节流，避免流式输出时频繁重排）
+function scrollChat(force) {
+  // Sticky scroll：用户上翻查看历史时不强制拉回底部；force=true 时无条件滚到底（新消息/审批/选项卡）
+  if (force || chatStream.scrollHeight - chatStream.scrollTop - chatStream.clientHeight < 80) {
+    chatStream.scrollTop = chatStream.scrollHeight;
+  }
   if (_ctxRaf) return;
   _ctxRaf = requestAnimationFrame(() => { _ctxRaf = null; refreshCtx(); });
 }
@@ -1773,7 +1882,7 @@ function _doBuildMsgNav() {
   const rail = msgNavRail;
   if (!rail) return;
   const msgs = [];
-  chatStream.querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { msgs.push(el); });
+  chatPane().querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { msgs.push(el); });
   if (msgs.length < 2) { rail.innerHTML = ""; return; }
   rail.innerHTML = "";
   const count = msgs.length;
@@ -1810,7 +1919,7 @@ function updateMsgNavActive() {
   let activeIdx = -1;
   const dots = Array.from(rail.children);
   const msgs = [];
-  chatStream.querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { msgs.push(el); });
+  chatPane().querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { msgs.push(el); });
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i].offsetTop - 10 <= scrollTop + viewH * 0.3) activeIdx = i;
   }
@@ -1826,13 +1935,43 @@ chatStream.addEventListener("scroll", () => {
 
 /* 追加任务内容块：若最终回答气泡已出现，则插到它之前，保证「思考/工具在前、最终结论在最后」 */
 function appendChatBlock(el) {
-  if (answerBlock && answerBlock.row && answerBlock.row.parentNode === chatStream) {
-    chatStream.insertBefore(el, answerBlock.row);
+  const pane = chatPane();
+  if (answerBlock && answerBlock.row && answerBlock.row.parentNode === pane) {
+    pane.insertBefore(el, answerBlock.row);
   } else {
-    chatStream.appendChild(el);
+    pane.appendChild(el);
   }
   buildMsgNav();
+  foldOldMessages();
 }
+
+/* 长会话折叠：直接子消息超过阈值时，把最早的批次收入折叠容器（可展开），降低 DOM 渲染压力 */
+const FOLD_THRESHOLD = 60, FOLD_BATCH = 30;
+function foldOldMessages() {
+  const pane = chatPane();
+  const direct = pane.querySelectorAll(":scope > .msg-user, :scope > .msg-ai");
+  if (direct.length <= FOLD_THRESHOLD) return;
+  let container = pane.querySelector(":scope > .fold-old");
+  if (!container) {
+    container = document.createElement("div");
+    container.className = "fold-old";
+    container.innerHTML = '<button class="fold-old-btn" type="button"></button><div class="fold-old-body"></div>';
+    pane.insertBefore(container, pane.firstChild);
+  }
+  const body = container.querySelector(".fold-old-body");
+  const take = Math.min(FOLD_BATCH, direct.length - FOLD_THRESHOLD);
+  for (let i = 0; i < take; i++) body.appendChild(direct[i]);   // 按原顺序收进折叠区
+  const n = body.querySelectorAll(".msg-user, .msg-ai").length;
+  container.querySelector(".fold-old-btn").textContent = "展开更早的 " + n + " 条消息";
+  buildMsgNav();
+}
+/* 折叠按钮事件委托：会话 dom 持久化恢复后按钮事件依然有效 */
+chatStream.addEventListener("click", (e) => {
+  const btn = e.target.closest(".fold-old-btn");
+  if (!btn) return;
+  const c = btn.closest(".fold-old");
+  if (c) { c.classList.add("expanded"); btn.style.display = "none"; buildMsgNav(); }
+});
 
 function mdLite(s) {
   let h = esc(s);
@@ -1954,7 +2093,7 @@ function htmlToMarkdown(node) {
 
 /* 将当前对话导出为 Markdown 文件 */
 function exportConversation() {
-  const nodes = Array.from(chatStream.children);
+  const nodes = Array.from(chatPane().children);
   const parts = ["# pancode 对话导出", "", "_导出时间：" + new Date().toLocaleString() + "_", ""];
   let has = false;
   for (const n of nodes) {
@@ -1989,26 +2128,21 @@ function toast(msg) {
   t._timer = setTimeout(() => t.classList.remove("show"), 1800);
 }
 
+function addMsgCopyBtn(el, text) {
+  const btn = document.createElement("button");
+  btn.className = "msg-copy";
+  btn.innerHTML = ico("copy");
+  btn.title = "复制";
+  btn.onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(text || el.textContent || "").then(() => toast("已复制")); };
+  el.appendChild(btn);
+}
+
 function addUserMsg(text) {
   const el = document.createElement("div");
   el.className = "msg msg-user";
   el.textContent = text;
   addMsgCopyBtn(el, text);
-  chatStream.appendChild(el); scrollChat();
-}
-
-/* 给消息气泡加「快捷复制」按钮（用户发出的消息 / AI 回复均可复制） */
-function addMsgCopyBtn(el, text) {
-  const btn = document.createElement("button");
-  btn.className = "msg-copy";
-  btn.title = "复制消息";
-  btn.innerHTML = ico("copy");
-  btn.addEventListener("click", () => {
-    const done = () => { const old = btn.innerHTML; btn.innerHTML = "✓"; setTimeout(() => (btn.innerHTML = old), 1200); };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
-    else fallbackCopy(text, done);
-  });
-  el.appendChild(btn);
+  chatPane().appendChild(el); scrollChat(true);
 }
 
 function colorizeDiffText(text) {
@@ -2029,11 +2163,17 @@ function applyEngineInfo(info) {
   $("btnSettings").classList.toggle("llm-on", info.mode === "llm");
 }
 
-function syncFiles(files) {
-  state.files = files;
+function syncFiles(files, incremental) {
+  if (incremental) {
+    // 增量更新：只覆盖传入的路径，保留未提及的文件
+    state.files = state.files || {};
+    for (const p in files) state.files[p] = files[p];
+  } else {
+    state.files = files;
+  }
   // 关闭已消失文件的标签
-  state.openTabs = state.openTabs.filter((p) => files[p]);
-  if (state.activeFile && !files[state.activeFile]) {
+  state.openTabs = state.openTabs.filter((p) => state.files[p]);
+  if (state.activeFile && !state.files[state.activeFile]) {
     state.activeFile = state.openTabs[state.openTabs.length - 1] || null;
     if (state.activeFile) openFile(state.activeFile);
     else { hideBinPreview(); if (state.monacoReady) editor.setModel(null); }
@@ -2041,13 +2181,14 @@ function syncFiles(files) {
   // 同步 model 内容（跳过用户正在编辑的脏文件）
   if (state.monacoReady) {
     for (const p in models) {
-      if (!files[p]) { models[p].dispose(); delete models[p]; state.dirty.delete(p); lspClose(p); continue; }
-      if (files[p].binary) continue; // 二进制占位 model 不同步内容
-      if (!state.dirty.has(p) && models[p].getValue() !== files[p].content) models[p].setValue(files[p].content);
+      if (!state.files[p]) { models[p].dispose(); delete models[p]; state.dirty.delete(p); lspClose(p); continue; }
+      if (state.files[p].binary) continue; // 二进制占位 model 不同步内容
+      if (!state.dirty.has(p) && models[p].getValue() !== state.files[p].content) models[p].setValue(state.files[p].content);
     }
   }
   renderTree(); renderTabs(); renderChanges(); renderBreadcrumb();
 }
+
 
 /* 人工确认卡片：写文件 / 删文件 / 执行命令 需用户批准或拒绝 */
 const APPROVE_META = {
@@ -2085,7 +2226,8 @@ function renderApproval(ev) {
       '<button class="btn-approve" data-id="' + esc(ev.id) + '">' + ico("check") + " 批准</button>" +
       '<button class="btn-reject" data-id="' + esc(ev.id) + '">' + ico("close") + " 拒绝</button>" +
     "</div>";
-  appendChatBlock(el); scrollChat();
+  appendChatBlock(el); scrollChat(true);
+  blocks["ap_" + ev.id] = { el };   // 服务端超时自动拒绝时通过合成 tool.end 收尾
   const statusEl = el.querySelector(".t-status");
   const lock = () => el.querySelectorAll(".approval-actions button").forEach((b) => (b.disabled = true));
   el.querySelector(".btn-approve").onclick = () => {
@@ -2102,13 +2244,17 @@ function renderApproval(ev) {
   };
 }
 
-/* 交互式选项列表弹窗：Agent 调 ask_user_choice 时渲染候选方案 */
+/* 交互式选项列表弹窗：Agent 调 ask_user_choice 时渲染候选方案。
+   注意：必须用 tool-card choice open 结构——.tool-body 全局 display:none，
+   只有 .tool-card.open（或 .choice 专属规则）才显示；头部类名是 tool-head。 */
 function renderChoice(ev) {
   const el = document.createElement("div");
-  el.className = "chat-tool";
+  el.className = "tool-card choice open";
   const opts = Array.isArray(ev.options) ? ev.options : [];
   el.innerHTML =
-    '<div class="t-head"><span class="t-ico">' + ico("sparkle") + '</span><span class="t-label">需要你做个决策</span><span class="t-status pending">等待选择</span></div>' +
+    '<div class="tool-head"><span class="t-kind">' + ico("sparkle") + '</span><span class="t-name">需要你做个决策</span>' +
+      '<span class="t-target">' + esc((ev.question || "").slice(0, 60)) + '</span>' +
+      '<span class="t-status pending">等待选择</span></div>' +
     '<div class="tool-body choice-body">' +
       '<div class="choice-question">' + esc(ev.question || "") + '</div>' +
       '<div class="choice-list">' + opts.map((o, i) =>
@@ -2118,12 +2264,13 @@ function renderChoice(ev) {
         '</button>'
       ).join("") + '</div>' +
     '</div>';
-  appendChatBlock(el); scrollChat();
+  appendChatBlock(el); scrollChat(true);
+  blocks["choice_" + ev.id] = { el };   // 服务端超时/取消时通过合成 tool.end 收尾
   const statusEl = el.querySelector(".t-status");
   el.querySelectorAll(".choice-opt").forEach((btn) => {
     btn.onclick = () => {
       const idx = parseInt(btn.dataset.idx, 10);
-      const choice = opts[idx].label;
+      const choice = opts[idx] ? opts[idx].label : "";
       send({ type: "tool.choice_result", id: ev.id, choice });
       statusEl.className = "t-status done";
       statusEl.innerHTML = ico("check") + " 已选择: " + esc(choice);
@@ -2133,6 +2280,17 @@ function renderChoice(ev) {
 }
 
 function handleEvent(ev) {
+  /* 多会话并行：聊天 DOM 类消息按 convId 写入对应会话的 pane（后台会话实时可见），
+     其余消息（文件/终端/计划/编排等全局 UI）直接分发 */
+  const CHAT_DOM_TYPES = new Set(["user.msg", "think.start", "think.delta", "think.end", "msg.start", "msg.delta", "msg.end", "tool.start", "tool.body", "tool.end", "tool.ask_choice", "agent.error"]);
+  if (CHAT_DOM_TYPES.has(ev.type)) {
+    withConv(ev.convId || convId, () => handleEventInner(ev));
+    return;
+  }
+  handleEventInner(ev);
+}
+
+function handleEventInner(ev) {
   switch (ev.type) {
     case "hello": {
       state.round = ev.round || 0;
@@ -2175,19 +2333,19 @@ function handleEvent(ev) {
       }
       break;
     }
-    case "fs.sync": syncFiles(ev.files); break;
+    case "fs.sync": syncFiles(ev.files, ev.incremental); break;
     case "engine.info": applyEngineInfo(ev.engine); break;
-    case "agent.state": setRunning(ev.running, ev.label); break;
+    case "agent.state": setRunning(ev.running, ev.label, ev.convId); break;
     case "user.msg": {
       // 新任务开始：重置聚合状态 + 加一条分隔线，让多次任务清晰分段
       answerBlock = null; thinkCount = 0; lastThink = null;
       const sep = document.createElement("div");
       sep.className = "run-sep";
-      chatStream.appendChild(sep);
+      chatPane().appendChild(sep);
       addUserMsg(ev.text);
       break;
     }
-    case "op.error": termLine('<span class="tl-err">[操作失败] ' + esc(ev.error) + "</span>"); break;
+    case "op.error": termLine('<span class="tl-err">[操作失败] ' + esc(ev.userHint || ev.error) + "</span>"); break;
     case "agent.error": showAgentError(ev); break;
     case "file.saved": {
       state.dirty.delete(ev.path);
@@ -2242,7 +2400,7 @@ function handleEvent(ev) {
       const el = document.createElement("div");
       el.className = "msg msg-ai type-caret";
       row.appendChild(el);
-      chatStream.appendChild(row); scrollChat();
+      chatPane().appendChild(row); scrollChat(true);
       answerBlock = { el, row, buf: "" };
       blocks[ev.id] = answerBlock;
       break;
@@ -2261,6 +2419,7 @@ function handleEvent(ev) {
         const full = htmlToMarkdown(b.el).trim() || b.el.textContent.trim();
         addMsgCopyBtn(row, full);
       }
+      send({ type: "ctx.query" });   // 回答结束拉一次服务端实测水位，校正圆圈进度
       break;
     }
 
@@ -2343,14 +2502,15 @@ function handleEvent(ev) {
     /* ----- 补丁审阅：agent 用 apply_edit 暂存的改动 ----- */
     case "patch.review": openPatchReview(ev); break;
     case "patch.applied": {
-      if (ev.empty) { closePatchModal(); break; }
+      if (ev.empty) { if (state.patch) state.patch.files = []; closePatchModal(); break; }
       if (!state.patch) break;
       const set = new Set(ev.paths || []);
       state.patch.files = state.patch.files.filter((f) => !set.has(f.path));
       set.forEach((p) => { try { openFile(p); } catch (e) {} });   // 应用后打开到编辑器
       if (!state.patch.files.length) closePatchModal();
       else { renderPatchList(); renderPatchDiff(state.patch.files[0].path); }
-      toast("已接受 " + (ev.paths || []).length + " 个文件改动");
+      const cl = (ev.conflicts || []).length;
+      toast(cl ? "已接受 " + (ev.paths || []).length + " 个，" + cl + " 个冲突跳过" : "已接受 " + (ev.paths || []).length + " 个文件改动");
       break;
     }
     case "patch.rejected": {
@@ -2363,7 +2523,18 @@ function handleEvent(ev) {
       break;
     }
 
-    case "agent.done": state.round = ev.round; answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx(); break;
+    case "agent.done": {
+      // 多会话并行：按 convId 清除运行状态
+      const doneConvId = ev.convId || convId;
+      if (doneConvId) state.convRunning[doneConvId] = false;
+      state.running = !!state.convRunning[convId];
+      state.round = ev.round;
+      if (!ev.convId || ev.convId === convId) {
+        answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx();
+      }
+      renderConvList();
+      break;
+    }
     case "agent.reset": state.round = 0; answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx(); break;
 
     /* ----- 多 Agent 编排 ----- */
@@ -2408,31 +2579,31 @@ function setPlanModeUI(on) {
 /* 客户端估算：与服务端 _estTokens 同口径（content.length / 4），用于流式输出时的真实实时预览 */
 function estTokensFromDom() {
   let chars = 0;
-  chatStream.querySelectorAll(".msg-user, .msg-ai").forEach((n) => { chars += (n.textContent || "").length; });
+  chatPane().querySelectorAll(".msg-user, .msg-ai").forEach((n) => { chars += (n.textContent || "").length; });
   return Math.ceil(chars / 4);
 }
-/* 上下文真实实时显示：消息条数 + token 用量，随聊天即时刷新 */
+/* 上下文真实实时显示：仅百分比，基于真实 token 计算 */
 function refreshCtx() {
   const wrap = inputBox.querySelector("#ctxBarWrap");
   if (!wrap) return;
-  const msgCount = chatStream.querySelectorAll(".msg-user, .msg-ai").length;
   let used, budget, fromServer = false;
   if (ctxServer && ctxServer.budget) { used = ctxServer.used; budget = ctxServer.budget; fromServer = true; }
-  else { used = estTokensFromDom(); budget = 1000000; }
+  else {
+    // 估算：统计所有消息 + 思考块 + 工具卡片
+    let chars = 0;
+    chatPane().querySelectorAll(".msg-user, .msg-ai, .think-block, .tool-card").forEach((n) => { chars += (n.textContent || "").length; });
+    used = Math.ceil(chars / 4);
+    budget = (state.agent && state.agent.contextWindow) || 128000;
+  }
   const pct = Math.min(100, Math.round((used / budget) * 100));
   wrap.style.display = "flex";
-  const R = 15, C = 2 * Math.PI * R;
-  const fg = wrap.querySelector(".ctx-ring-fg");
-  fg.style.strokeDasharray = C;
-  fg.style.strokeDashoffset = C * (1 - pct / 100);
-  fg.classList.toggle("mid", pct >= 60 && pct < 85);
-  fg.classList.toggle("warn", pct >= 85);
-  wrap.querySelector("#ctxRingTxt").textContent = pct + "%";
-  const usedK = used > 1000 ? (used / 1000).toFixed(1) + "k" : used;
-  const budK = Math.round(budget / 1000);
-  wrap.title = "上下文 " + msgCount + " 条消息 · " + usedK + "/" + budK + "k tokens（" + pct + "%" +
-    (fromServer ? "" : "，估算") + (pct >= 85 ? "，即将自动压缩" : "") + "）" +
-    (fromServer ? "（服务端实测）" : "（本地估算，服务端会校正）");
+  const pctEl = wrap.querySelector("#ctxPct");
+  if (pctEl) {
+    pctEl.textContent = pct + "%";
+    pctEl.classList.toggle("mid", pct >= 60 && pct < 85);
+    pctEl.classList.toggle("warn", pct >= 85);
+  }
+  wrap.title = "上下文 " + pct + "%" + (fromServer ? "（服务端实测）" : "（本地估算）") + (pct >= 85 ? "，即将自动压缩" : "");
 }
 /* 服务端 context.usage 事件 → 存储实测值并刷新 */
 function updateCtxBar(used, budget) {
@@ -2441,8 +2612,14 @@ function updateCtxBar(used, budget) {
 }
 
 /* ---------------- Agent 状态 ---------------- */
-function setRunning(running, label) {
-  state.running = running;
+function setRunning(running, label, evConvId) {
+  // 多会话并行：按 convId 更新运行状态
+  const cid = evConvId || convId;
+  if (cid) state.convRunning[cid] = running;
+  // 全局 running = 当前活跃会话是否在运行
+  state.running = !!state.convRunning[convId];
+  const isCurrent = !evConvId || evConvId === convId;
+  if (!isCurrent) { renderConvList(); return; }  // 后台会话状态变更：只刷新会话列表
   const txt = label || (running ? t("running") : t("aiIdle"));
   // 防御：agSessMeta 等元素可能被 renderConvList 重写覆盖，必须判空，否则 WS 事件触发时整页抛错
   const tb = $("tbAgentState");
@@ -2463,17 +2640,54 @@ function setRunning(running, label) {
       btn.disabled = false;
       btn.innerHTML = ico("stop") + t("stop");
       btn.classList.add("stop-mode");
-      btn.onclick = () => send({ type: "abort" });
+      btn.onclick = () => { if (goalMode) { setGoalMode(false); toast("已停止 Goal 模式"); } send({ type: "abort", convId }); };
     } else {
       // Agent 空闲：恢复为「发送」按钮，点击走正常 doSend（重置 onclick，避免残留 abort 处理器）
       btn.disabled = false;
       btn.innerHTML = ico("send") + t("send");
       btn.classList.remove("stop-mode");
-      btn.onclick = doSend;
-      // Agent 空闲时自动处理队列
-      if (msgQueue.length > 0) setTimeout(processQueue, 500);
+      btn.onclick = window._doSend || (() => {});
+      // Goal 模式：Agent 完成一轮后，若计划未完成则自动续跑
+      if (goalMode) scheduleGoalContinue();
     }
   }
+}
+
+/* Goal 续跑：检查进度，决定是否继续、停滞提示、或退出 */
+function scheduleGoalContinue() {
+  if (!goalMode) return;
+  const plan = currentPlan;
+  if (!plan || !plan.tasks || plan.tasks.length === 0) {
+    // 计划还没创建，给 Agent 一轮思考时间后重试
+    if (goalRunCount < 3) { goalRunCount++; setTimeout(() => send({ type: "chat", text: "请先用 create_plan 创建执行计划", attachments: [], convId }), 800); }
+    return;
+  }
+  if (plan.status === "completed") { setGoalMode(false); return; }
+  // 轮数上限
+  if (goalRunCount >= GOAL_MAX_RUNS) {
+    setGoalMode(false);
+    toast("Goal 已续跑 " + GOAL_MAX_RUNS + " 轮，自动停止。请检查进度后决定是否继续。");
+    return;
+  }
+  const doneNow = plan.tasks.filter((t) => t.status === "done" || t.status === "skipped").length;
+  // 停滞检测
+  if (doneNow === goalLastDoneCount) {
+    goalStallCount++;
+    if (goalStallCount >= GOAL_MAX_STALL) {
+      setGoalMode(false);
+      toast("Goal 连续 " + GOAL_MAX_STALL + " 轮无进展，自动停止。请检查后手动继续或调整目标。");
+      return;
+    }
+  } else {
+    goalStallCount = 0;
+  }
+  goalLastDoneCount = doneNow;
+  goalRunCount++;
+  // 续跑消息：简洁，不重复整个 goal
+  const remaining = plan.tasks.filter((t) => t.status !== "done" && t.status !== "skipped");
+  const nextTask = remaining[0];
+  const hint = nextTask ? '（下一步：' + (nextTask.text || "").slice(0, 60) + '）' : '';
+  setTimeout(() => send({ type: "chat", text: "继续执行计划" + hint, attachments: [], convId }), 1000);
 }
 
 /* ---------------- 多 Agent 编排面板 ---------------- */
@@ -2585,7 +2799,8 @@ let lastUserText = "";         // C2：记录最后一条用户消息，供错�
 function showAuthModal() {
   _authRedirected = false;
   const m = $("authModal"); if (m) m.style.display = "flex";
-  const s = $("authStatus"); if (s) { s.textContent = ""; s.className = "set-status"; }
+  const s = $("authStatus"); if (s) { s.textContent = ""; s.className = "auth-status"; }
+  replaceIcons(m);
 }
 
 /* C2：LLM 错误分类卡片 + 一键重试 */
@@ -2603,13 +2818,13 @@ function showAgentError(ev) {
     btn.onclick = () => { el.remove(); resendLast(); };
     el.appendChild(btn);
   }
-  chatStream.appendChild(el);
-  chatStream.scrollTop = chatStream.scrollHeight;
+  chatPane().appendChild(el);
+  scrollChat(true);
 }
 function resendLast() {
   if (!lastUserText) { toast("没有可重试的消息"); return; }
   send({ type: "newchat" });
-  setTimeout(() => send({ type: "chat", text: lastUserText, attachments: [] }), 250);
+  setTimeout(() => send({ type: "chat", text: lastUserText, attachments: [], convId }), 250);
 }
 
 (function patchFetch() {
@@ -2627,6 +2842,7 @@ function resendLast() {
         _authRedirected = true;
         userAuth.token = ""; userAuth.username = "";
         localStorage.removeItem("cw-user-token");
+        sessionStorage.removeItem("cw-user-token");
         AUTH.token = "";
         showAuthModal();
       }
@@ -2643,12 +2859,24 @@ async function bootstrap() {
 
 /* ---------------- WebSocket ---------------- */
 let ws = null;
+let wsRetry = 0;               // 重连退避计数（指数退避 1s→30s 封顶）
+const WS_RETRY_MAX = 30000;
 function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/?token=" + encodeURIComponent(AUTH.token));
   ws.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch (err) { console.error(err); } };
   // C6：连接/重连建立后，把当前会话 ID 同步给服务端，恢复对应的 AI 上下文
-  ws.onopen = () => { if (typeof convId !== "undefined" && convId) { send({ type: "switchConv", convId: convId }); loadTraceHistory(convId); } };
-  ws.onclose = () => setTimeout(connect, 1500);
+  ws.onopen = () => {
+    if (wsRetry > 0) toast("已重新连接");
+    wsRetry = 0;             // 连接成功，重置退避
+    send({ type: "ctx.query" });
+    if (typeof convId !== "undefined" && convId) { send({ type: "switchConv", convId: convId }); loadTraceHistory(convId); send({ type: "ctx.query" }); }
+  };
+  ws.onclose = () => {
+    const delay = Math.min(1000 * Math.pow(2, wsRetry), WS_RETRY_MAX);
+    wsRetry++;
+    if (wsRetry === 1) toast("连接断开，正在重连…");
+    setTimeout(connect, delay);
+  };
 }
 /* C6：chat / newchat 统一自动携带当前会话 ID，让服务端上下文与前端会话一一对应 */
 function send(obj) {
@@ -2682,34 +2910,11 @@ function addAttachFile(file) {
   rd.readAsDataURL(file);
 }
 
-/* ---------------- 输入事件 + 消息排队 ---------------- */
+/* ---------------- 输入事件 ---------------- */
 let activeSkill = null;
-const msgQueue = [];  // 消息队列
 const sentHistory = {};   // 各会话的已发消息历史，供 ↑/↓ 浏览：{ convId: [text, ...] }
 let histNav = -1;         // 历史浏览指针，-1 表示正在正常编辑（不在浏览历史）
 
-function renderQueueBadge() {
-  let badge = inputBox.querySelector("#ciQueueBadge");
-  if (msgQueue.length > 0) {
-    if (!badge) {
-      badge = document.createElement("span");
-      badge.id = "ciQueueBadge";
-      badge.className = "ci-queue-badge";
-      inputBox.querySelector(".ci-bottom").insertBefore(badge, inputBox.querySelector("#btnSend"));
-    }
-    badge.textContent = "排队 " + msgQueue.length;
-    badge.style.display = "inline-flex";
-  } else if (badge) {
-    badge.style.display = "none";
-  }
-}
-
-function processQueue() {
-  if (state.running || msgQueue.length === 0) return;
-  const { text, attachments } = msgQueue.shift();
-  renderQueueBadge();
-  lastUserText = text; send({ type: "chat", text, attachments });
-}
 
 function bindInput() {
   const ta = inputBox.querySelector("#chatInput");
@@ -2717,6 +2922,7 @@ function bindInput() {
   const doSend = () => {
     const v = ta.value.trim();
     if (!v && !pendingAttach.length) return;
+
     ta.value = "";
     // 记录到当前会话的发送历史，供 ↑/↓ 浏览回填
     const curConv = (typeof convId !== "undefined" && convId) || "default";
@@ -2730,16 +2936,11 @@ function bindInput() {
       text = "[引用 Skill: " + activeSkill.name + "]\n" + (activeSkill.description || "") + "\n\n" + activeSkill.body + "\n\n---\n\n" + text;
       fetch("/api/skills/market/" + activeSkill.id + "/use", { method: "POST" }).catch(() => {});
     }
-    // 如果 Agent 正在运行，加入队列
-    if (state.running) {
-      msgQueue.push({ text, attachments });
-      renderQueueBadge();
-      toast("已加入队列（第 " + msgQueue.length + " 条），Agent 完成后自动执行");
-    } else {
-      lastUserText = text; send({ type: "chat", text, attachments });
-    }
+    // 多会话并行：直接发送，不再排队
+    lastUserText = text; send({ type: "chat", text, attachments, convId });
     if (attachments.length) termLine('<span class="tl-info">[附件] 已随消息发送 ' + attachments.length + " 张图片</span>");
   };
+  window._doSend = doSend;   // 暴露全局引用供 setRunning / openConv 使用
   inputBox.querySelector("#btnSend").onclick = doSend;
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { if (atMenu && atMenu.style.display !== "none") return; e.preventDefault(); doSend(); }
@@ -2960,30 +3161,58 @@ function _wsHash() {
 }
 function convListKey() { return CONV_LS_BASE + ":" + _wsHash(); }
 function convActiveKey() { return CONV_ACTIVE_BASE + ":" + _wsHash(); }
+/* 分离存储：每会话 dom 独立 key，避免 persistConv 时全量序列化所有会话 */
+function convDomKey(id) { return "cw-convdom-v1:" + _wsHash() + ":" + id; }
+function saveConvDom(id, html) { try { localStorage.setItem(convDomKey(id), html); } catch (e) {} }
+function loadConvDom(id) { try { return localStorage.getItem(convDomKey(id)) || ""; } catch (e) { return ""; } }
+function deleteConvDom(id) { try { localStorage.removeItem(convDomKey(id)); } catch (e) {} }
 let convId = null;
 let convObs = null;
 
 function loadConvList() {
-  try { return JSON.parse(localStorage.getItem(convListKey())) || []; } catch (e) { return []; }
+  let list;
+  try { list = JSON.parse(localStorage.getItem(convListKey())) || []; } catch (e) { list = []; }
+  // 兼容旧格式：迁移嵌入的 .dom 到分离存储
+  let migrated = false;
+  for (const c of list) {
+    if (c && c.dom != null) {
+      if (c.dom) saveConvDom(c.id, c.dom);
+      delete c.dom;
+      migrated = true;
+    }
+  }
+  if (migrated) { try { localStorage.setItem(convListKey(), JSON.stringify(list)); } catch (e) {} }
+  return list;
 }
 function saveConvList(list) {
   try { localStorage.setItem(convListKey(), JSON.stringify(list)); } catch (e) {}
 }
 function genConvId() { return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
-function convFirstUserTitle() {
-  const u = chatStream.querySelector(".msg-user");
-  if (u) { const t = (u.textContent || "").trim().replace(/\s+/g, " ").slice(0, 32); if (t) return t; }
-  return "";
+function convFirstUserTitle(cvid) {
+  const pane = (cvid ? convPanes[cvid] : chatPane()) || chatPane();
+  if (!pane) return "";
+  const u = pane.querySelector(".msg-user");
+  if (!u) return "";
+  let t = (u.textContent || "").trim().replace(/\s+/g, " ");
+  if (!t) return "";
+  // 去掉常见前缀词，提取核心意图
+  t = t.replace(/^(帮我|请|麻烦|能不能|可以|我想|我想要|需要|为什么|怎么|如何|怎样|为啥|为啥要|帮我看看|看一下|看下|处理一下|修复一下|添加|新增|删除|修改|更新|优化|重构)\s*/i, "");
+  // 去掉 [引用 Skill: xxx] 前缀
+  t = t.replace(/^\[引用[^\]]*\]\s*/, "");
+  return t.slice(0, 32);
 }
 
-function persistConv() {
-  if (!convId) return;
+/* 持久化指定会话（默认当前活跃）的 pane 内容到 localStorage */
+function persistConv(cvid) {
+  const id = cvid || convId;
+  if (!id) return;
+  const pane = convPanes[id];
   const list = loadConvList();
-  const c = list.find((x) => x.id === convId);
+  const c = list.find((x) => x.id === id);
   if (!c) return;
-  c.dom = chatStream.innerHTML;
-  const t = convFirstUserTitle();
+  if (pane) saveConvDom(id, pane.innerHTML);   // dom 独立存储，避免全量序列化
+  const t = convFirstUserTitle(id);
   if (t && (!c.title || c.title === "新对话")) c.title = t;
   // 不更新 ts，保持创建时间排序不变，避免会话列表跳动
   saveConvList(list);
@@ -3007,10 +3236,13 @@ function convTimeGroup(ts) {
 }
 const CONV_GROUP_LABELS = ["今天", "昨天", "本周", "更早"];
 function convSummary(c) {
-  if (c.id === convId && state.running) return { tag: "running", text: "R" + (state.round || 1) + " 运行中" };
-  if (c.dom) {
+  if (c.id === convId && state.convRunning[c.id]) return { tag: "running", text: "R" + (state.round || 1) + " 运行中" };
+  if (state.convRunning[c.id]) return { tag: "running", text: "运行中" };
+  // 优先取内存 pane（后台会话流式更新后比 localStorage 快照新鲜）
+  const domHtml = (convPanes[c.id] && convPanes[c.id].childNodes.length) ? convPanes[c.id].innerHTML : loadConvDom(c.id);
+  if (domHtml) {
     const tmp = document.createElement("div");
-    tmp.innerHTML = c.dom;
+    tmp.innerHTML = domHtml;
     const msgs = tmp.querySelectorAll(".msg-user, .msg-ai");
     const last = msgs[msgs.length - 1];
     if (last) {
@@ -3106,7 +3338,7 @@ function showConvCtxMenu(e, c) {
     { label: pinned.includes(c.id) ? "取消固定" : "固定到顶部", action: () => togglePinConv(c.id) },
     { label: "重命名", action: () => { var n = prompt("输入新名称：", c.title || "新对话"); if (n && n.trim()) { var l = loadConvList(); var f = l.find(function(x){return x.id===c.id;}); if(f){f.title=n.trim();saveConvList(l);renderConvList();} } } },
     { label: "复制标题", action: () => { navigator.clipboard && navigator.clipboard.writeText(c.title || "新对话"); } },
-    { label: "导出对话", action: () => { var blob = new Blob([c.dom || ""], {type:"text/html"}); var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (c.title||"对话") + ".html"; a.click(); } },
+    { label: "导出对话", action: () => { var blob = new Blob([loadConvDom(c.id) || ""], {type:"text/html"}); var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (c.title||"对话") + ".html"; a.click(); } },
     { label: "删除", danger: true, action: () => deleteConv(c.id) },
   ];
   items.forEach((it) => {
@@ -3126,27 +3358,50 @@ function showConvCtxMenu(e, c) {
 
 function openConv(id) {
   if (id === convId) return;
+  if (goalMode) setGoalMode(false);   // 切换会话时退出 goal 模式
+  persistConv();                       // 切走前保存当前会话 pane
   convId = id;
   localStorage.setItem(convActiveKey(), id);
   send({ type: "switchConv", convId: id });   // C6：同步切换服务端 AI 上下文
+  send({ type: "ctx.query" });
   loadTraceHistory(id);
-  const c = loadConvList().find((x) => x.id === id);
-  chatStream.innerHTML = c && c.dom ? c.dom : "";
 
-  for (const k in blocks) delete blocks[k];
-  answerBlock = null; thinkCount = 0; lastThink = null;
+  // 多会话并行：pane 内存中有则直接 move 挂载；无（刷新后首次打开）则从快照 hydrate
+  const c = loadConvList().find((x) => x.id === id);
+  if (!convPanes[id]) hydratePane(id, (c && loadConvDom(id)) || "");
+  mountPane(id);
+  foldOldMessages();
   scrollChat();
   buildMsgNav();
   refreshCtx();
   loadPlan(convId);                                                      // 切换该会话的任务计划
   renderConvList();
   replaceIcons();
+  // 多会话并行：切换后更新全局 running 状态与按钮
+  state.running = !!state.convRunning[convId];
+  const btn = inputBox.querySelector("#btnSend");
+  if (btn) {
+    if (state.running) {
+      btn.innerHTML = ico("stop") + t("stop");
+      btn.classList.add("stop-mode");
+      btn.onclick = () => { if (goalMode) { setGoalMode(false); toast("已停止 Goal 模式"); } send({ type: "abort", convId }); };
+    } else {
+      btn.innerHTML = ico("send") + t("send");
+      btn.classList.remove("stop-mode");
+      btn.onclick = window._doSend || (() => {});
+    }
+  }
 }
 
 function deleteConv(id) {
   const list = loadConvList().filter((x) => x.id !== id);
   saveConvList(list);
+  deleteConvDom(id);                            // 清理分离存储的 dom
   send({ type: "dropConv", convId: id });     // C6：同步清理服务端上下文
+  // 多会话并行：清理内存 pane 与会话上下文
+  clearTimeout(convPersistTimers[id]); delete convPersistTimers[id];
+  if (convPanes[id]) { if (convPanes[id].parentNode) convPanes[id].parentNode.removeChild(convPanes[id]); delete convPanes[id]; }
+  delete convBlocks[id]; delete convMeta[id];
   if (id === convId) {
     if (list.length) openConv(list[0].id);
     else startNewConv(true);
@@ -3158,17 +3413,17 @@ function startNewConv(announce) {
   convId = genConvId();
   localStorage.setItem(convActiveKey(), convId);
   const list = loadConvList();
-  list.unshift({ id: convId, title: "新对话", ts: Date.now(), dom: "" });
+  list.unshift({ id: convId, title: "新对话", ts: Date.now() });
   saveConvList(list);
   clearPlanPanel();                  // 新会话无任务计划
+  mountPane(convId);                 // 多会话并行：新会话独立空 pane
+  for (const k in blocks) delete blocks[k];
+  answerBlock = null; thinkCount = 0; lastThink = null;
   if (announce) {
-    chatStream.innerHTML = "";
-    for (const k in blocks) delete blocks[k];
-    answerBlock = null; thinkCount = 0; lastThink = null;
     const el = document.createElement("div");
     el.className = "msg msg-ai";
     el.innerHTML = mdLite("已开始 **新对话**。上一轮上下文已清空，随时描述你的下一个任务。");
-    chatStream.appendChild(el);
+    chatPane().appendChild(el);
     scrollChat();
     refreshCtx();
   }
@@ -3180,16 +3435,18 @@ function startNewConv(announce) {
 function reloadConvForWs() {
   for (const k in blocks) delete blocks[k];
   answerBlock = null; thinkCount = 0; lastThink = null;
-  chatStream.innerHTML = "";
+  // 工作区切换：清空全部 pane 与会话上下文（新工作区存储 key 已隔离）
+  for (const pid in convPanes) { if (convPanes[pid].parentNode) convPanes[pid].parentNode.removeChild(convPanes[pid]); delete convPanes[pid]; }
+  for (const bid in convBlocks) delete convBlocks[bid];
+  for (const mid in convMeta) delete convMeta[mid];
   clearPlanPanel();
   const id = localStorage.getItem(convActiveKey());
   const c = id && loadConvList().find((x) => x.id === id);
   if (!c) { startNewConv(false); }
   else {
     convId = id;
-    chatStream.innerHTML = c.dom || "";
-    for (const k in blocks) delete blocks[k];
-    answerBlock = null; thinkCount = 0; lastThink = null;
+    hydratePane(id, loadConvDom(id) || "");
+    mountPane(id);
     scrollChat();
     loadPlan(convId);
   }
@@ -3206,9 +3463,8 @@ function restoreConv() {
   const list = loadConvList();
   const c = convId && list.find((x) => x.id === convId);
   if (!c) { startNewConv(false); return; }
-  chatStream.innerHTML = c.dom || "";
-  for (const k in blocks) delete blocks[k];
-  answerBlock = null; thinkCount = 0; lastThink = null;
+  hydratePane(convId, loadConvDom(convId) || "");
+  mountPane(convId);
   renderConvList();
   replaceIcons();
   scrollChat();
@@ -3216,13 +3472,13 @@ function restoreConv() {
 }
 
 function newConversation() {
-  if (state.running) return;
+  // 多会话并行：允许运行中新建会话
   // 真正的新对话：当前会话已由 observer 持久化；新建本地会话并清空服务端 AI 上下文（保留文件改动）
   clearTrace();
   startNewConv(true);
   send({ type: "newchat" });
 }
-$("agNewTask").onclick = newConversation;
+
 $("agExport").onclick = exportConversation;
 
 /* 侧边栏增强：新建会话 / 手动计划 / 编排历史折叠 */
@@ -3378,7 +3634,7 @@ document.addEventListener("keydown", (e) => {
 
 
 /* ---------------- 用户认证 ---------------- */
-const userAuth = { token: localStorage.getItem("cw-user-token") || "", username: "" };
+const userAuth = { token: localStorage.getItem("cw-user-token") || sessionStorage.getItem("cw-user-token") || "", username: "" };
 
 async function checkAuth() {
   try {
@@ -3403,25 +3659,51 @@ $("tbUserBtn").onclick = () => showAuthModal();
 $("authClose").onclick = () => ($("authModal").style.display = "none");
 // 登录弹窗只点 X 关闭，点击外部不关闭
 
+// 密码显示/隐藏切换
+$("authTogglePass").onclick = () => {
+  const inp = $("authPass");
+  const isPwd = inp.type === "password";
+  inp.type = isPwd ? "text" : "password";
+  $("authTogglePass").innerHTML = ico(isPwd ? "eyeOff" : "eye");
+};
+
 let authMode = "login";
 $("authSwitch").onclick = () => {
   authMode = authMode === "login" ? "register" : "login";
-  $("authTitle").textContent = authMode === "login" ? "登录" : "注册";
-  $("authSubmit").textContent = authMode === "login" ? "登录" : "注册";
-  $("authSwitch").textContent = authMode === "login" ? "注册新账号" : "返回登录";
+  if (authMode === "login") {
+    $("authTitle").textContent = "欢迎回来";
+    $("authSub").textContent = "登录以进入你的工作区";
+    $("authSubmit").textContent = "登录";
+    $("authSwitchLabel").textContent = "还没有账号？";
+    $("authSwitch").textContent = "注册新账号";
+  } else {
+    $("authTitle").textContent = "创建账号";
+    $("authSub").textContent = "注册一个新账号开始编码";
+    $("authSubmit").textContent = "注册";
+    $("authSwitchLabel").textContent = "已有账号？";
+    $("authSwitch").textContent = "返回登录";
+  }
   $("authStatus").textContent = "";
+  $("authStatus").className = "auth-status";
 };
 
 $("authSubmit").onclick = async () => {
   const u = $("authUser").value.trim(), p = $("authPass").value;
-  if (!u || !p) { $("authStatus").className = "set-status err"; $("authStatus").textContent = "请填写用户名和密码"; return; }
+  if (!u || !p) { $("authStatus").className = "auth-status err"; $("authStatus").textContent = "请填写用户名和密码"; return; }
   const url = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+  const btn = $("authSubmit");
+  btn.disabled = true; btn.classList.add("loading"); btn.textContent = authMode === "login" ? "登录中…" : "注册中…";
   try {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: u, password: p }) }).then((x) => x.json());
     if (r.ok) {
       userAuth.token = r.token; userAuth.username = r.username;
       AUTH.token = r.token;   // A1：登录成功 → 后续请求带 userToken（登录闸门生效）
-      localStorage.setItem("cw-user-token", r.token);
+      // 记住我：勾选用 localStorage（持久），不勾用 sessionStorage（会话级）
+      const remember = $("authRemember") && $("authRemember").checked;
+      localStorage.removeItem("cw-user-token");
+      sessionStorage.removeItem("cw-user-token");
+      if (remember) localStorage.setItem("cw-user-token", r.token);
+      else sessionStorage.setItem("cw-user-token", r.token);
       $("tbUserTxt").textContent = r.username;
       $("tbUserBtn").classList.add("logged");
       $("authModal").style.display = "none";
@@ -3429,10 +3711,11 @@ $("authSubmit").onclick = async () => {
       toast(authMode === "login" ? "✅ 登录成功" : "✅ 注册成功");
       startApp(); maybeOnboard();   // 登录后才加载工作区数据并连接 WS，并触发首次引导
     } else {
-      $("authStatus").className = "set-status err";
+      $("authStatus").className = "auth-status err";
       $("authStatus").textContent = r.error;
     }
-  } catch (e) { $("authStatus").className = "set-status err"; $("authStatus").textContent = "请求异常: " + e.message; }
+  } catch (e) { $("authStatus").className = "auth-status err"; $("authStatus").textContent = "请求异常: " + e.message; }
+  finally { btn.disabled = false; btn.classList.remove("loading"); btn.textContent = authMode === "login" ? "登录" : "注册"; }
 };
 
 /* ---------------- Skills 市场 ---------------- */
@@ -3456,6 +3739,7 @@ async function loadSkills() {
 const PLAN_ICONS = { pending: "○", in_progress: "◐", done: "●", skipped: "×" };
 function renderPlan(plan) {
   if (!plan) return;
+  currentPlan = plan;
   const box = $("agPlanEmpty");
   const active = $("agPlanActive");
   if (box) box.style.display = "none";
@@ -3508,6 +3792,11 @@ function renderPlan(plan) {
       replaceIcons(sticky);
     }
   }
+  // Goal 模式：计划全部完成时自动退出
+  if (goalMode && plan.status === "completed") {
+    setGoalMode(false);
+    toast("Goal 已完成，自动退出目标模式");
+  }
 }
 
 function clearPlanPanel() {
@@ -3527,12 +3816,23 @@ async function loadPlan(cid) {
 /* ---------------- Goal 模式 ---------------- */
 let goalMode = false;
 let goalPollTimer = null;
+let currentPlan = null;        // renderPlan 时缓存，供续跑逻辑读取进度
+let goalRunCount = 0;          // 本轮 goal 已续跑次数
+let goalLastDoneCount = -1;    // 上次续跑时的 done 数（停滞检测）
+let goalStallCount = 0;        // 连续无进展次数
+const GOAL_MAX_RUNS = 50;      // 单个 goal 最多续跑轮数
+const GOAL_MAX_STALL = 3;      // 连续无进展上限
 
 function setGoalMode(active) {
   goalMode = active;
   const btn = $("btnGoal");
   if (btn) btn.classList.toggle("active", active);
-  if (!active && goalPollTimer) { clearInterval(goalPollTimer); goalPollTimer = null; }
+  if (!active) {
+    if (goalPollTimer) { clearInterval(goalPollTimer); goalPollTimer = null; }
+    goalRunCount = 0;
+    goalLastDoneCount = -1;
+    goalStallCount = 0;
+  }
 }
 
 $("btnGoal").onclick = (e) => {
@@ -3551,12 +3851,10 @@ $("goalStart").onclick = () => {
   $("goalPop").style.display = "none";
   $("goalInput").value = "";
   setGoalMode(true);
-  send({ type: "chat", text: "[GOAL MODE] 请创建计划并持续执行，直到完成以下目标后自动停止：\n\n" + goal + "\n\n要求：\n1. 先用 create_plan 拆解为具体子任务\n2. 逐个执行，每完成一步用 update_plan 标记\n3. 每步执行后验证结果，失败则修复重试\n4. 所有步骤完成后用 create_plan 的任务全部 done 来结束\n5. 中间不要停下来询问用户，自主推进", attachments: [] });
+  send({ type: "chat", text: "[GOAL MODE] 请创建计划并持续执行，直到完成以下目标后自动停止：\n\n" + goal + "\n\n要求：\n1. 先用 create_plan 拆解为具体子任务\n2. 逐个执行，每完成一步用 update_plan 标记\n3. 每步执行后验证结果，失败则修复重试\n4. 所有步骤完成后用 create_plan 的任务全部 done 来结束\n5. 中间不要停下来询问用户，自主推进", attachments: [], convId });
   toast("Goal 已启动，Agent 将持续执行直到完成");
 };
 
-/* 当 Agent 完成时检查是否在 goal 模式 */
-const _origHandleEvent = handleEvent;
 
 /* ---------------- 语言切换 ---------------- */
 (function(){

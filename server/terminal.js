@@ -127,9 +127,15 @@ class TerminalLayer {
       let child;
       const env = _sanitizeEnv();   // Windows 环境兜底：修复 ComSpec 缺失 / unix 风格 PATH
       try {
-        child = argv
-          ? spawn(argv[0], argv.slice(1), { cwd: this.dir, env, windowsHide: true })
-          : spawn(displayCmd, { cwd: this.dir, shell: true, env, windowsHide: true });
+        if (argv) {
+          child = spawn(argv[0], argv.slice(1), { cwd: this.dir, env, windowsHide: true });
+        } else if (process.platform === "win32") {
+          // Windows：显式 cmd.exe /c 替代 shell:true，windowsHide 直接作用于 cmd.exe，
+          // 规避 shell:true 时 cmd 中间进程窗口闪现（Agent 调命令时用户看到黑框弹出的根因）
+          child = spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", displayCmd], { cwd: this.dir, env, windowsHide: true });
+        } else {
+          child = spawn(displayCmd, { cwd: this.dir, shell: true, env, windowsHide: true });
+        }
       } catch (err) {
         this.emit({ type: "term.line", tabId, text: String(err), cls: "tl-err" });
         return resolve({ code: -1, out: String(err), timedOut: false });

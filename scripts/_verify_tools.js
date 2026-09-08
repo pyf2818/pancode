@@ -7,7 +7,7 @@ const fs = require("fs");
 let toolsSeen = null;
 let rounds = 0;
 
-/* 当前 TOOLS 全集（随 Phase 2 扩容，保持与 agent-llm.js 同步） */
+/* 当前 TOOLS 全集（随功能扩容，保持与 agent-llm.js 同步） */
 const EXPECT_TOOLS = [
   "list_files", "read_file", "write_file", "apply_edit", "delete_file",
   "search_code", "run_command", "repo_map", "search_symbol",
@@ -15,6 +15,12 @@ const EXPECT_TOOLS = [
   "create_skill", "create_plan", "update_plan",
   "list_templates", "instantiate_template", "save_template", "remove_template",
   "set_goal", "goal_status", "save_session_memory", "agent",
+  /* 进程管理 */
+  "start_process", "read_process", "stop_process", "check_port",
+  /* Git 结构化 */
+  "git_status", "git_diff", "git_log", "git_branch", "git_commit",
+  /* Web / MCP / 编排 / 交互 */
+  "web_search", "web_fetch", "list_mcp", "orchestrate", "ask_user_choice",
 ].sort();
 
 const mockLlm = {

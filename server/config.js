@@ -157,6 +157,7 @@ function saveAgentSettings(cfg, patch) {
   }
   if (p.memory && typeof p.memory.enabled === "boolean") cfg.memory.enabled = p.memory.enabled;
   if (typeof p.planMode === "boolean") cfg.planMode = p.planMode;
+  if (p.lsp && typeof p.lsp.enabled === "boolean") cfg.lsp.enabled = p.lsp.enabled;
 
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
   onDisk.permissions = cfg.permissions;
@@ -165,8 +166,33 @@ function saveAgentSettings(cfg, patch) {
   onDisk.rules = cfg.rules;
   onDisk.context = cfg.context;
   onDisk.memory = cfg.memory;
+  onDisk.lsp = cfg.lsp;
   writeJsonSafe(CONFIG_PATH, onDisk);
   return cfg;
+}
+
+/* 持久化 Embedding 配置（代码向量索引用） */
+function saveEmbedding(cfg, patch) {
+  const p = patch || {};
+  if (typeof p.endpoint === "string") cfg.embedding.endpoint = p.endpoint.trim();
+  if (typeof p.apiKey === "string") { cfg.embedding.apiKey = p.apiKey.trim(); if (p.apiKey.trim()) setEnvVar("PANCODE_EMBEDDING_KEY", p.apiKey.trim()); }
+  if (typeof p.model === "string") cfg.embedding.model = p.model.trim();
+  if (Number.isFinite(p.dim)) cfg.embedding.dim = Math.max(1, p.dim | 0);
+  const onDisk = readJsonSafe(CONFIG_PATH) || {};
+  onDisk.embedding = { endpoint: cfg.embedding.endpoint, model: cfg.embedding.model, dim: cfg.embedding.dim };
+  writeJsonSafe(CONFIG_PATH, onDisk);
+  return cfg;
+}
+
+/* 给前端的 Embedding 配置（脱敏） */
+function embeddingInfo(cfg) {
+  return {
+    endpoint: cfg.embedding.endpoint || "",
+    model: cfg.embedding.model || "text-embedding-3-small",
+    dim: cfg.embedding.dim || 1536,
+    hasKey: !!cfg.embedding.apiKey,
+    keyTail: cfg.embedding.apiKey ? "…" + cfg.embedding.apiKey.slice(-4) : "",
+  };
 }
 
 /* 给前端的 Agent 设置（脱敏，可编辑字段原样返回） */
@@ -178,6 +204,7 @@ function agentSettings(cfg) {
     rules: cfg.rules,
     context: cfg.context,
     memory: cfg.memory,
+    lsp: cfg.lsp,
   };
 }
 
@@ -251,4 +278,4 @@ function progressionPath(cfg) {
   return path.join(ROOT, ".pancode", "progression", key + ".json");
 }
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveMcpServers, agentSettings, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveMcpServers, saveEmbedding, agentSettings, embeddingInfo, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH };
