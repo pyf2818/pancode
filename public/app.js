@@ -1175,10 +1175,16 @@ function openFile(path, revealLine) {
 }
 
 function closeTab(path, ev) {
-  ev.stopPropagation();
-  if (state.dirty.has(path) && !confirm(path + " 有未保存的更改，关闭将丢弃编辑，确定？")) return;
+  if (ev) ev.stopPropagation();
+  if (state.dirty.has(path)) {
+    showConfirm("关闭标签", path + " 有未保存的更改，关闭将丢弃编辑，确定？", () => _doCloseTab(path));
+    return;
+  }
+  _doCloseTab(path);
+}
+function _doCloseTab(path) {
   if (state.dirty.has(path) && models[path] && state.files[path]) {
-    models[path].setValue(state.files[path].content); // 还原
+    models[path].setValue(state.files[path].content);
     state.dirty.delete(path);
   }
   state.openTabs = state.openTabs.filter((p) => p !== path);
@@ -2210,6 +2216,7 @@ function handleEventInner(ev) {
       renderTabs(); renderTree(); renderChanges();
       if (previewOn && isPreviewable(ev.path)) renderPreview();
       termLine('<span class="tl-info">[已保存] ' + esc(ev.path) + "</span>");
+      toast("已保存 " + ev.path);
       break;
     }
     case "search.result": renderSearchResults(ev.query, ev.results); break;
@@ -2954,14 +2961,25 @@ function bindInput() {
   // 权限模式快捷切换
   inputBox.querySelector("#ciPerm").onchange = async (e) => {
     const mode = e.target.value;
+    if (mode === "auto") {
+      e.target.value = "ask"; // 先还原，确认后再切
+      showConfirm("切换到全自动模式", "全自动模式下 Agent 将<strong style='color:var(--err)'>无需确认即可执行所有操作</strong>（高危命令仍会拦截）。确定切换吗？", async () => {
+        e.target.value = "auto";
+        try {
+          await fetch("/api/agent-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ permissions: { mode: "auto" } }) });
+          toast("权限模式 → 全自动");
+        } catch (err) { toast("权限切换失败: " + err.message); }
+      });
+      return;
+    }
     try {
       await fetch("/api/agent-settings", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ permissions: { mode } }),
       });
       const label = { ask: "逐项确认", semi: "半自动（安全操作放行，写入仍确认）", auto: "全自动（高危仍会拦截）" }[mode] || mode;
-      termLine('<span class="tl-info">[Agent] 权限模式 → ' + label + "</span>");
-    } catch (err) { termLine('<span class="tl-err">[Agent] 权限切换失败: ' + esc(err.message) + "</span>"); }
+      toast("权限模式 → " + label);
+    } catch (err) { toast("权限切换失败: " + err.message); }
   };
   // 规划模式开关：开启后 Agent 仅可读/检索/规划，禁止任何写文件或执行命令
   inputBox.querySelector("#btnPlanMode").onclick = async () => {
@@ -3390,6 +3408,9 @@ function openCommandPalette() {
     { label: "新建文件", hint: "", fn: () => promptNewFile("") },
     { label: "新建文件夹", hint: "", fn: () => { const p = prompt("新建文件夹（相对路径）：", "newdir"); if (p) send({ type: "file.mkdir", path: p }); } },
     { label: "保存文件", hint: "Ctrl+S", fn: saveActiveFile },
+    { label: "关闭当前标签", hint: "Ctrl+W", fn: () => { if (state.activeFile) closeTab(state.activeFile); } },
+    { label: "文件跳转", hint: "Ctrl+P", fn: openFilePalette },
+    { label: "新建对话", hint: "", fn: () => startNewConv(true) },
     { label: "切换至编辑器窗口", hint: "Ctrl+.", fn: () => switchMode("editor") },
     { label: "切换至 Agents 窗口", hint: "Ctrl+.", fn: () => switchMode("agents") },
     { label: "AI 解释当前文件", hint: "/explain", fn: () => aiCurrentFile("请阅读并解释当前打开的文件，说明其功能、关键逻辑和设计思路。") },
@@ -3399,6 +3420,7 @@ function openCommandPalette() {
     { label: "AI 审查代码", hint: "/review", fn: () => aiCurrentFile("请对当前打开的文件进行代码审查，指出潜在问题和改进建议。") },
     { label: "切换主题", hint: "深色/浅色", fn: () => applyTheme(getTheme() === "light" ? "dark" : "light") },
     { label: "打开设置", hint: "", fn: () => $("btnSettings").click() },
+    { label: "键盘快捷键", hint: "", fn: openShortcuts },
   ];
   const pal = document.createElement("div");
   pal.id = "cmdPalette";
@@ -3469,6 +3491,7 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveActiveFile(); }
   else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "P" || e.key === "p")) { e.preventDefault(); openCommandPalette(); }
   else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); openFilePalette(); }
+  else if ((e.ctrlKey || e.metaKey) && (e.key === "w" || e.key === "W")) { e.preventDefault(); if (state.activeFile) closeTab(state.activeFile); }
   else if ((e.ctrlKey || e.metaKey) && (e.key === "." || e.code === "Period")) {
     e.preventDefault();
     const target = state.mode === "editor" ? "agents" : "editor";
