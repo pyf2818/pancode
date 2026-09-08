@@ -88,7 +88,12 @@ class FileStore {
     }
   }
 
-  /* 防目录逃逸：任何 rel 路径必须解析到 workspace 内 */
+  /**
+   * 防目录逃逸：任何 rel 路径必须解析到 workspace 内
+   * @param {string} rel - 相对于 workspace 根的路径（支持正斜杠 / 反斜杠）
+   * @returns {string} 解析后的绝对路径（保证在 this.dir 内）
+   * @throws {Error} 路径为空 / 含 NULL 字节 / 越界逃逸
+   */
   safePath(rel) {
     if (typeof rel !== "string" || !rel.length) throw new Error("路径不能为空");
     const norm = rel.replace(/\\/g, "/");

@@ -46,3 +46,6 @@ scripts/_verify_out/
 start_srv.bat
 _srv*.log
 _srv*.err
+
+# CodeArts Work local data
+.opencode/

@@ -4,7 +4,7 @@ const WebSocket = require("ws");
 const fs = require("fs");
 
 const PORT = process.env.PORT || 8768;
-const EXT = "D:/claw-workpace/my-real-project";
+const EXT = process.env.E2E_WORKSPACE || "D:/claw-workpace/my-real-project";
 const ws = new WebSocket("ws://127.0.0.1:" + PORT);
 let phase = 0;
 const termOut = [];

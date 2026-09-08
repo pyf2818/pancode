@@ -1,0 +1,40 @@
+{
+  "root": true,
+  "env": {
+    "node": true,
+    "browser": true,
+    "es2022": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "commonjs"
+  },
+  "extends": ["eslint:recommended"],
+  "rules": {
+    "no-unused-vars": "warn",
+    "no-console": "off",
+    "no-empty": ["error", { "allowEmptyCatch": true }],
+    "no-undef": "off",
+    "no-useless-escape": "off",
+    "no-control-regex": "off",
+    "no-misleading-character-class": "off",
+    "no-prototype-builtins": "off",
+    "no-fallthrough": "warn",
+    "no-redeclare": "warn",
+    "prefer-const": "off",
+    "eqeqeq": "off",
+    "no-irregular-whitespace": "off"
+  },
+  "ignorePatterns": [
+    "node_modules/",
+    "dist/",
+    "build/",
+    "out/",
+    "release/",
+    "coverage/",
+    "public/vendor/",
+    "public/js/core.js",
+    "public/js/cmdk.js",
+    "public/js/evolution-codex.js"
+  ]
+}
