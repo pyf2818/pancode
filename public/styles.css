@@ -278,7 +278,12 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 
 .evo-ach-ico{font-size:14px}
 .ft-item.active{background:var(--active);color:var(--text);font-weight:600}
-.ft-item .ft-mod{margin-left:auto;margin-right:8px;color:var(--warn);font-size:11px;font-weight:700}
+.ft-item .ft-mod{margin-left:4px;color:var(--warn);font-size:11px;font-weight:700;flex-shrink:0}
+.ft-item.has-change{box-shadow:inset 2px 0 0 var(--warn)}
+.ft-change{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:10px;font-weight:600;flex-shrink:0;cursor:pointer;padding:1px 4px;border-radius:4px;transition:background .2s}
+.ft-change:hover{background:var(--bg4)}
+.ft-c-add{color:var(--ok)}
+.ft-c-del{color:var(--err)}
 .ft-dir{color:#c09553;display:inline-flex;flex-shrink:0}
 .ft-dir-head{font-weight:600}
 .ft-dir-toggle{display:inline-flex;transition:transform .15s;width:14px;justify-content:center;flex-shrink:0}
@@ -1411,16 +1416,32 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .orch-summary .orch-sum-ico .ico{width:16px;height:16px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* 消息节点快速跳转导航条 */
-#msgNavRail{width:22px;flex-shrink:0;position:relative;height:100%;opacity:0;transition:opacity .25s;z-index:5}
+/* 消息节点快速跳转导航条：每个节点 = 一条用户输入；space-evenly 均匀分布，不随消息实际位置 */
+#msgNavRail{width:22px;flex-shrink:0;display:flex;flex-direction:column;justify-content:space-evenly;align-items:center;height:100%;opacity:0;transition:opacity .25s;z-index:5}
 #msgNavRail:hover,#msgNavRail.nav-visible{opacity:1}
-.msg-nav-item{position:absolute;right:4px;width:5px;height:2px;border-radius:1px;background:var(--text-dim);cursor:pointer;transition:width .2s,background .2s,box-shadow .2s;opacity:.35}
-.msg-nav-item.user{background:var(--accent);width:4px;height:4px;border-radius:50%;right:5px}
-.msg-nav-item:hover{width:18px;background:var(--accent-hi);opacity:1}
-.msg-nav-item.user:hover{width:7px;height:7px}
-.msg-nav-item.active{background:var(--accent-hi);box-shadow:0 0 8px var(--accent-glow);width:16px;opacity:1}
-.msg-nav-item.user.active{width:7px;height:7px}
-.msg-nav-tip{position:fixed;right:30px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;color:var(--text);max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;z-index:var(--z-overlay);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.msg-nav-item{width:6px;height:6px;border-radius:50%;background:var(--text-dim);cursor:pointer;transition:transform .2s,background .2s,box-shadow .2s;opacity:.45;flex-shrink:0}
+.msg-nav-item:hover{transform:scale(1.6);background:var(--accent-hi);opacity:1}
+.msg-nav-item.active{background:var(--accent-hi);box-shadow:0 0 8px var(--accent-glow);opacity:1}
+/* 点击节点弹出的输入记录窗口：列出全部用户输入，点击条目跳转到对应消息 */
+.msg-nav-pop{position:fixed;z-index:var(--z-overlay);width:320px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4);opacity:0;transform:translateX(8px);transition:opacity .15s ease,transform .15s ease;pointer-events:none;overflow:hidden}
+.msg-nav-pop.show{opacity:1;transform:translateX(0);pointer-events:auto}
+.mnp-head{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;background:var(--bg2)}
+.mnp-role{color:var(--accent);font-weight:600}
+.mnp-idx{color:var(--text-dim);font-variant-numeric:tabular-nums}
+.mnp-list{max-height:60vh;overflow-y:auto;padding:4px 0}
+.mnp-item{display:flex;gap:8px;padding:7px 10px;font-size:12px;line-height:1.5;color:var(--text);cursor:pointer;transition:background .15s}
+.mnp-item:hover{background:var(--bg4)}
+.mnp-no{flex-shrink:0;min-width:18px;text-align:right;color:var(--text-dim);font-variant-numeric:tabular-nums}
+.mnp-txt{flex:1;word-break:break-word;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+/* 点击条目跳转后，目标消息短暂高亮 */
+.msg-jump-flash{box-shadow:0 0 0 2px var(--accent),0 0 14px var(--accent-glow);border-radius:8px}
+
+/* 快速滚动按钮（顶部/底部）：内容可滚动时始终显示 */
+#chatScrollBtns{position:absolute;bottom:12px;right:8px;display:flex;flex-direction:column;gap:6px;z-index:6;opacity:0;transition:opacity .25s;pointer-events:none}
+#chatScrollBtns.csb-visible{opacity:1;pointer-events:auto}
+.chat-scroll-btn{width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:var(--bg3);color:var(--text-dim);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .2s,color .2s,box-shadow .2s;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.chat-scroll-btn:hover{background:var(--bg4);color:var(--accent-hi);box-shadow:0 2px 12px rgba(0,0,0,.4)}
+.chat-scroll-btn .ico{width:14px;height:14px}
 
 
 /* 交互式选项列表弹窗 */

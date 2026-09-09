@@ -24,6 +24,7 @@ const DEFAULTS = {
     model: "gpt-4o-mini",
     temperature: 0.2,
     maxToolRounds: 100,   // 单次任务最多工具调用轮数
+    contextWindow: 128000, // 模型真实上下文窗口（tokens）：上下文进度条分母 + 自动压缩依据，按所用模型调整
   },
   // —— Phase 1：Agent 框架 ——
   permissions: {
@@ -118,8 +119,12 @@ function saveLlm(cfg, patch) {
     const n = Number(patch.maxToolRounds);
     if (Number.isInteger(n) && n >= 5 && n <= 500) cfg.llm.maxToolRounds = n;
   }
+  if (patch.contextWindow !== undefined) {
+    const w = Number(patch.contextWindow);
+    if (Number.isFinite(w) && w >= 4096 && w <= 2000000) cfg.llm.contextWindow = Math.round(w);
+  }
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
-  onDisk.llm = { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds };
+  onDisk.llm = { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow };
   writeJsonSafe(CONFIG_PATH, onDisk);
   return cfg;
 }

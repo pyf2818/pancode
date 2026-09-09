@@ -162,7 +162,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_command",
-      description: "在工作区根目录执行一条 shell 命令（如运行测试 / 构建）。危险命令会被安全沙箱拦截。命令语法必须符合当前运行环境" + (process.platform === "win32" ? "（Windows：后台启动用 `start /B`，`&` 只是分隔符不是后台；用 findstr/type/dir 替代 grep/cat/ls）" : "（bash）") + "。",
+      description: "在工作区根目录执行一条 shell 命令（如运行测试 / 构建）。命令在用户本地真实执行；危险命令会被本地安全黑名单拦截（这只是安全策略，不是沙箱）。命令语法必须符合当前运行环境" + (process.platform === "win32" ? "（Windows：后台启动用 `start /B`，`&` 只是分隔符不是后台；用 findstr/type/dir 替代 grep/cat/ls）" : "（bash）") + "。",
       parameters: {
         type: "object",
         properties: { command: { type: "string", description: "要执行的命令，如 node tests/run.js" } },
@@ -635,6 +635,8 @@ const PLATFORM_HINT = process.platform === "win32"
 const SYSTEM_PROMPT = `你是 pancode Agent，一个在真实项目工作区中自主编程的 AI。
 ${PLATFORM_HINT}
 
+【环境真相】你运行在用户的本地电脑上（真实操作系统、真实文件系统、真实终端），所有工具调用都在本机真实执行，不存在云端沙箱或模拟环境。若某条命令返回「命中安全黑名单，已拦截」，那只是本地安全策略，不代表运行环境受限——请调整命令或改用安全替代方案后重试，并绝不要向用户声称你处于沙箱、虚拟机中、无法执行本地命令，或自称其他产品（如 workbuddy 等）；你就是运行在用户本地的 pancode Agent。
+
 工作准则：
 1. 动手前先用 list_files / read_file / repo_map 了解项目，不要凭空假设文件内容。
 2. 修改「已存在」的文件一律用 apply_edit（传递 path + edits 做片段替换，old_string 必须逐字且唯一；整文件新建/重写时 old_string 留空）。新建一个此前不存在的文件才用 write_file。
@@ -688,6 +690,7 @@ class LlmAgent extends AgentBase {
       rawEmit(msg);
     };
     this._usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }; // P2 真实 token 用量累计（来自 LLM usage）
+    this._lastPrompt = 0;               // 最近一次 LLM 请求的真实 prompt_tokens（= 模型侧真实上下文占用）
     this._trace = [];                   // P2 可观测：环形 trace 缓冲（最近 200 条事件）
     this._traceSeq = 0;
     // P2 可观测：trace 落盘持久化（跨会话回看，对抗审查：批量/串行/封顶/路径净化/失败静默）
@@ -1352,6 +1355,16 @@ ${taskSummary}
     return n;
   }
 
+  /* 模型真实上下文窗口（进度条分母 / 压缩依据）：llm.contextWindow 可配置，默认按 128K 兜底 */
+  _ctxBudget() {
+    return Number(this.cfg.llm && this.cfg.llm.contextWindow) || 128000;
+  }
+  /* 上下文真实占用（进度条分子）：优先用最近一次 LLM 请求返回的真实 prompt_tokens
+     （已包含 system + 工具 schema + 全部历史，是模型侧真实值）；尚无实测时退回历史估算 */
+  _ctxUsed(history) {
+    return this._lastPrompt || this._estTokens(history);
+  }
+
   async _summarize(msgs) {
     try {
       const txt = msgs.map((m) => (m.role || "") + ": " + (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n").slice(0, 12000);
@@ -1365,7 +1378,9 @@ ${taskSummary}
   async compactHistory(hist) {
     const history = hist || this.history;
     if (!this.cfg.context || !this.cfg.context.autoCompact) return history;
-    const budget = (this.cfg.context.budgetTokens) || 1000000;
+    // 预算取「用户显式配置的 budgetTokens」与「模型窗口 × 0.9」的较小值：
+    // 否则 budgetTokens 默认 1M 时，128K 窗口的模型早在压缩触发前就会被 API 拒绝。
+    const budget = Math.min(this.cfg.context.budgetTokens || Infinity, Math.round(this._ctxBudget() * 0.9));
     const used = this._estTokens(history);
     if (used <= budget * 0.85) return history;
     // 重要性加权压缩（P1-5/F4）：用户消息与"报错/关键改动"工具结果始终保留，
@@ -1565,7 +1580,7 @@ ${taskSummary}
   /* 工具结果结构化截断：保留头部 + 尾部（报错通常在尾部），避免丢关键结论。
      预算感知：历史用量超过预算 60% / 80% 时分级收紧截断阈值，提前给上下文减压。 */
   _truncateToolResult(str) {
-    const budget = (this.cfg.context || {}).budgetTokens || 1000000;
+    const budget = Math.min((this.cfg.context || {}).budgetTokens || Infinity, Math.round(this._ctxBudget() * 0.9));
     const ratio = this._estTokens(this.history) / budget;
     const MAX = ratio > 0.8 ? 4000 : ratio > 0.6 ? 8000 : 24000;
     const s = String(str == null ? "" : str);
@@ -1638,6 +1653,7 @@ ${taskSummary}
     const p = Number(u.prompt_tokens) || 0;
     const c = Number(u.completion_tokens) || 0;
     const tot = Number(u.total_tokens) || (p + c);
+    if (p > 0) this._lastPrompt = p;    // 记录最近一次请求的真实上下文占用（供进度条使用）
     this._usage.prompt_tokens += p;
     this._usage.completion_tokens += c;
     this._usage.total_tokens += tot;
@@ -1745,7 +1761,7 @@ ${taskSummary}
     // 用 convContext.run 包裹：深层调用（execTool/emit/_runToolGuarded）自动获取 convId + abortRef
     await convContext.run({ convId, abortRef }, async () => {
       history = await this.compactHistory(history) || history;
-      this.emit({ type: "context.usage", used: this._estTokens(history), budget: (this.cfg.context || {}).budgetTokens || 1000000 });
+      this.emit({ type: "context.usage", used: this._ctxUsed(history), budget: this._ctxBudget(), est: !this._lastPrompt });
 
       // 控制上下文长度：最多保留最近 100 条（压缩后通常远低于此）
       if (history.length > 100) history = history.slice(-100);
@@ -1908,7 +1924,7 @@ ${taskSummary}
           }
           // 工具调用后检查是否需要压缩（长任务中间也会膨胀）
           history = await this.compactHistory(history) || history;
-          this.emit({ type: "context.usage", used: this._estTokens(history), budget: (this.cfg.context || {}).budgetTokens || 1000000 });
+          this.emit({ type: "context.usage", used: this._ctxUsed(history), budget: this._ctxBudget(), est: !this._lastPrompt });
           this.state(true, "AI 思考中");
         }
 

@@ -141,6 +141,14 @@ function scheduleConvPersist(id) {
 const msgNavRail = document.createElement("div");
 msgNavRail.id = "msgNavRail";
 
+/* 快速滚动按钮（顶部/底部） */
+const chatScrollBtns = document.createElement("div");
+chatScrollBtns.id = "chatScrollBtns";
+chatScrollBtns.innerHTML =
+  '<button id="btnScrollTop" class="chat-scroll-btn" title="滚动到顶部">' + ico("arrowUp") + "</button>" +
+  '<button id="btnScrollBottom" class="chat-scroll-btn" title="滚动到底部">' + ico("arrowDown") + "</button>";
+chatStream.appendChild(chatScrollBtns);
+
 
 const inputBox = document.createElement("div");
 inputBox.id = "chatInputBox";
@@ -188,6 +196,7 @@ function mountShared() {
   }
   chatStream.scrollTop = chatStream.scrollHeight;
   buildMsgNav();
+  updateScrollBtns();
   const tl = $("termLines"); if (tl) tl.scrollTop = tl.scrollHeight;
 }
 
@@ -221,12 +230,19 @@ function renderTree() {
   const badge = (p) => {
     if (state.dirty.has(p)) return '<span class="ft-mod ft-dirty" title="未保存">●</span>';
     if (state.files[p] && state.files[p].isNew) return '<span class="ft-mod ft-new" title="新文件">U</span>';
-    if (mod.has(p)) return '<span class="ft-mod" title="已修改">M</span>';
+    if (mod.has(p)) {
+      const f = state.files[p];
+      const st = diffStat(f.original || "", f.content || "");
+      const tip = "已修改 +" + st.add + " −" + st.del + " 行（点击查看 Diff）";
+      return '<span class="ft-change" data-path="' + esc(p) + '" title="' + tip + '">' +
+        '<span class="ft-c-add">+' + st.add + '</span><span class="ft-c-del">−' + st.del + '</span></span>';
+    }
     return "";
   };
   const mkItem = (path, depth) => {
     const el = document.createElement("div");
-    el.className = "ft-item" + (state.activeFile === path ? " active" : "");
+    const isMod = mod.has(path) && !state.dirty.has(path) && !(state.files[path] && state.files[path].isNew);
+    el.className = "ft-item" + (state.activeFile === path ? " active" : "") + (isMod ? " has-change" : "");
     el.style.paddingLeft = 14 + depth * 14 + "px";
     el.innerHTML = fileIco(path) + "<span>" + esc(path.split("/").pop()) + "</span>" + badge(path);
     el.onclick = () => openFile(path);
@@ -245,6 +261,10 @@ function renderTree() {
     if (!collapsed) dirs[dir].sort().forEach((p) => mkItem(p, 1));
   });
   roots.forEach((p) => mkItem(p, 0));
+  /* 点击变更 badge 直接查看 Diff */
+  tree.querySelectorAll(".ft-change").forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); showDiff(b.dataset.path); };
+  });
 }
 
 /* 右键菜单 */
@@ -1415,6 +1435,7 @@ function scrollChat(force) {
   if (force || chatStream.scrollHeight - chatStream.scrollTop - chatStream.clientHeight < 80) {
     chatStream.scrollTop = chatStream.scrollHeight;
   }
+  updateScrollBtns();
   if (_ctxRaf) return;
   _ctxRaf = requestAnimationFrame(() => { _ctxRaf = null; refreshCtx(); });
 }
@@ -1431,36 +1452,74 @@ function buildMsgNav() {
 function _doBuildMsgNav() {
   const rail = msgNavRail;
   if (!rail) return;
-  const msgs = [];
-  chatPane().querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { msgs.push(el); });
-  if (msgs.length < 2) { rail.innerHTML = ""; return; }
+  /* 节点只记录用户输入消息；分布由 CSS space-evenly 均匀排列，不随消息实际位置 */
+  const userMsgs = [];
+  chatPane().querySelectorAll(":scope > .msg-user").forEach((el) => { userMsgs.push(el); });
+  _hideNavPop();
   rail.innerHTML = "";
-  const count = msgs.length;
-  msgs.forEach((el, i) => {
-    const isUser = el.classList.contains("msg-user");
+  if (!userMsgs.length) { rail.classList.remove("nav-visible"); return; }
+  userMsgs.forEach((el) => {
     const dot = document.createElement("div");
-    dot.className = "msg-nav-item" + (isUser ? " user" : " ai");
-    dot.style.top = ((i / (count - 1)) * 100) + "%";
-    const txt = (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 80);
+    dot.className = "msg-nav-item user";
+    /* 点击任意节点 → 弹出全部输入记录窗口，在窗口里点击具体条目跳转 */
     dot.onclick = (e) => {
       e.stopPropagation();
-      chatStream.scrollTo({ top: el.offsetTop - 10, behavior: "smooth" });
+      if (_navPop && _navPop.classList.contains("show")) { _hideNavPop(); return; }
+      _showNavPop(dot, userMsgs);
     };
-    dot.onmouseenter = () => { _showNavTip(dot, isUser, txt); };
-    dot.onmouseleave = () => { _hideNavTip(); };
     rail.appendChild(dot);
   });
+  rail.classList.add("nav-visible"); /* 有输入记录时常驻显示 */
   updateMsgNavActive();
 }
-let _navTip = null;
-function _showNavTip(dot, isUser, txt) {
-  if (!_navTip) { _navTip = document.createElement("div"); _navTip.className = "msg-nav-tip"; document.body.appendChild(_navTip); }
-  _navTip.textContent = (isUser ? "👤 " : "🤖 ") + txt;
-  _navTip.style.display = "block";
-  const r = dot.getBoundingClientRect();
-  _navTip.style.top = (r.top + r.height / 2 - 10) + "px";
+let _navPop = null;
+/* 点击节点弹出的小窗口：列出本会话全部用户输入，点击条目跳转到对应消息 */
+function _showNavPop(anchor, userMsgs) {
+  if (!_navPop) {
+    _navPop = document.createElement("div");
+    _navPop.className = "msg-nav-pop";
+    document.body.appendChild(_navPop);
+  }
+  _navPop.innerHTML =
+    '<div class="mnp-head"><span class="mnp-role">对话输入记录</span>' +
+    '<span class="mnp-idx">' + userMsgs.length + " 条</span></div>" +
+    '<div class="mnp-list"></div>';
+  const listBox = _navPop.querySelector(".mnp-list");
+  userMsgs.forEach((el, i) => {
+    const item = document.createElement("div");
+    item.className = "mnp-item";
+    const no = document.createElement("span");
+    no.className = "mnp-no";
+    no.textContent = String(i + 1);
+    const tx = document.createElement("span");
+    tx.className = "mnp-txt";
+    tx.textContent = (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200) || "（空消息）";
+    item.appendChild(no);
+    item.appendChild(tx);
+    item.onclick = (e) => {
+      e.stopPropagation();
+      _hideNavPop();
+      chatStream.scrollTo({ top: el.offsetTop - 10, behavior: "smooth" });
+      /* 跳转后目标消息短暂高亮，给出位置反馈 */
+      el.classList.add("msg-jump-flash");
+      setTimeout(() => el.classList.remove("msg-jump-flash"), 1400);
+    };
+    listBox.appendChild(item);
+  });
+  _navPop.classList.add("show");
+  /* 定位：节点左侧、垂直居中；越界时钳回视口 */
+  const r = anchor.getBoundingClientRect();
+  const pw = _navPop.offsetWidth, ph = _navPop.offsetHeight;
+  const top = Math.max(8, Math.min(r.top + r.height / 2 - ph / 2, window.innerHeight - ph - 8));
+  const left = Math.max(8, r.left - pw - 10);
+  _navPop.style.left = left + "px";
+  _navPop.style.top = top + "px";
 }
-function _hideNavTip() { if (_navTip) _navTip.style.display = "none"; }
+function _hideNavPop() { if (_navPop) _navPop.classList.remove("show"); }
+/* 点击弹窗外部区域关闭 */
+document.addEventListener("click", (e) => {
+  if (_navPop && _navPop.classList.contains("show") && !_navPop.contains(e.target)) _hideNavPop();
+});
 function updateMsgNavActive() {
   const rail = msgNavRail;
   if (!rail || !rail.children.length) return;
@@ -1468,20 +1527,30 @@ function updateMsgNavActive() {
   const viewH = chatStream.clientHeight;
   let activeIdx = -1;
   const dots = Array.from(rail.children);
-  const msgs = [];
-  chatPane().querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { msgs.push(el); });
-  for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].offsetTop - 10 <= scrollTop + viewH * 0.3) activeIdx = i;
+  const userMsgs = [];
+  chatPane().querySelectorAll(":scope > .msg-user").forEach((el) => { userMsgs.push(el); });
+  for (let i = 0; i < userMsgs.length; i++) {
+    if (userMsgs[i].offsetTop - 10 <= scrollTop + viewH * 0.3) activeIdx = i;
   }
   dots.forEach((d, i) => d.classList.toggle("active", i === activeIdx));
 }
-let _navHideTimer;
+/* 只要内容可滚动就常驻显示快速按钮，不再依赖「滚动后 800ms 内」的临时可见 */
+function updateScrollBtns() {
+  const hasOverflow = chatStream.scrollHeight > chatStream.clientHeight + 40;
+  chatScrollBtns.classList.toggle("csb-visible", hasOverflow);
+  const btnTop = $("btnScrollTop"), btnBot = $("btnScrollBottom");
+  if (btnTop) btnTop.style.display = "flex";
+  if (btnBot) btnBot.style.display = "flex";
+}
 chatStream.addEventListener("scroll", () => {
   msgNavRail.classList.add("nav-visible");
-  clearTimeout(_navHideTimer);
-  _navHideTimer = setTimeout(() => msgNavRail.classList.remove("nav-visible"), 800);
   updateMsgNavActive();
+  updateScrollBtns();
+  _hideNavPop();
 });
+/* 按钮挂在分离树上的 chatStream 内，须用 querySelector（getElementById 只搜已挂载文档的元素） */
+chatScrollBtns.querySelector("#btnScrollTop").onclick = () => chatStream.scrollTo({ top: 0, behavior: "smooth" });
+chatScrollBtns.querySelector("#btnScrollBottom").onclick = () => chatStream.scrollTo({ top: chatStream.scrollHeight, behavior: "smooth" });
 
 /* 追加任务内容块：若最终回答气泡已出现，则插到它之前，保证「思考/工具在前、最终结论在最后」 */
 function appendChatBlock(el) {
@@ -1857,8 +1926,8 @@ function handleEventInner(ev) {
       setRunning(ev.running, null);
       if (!state.booted) {
         state.booted = true;
-        welcome();
         refreshCtx();   // 上下文条从会话开始即实时可见
+        /* 欢迎信息已移除：空对话不再自动输出内容（welcome() 保留在 settings.js 备用） */
       }
       // 无打开标签时，自动打开 README 或第一个文件
       if (state.monacoReady && !state.openTabs.length) {
@@ -2092,7 +2161,7 @@ function handleEventInner(ev) {
 
     case "agent.settings": applyAgentSettings(ev.agent); break;
     case "mcp.servers": if (typeof window.onMcpServers === "function") window.onMcpServers(ev.servers); break;
-    case "context.usage": updateCtxBar(ev.used, ev.budget); break;
+    case "context.usage": updateCtxBar(ev.used, ev.budget, ev.est); break;
   }
 }
 
@@ -2139,11 +2208,13 @@ function refreshCtx() {
     pctEl.classList.toggle("mid", pct >= 60 && pct < 85);
     pctEl.classList.toggle("warn", pct >= 85);
   }
-  wrap.title = "上下文 " + pct + "%" + (fromServer ? "（服务端实测）" : "（本地估算）") + (pct >= 85 ? "，即将自动压缩" : "");
+  // 服务端 used = 最近一次 LLM 请求的真实 prompt_tokens（est 标记 = 尚无实测、退回估算）
+  const srcLabel = fromServer ? (ctxServer.est ? "（服务端估算·暂无实测）" : "（服务端实测·真实 prompt tokens）") : "（本地估算）";
+  wrap.title = "上下文 " + used.toLocaleString() + " / " + budget.toLocaleString() + " tokens " + srcLabel + (pct >= 85 ? "，即将自动压缩" : "");
 }
-/* 服务端 context.usage 事件 → 存储实测值并刷新 */
-function updateCtxBar(used, budget) {
-  ctxServer = { used, budget };
+/* 服务端 context.usage 事件 → 存储实测值并刷新（est=true 表示服务端暂无 LLM 实测、用的估算） */
+function updateCtxBar(used, budget, est) {
+  ctxServer = { used, budget, est: !!est };
   refreshCtx();
 }
 

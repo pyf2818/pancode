@@ -114,6 +114,8 @@
     pulse: `<path d="M1.5 8h3l1.5-3.5L8 11l1.8-5.5L11.5 8h3" ${S}/>`,
     pin: `<path d="M9.2 2.8l4 4-2.2 2.2-1.6-.4-2.4 2.4v2.2l-2.2 2.2-1-1 2.2-2.2h2.2l2.4-2.4-.4-1.6z" ${S}/>`,
     target: `<circle cx="8" cy="8" r="5.6" ${S}/><circle cx="8" cy="8" r="3.2" ${S}/><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"/>`,
+    arrowUp: `<path d="M8 12.5V4.5M4.5 8L8 4.5 11.5 8" ${S}/>`,
+    arrowDown: `<path d="M8 3.5v8M4.5 8L8 11.5 11.5 8" ${S}/>`,
   };
 
   /* 文件类型徽标：圆角方块 + 字母，参考 VS Code seti 风格 */

@@ -39,11 +39,11 @@ const STRICT = [
 function check(displayCmd, strict) {
   const cmd = String(displayCmd || "");
   for (const re of BASE) {
-    if (re.test(cmd)) return { blocked: true, reason: "命中基础危险命令黑名单（fork 炸弹 / 格式化 / 递归删除根 / 下载执行 / 关机 / 写设备等）" };
+    if (re.test(cmd)) return { blocked: true, reason: "命中基础危险命令黑名单（fork 炸弹 / 格式化 / 递归删除根 / 下载执行 / 关机 / 写设备等），已拦截。这只是本地安全策略，并非沙箱限制——命令本身是在用户本机真实执行的，请改用安全的替代方案。" };
   }
   if (strict) {
     for (const re of STRICT) {
-      if (re.test(cmd)) return { blocked: true, reason: "AI 命令需经更严格沙箱，已拦截（sudo / 系统目录 / 全局安装 / 批量删除等）" };
+      if (re.test(cmd)) return { blocked: true, reason: "命中 AI 命令安全黑名单（sudo / 系统目录写入 / 全局安装 / 批量删除等），已拦截。这只是本地安全策略，并非沙箱环境——命令本身是在用户本机真实执行的，请改用无需提权或全局写入的替代方案。" };
     }
   }
   return { blocked: false };
