@@ -74,7 +74,12 @@ function _sanitizeHistory(history) {
 const CONV_MAX = 20;          // 最多保留 20 个对话（与内存 LRU 上限一致）
 const CONV_MAX_MSGS = 80;     // 单个对话落盘时最多保留最近 80 条消息
 const CONV_SAVE_DEBOUNCE = 600; // 落盘防抖（ms）
+
 const TRACE_MAX_BYTES = 4 * 1024 * 1024; // 单会话 trace 落盘上限 4MB，超过即停写（防撑爆磁盘）
+
+/* 对话上下文 TTL（天）：不活跃的会话超过该时长，加载/落盘时一并清理。
+   与 LRU 容量上限（CONV_MAX）互补——容量管"同时活跃多少"，TTL 管"冷多久就清"。 */
+const CONV_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /* OpenAI 兼容工具定义：供 LLM 做 function calling（ReAct 工具调用循环） */
 const TOOLS = [
@@ -691,10 +696,15 @@ class LlmAgent extends AgentBase {
     };
     this._usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }; // P2 真实 token 用量累计（来自 LLM usage）
     this._lastPrompt = 0;               // 最近一次 LLM 请求的真实 prompt_tokens（= 模型侧真实上下文占用）
+    this._lastPromptLen = 0;           // 实测 prompt_tokens 对应的 history 长度（超出部分按估算补齐，避免滞后一轮）
     this._trace = [];                   // P2 可观测：环形 trace 缓冲（最近 200 条事件）
     this._traceSeq = 0;
     // P2 可观测：trace 落盘持久化（跨会话回看，对抗审查：批量/串行/封顶/路径净化/失败静默）
-    this._traceDir = path.join(require("./config").ROOT, ".pancode", "agent-traces");
+    // 多用户隔离：登录用户的 trace 放独立子目录；anon（默认单用户）沿用原 agent-traces/ 根目录，零迁移
+    const traceUser = ctx.userKey || "anon";
+    this._traceDir = traceUser === "anon"
+      ? path.join(require("./config").ROOT, ".pancode", "agent-traces")
+      : path.join(require("./config").ROOT, ".pancode", "agent-traces", traceUser);
     try { fs.mkdirSync(this._traceDir, { recursive: true }); this._traceEnabled = true; }
     catch (e) { this._traceEnabled = false; }   // 落盘失败绝不阻塞 agent 主循环
     this._tracePending = [];        // 待落盘行（批量聚合）
@@ -718,31 +728,41 @@ class LlmAgent extends AgentBase {
       .digest("hex");
     const memDir = path.join(require("./config").ROOT, ".pancode", "memory");
     const skillDir = path.join(require("./config").ROOT, ".pancode", "skills");
-    this.memory = new MemoryStore(path.join(memDir, wsHash + ".json"));
+    // 多用户隔离：记忆库是"项目级"资产，同一工作区跨用户共享一份（由 index.js 注入 sharedMemory），
+    // 避免每个用户实例各自 new 一份 MemoryStore 导致内存不一致 + 重复加载。独立构造时（测试/演示）自建兜底。
+    this.memory = (ctx && ctx.sharedMemory) ? ctx.sharedMemory : new MemoryStore(path.join(memDir, wsHash + ".json"));
     const marketDir = path.join(require("./config").ROOT, ".pancode", "skills", "market");
     const builtinDir = path.join(__dirname, "builtin-skills");   // 打包内置 skills（asar 只读，随安装包分发）
     // 优先复用服务器级共享 SkillStore（index.js buildEngine 注入，确保演示模式也带内置 skill）；
     // 独立构造 LlmAgent 时（如测试）自建兜底
     this.skills = (ctx && ctx.skills) ? ctx.skills : new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), builtinDir);
+    // 多用户：计划/工作流/灵魂/进度是"项目级"资产，同工作区跨用户共享同一实例（由 index.js 注入），
+    // 避免每用户实例各开一份指向同文件的 store 造成内存分叉。独立构造时自建兜底。
     const planDir = path.join(require("./config").ROOT, ".pancode", "plans");
-    this.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
+    this.plan = (ctx && ctx.sharedPlan) ? ctx.sharedPlan : new PlanStore(path.join(planDir, wsHash + ".json"));
     const wfDir = path.join(require("./config").ROOT, ".pancode", "workflows");
     fs.mkdirSync(wfDir, { recursive: true });
-    this.workflows = new WorkflowStore(path.join(wfDir, wsHash + ".json"));
+    this.workflows = (ctx && ctx.sharedWorkflow) ? ctx.sharedWorkflow : new WorkflowStore(path.join(wfDir, wsHash + ".json"));
     const goalDir = path.join(require("./config").ROOT, ".pancode", "goals");
     fs.mkdirSync(goalDir, { recursive: true });
-    this._goalPath = path.join(goalDir, wsHash + ".json");
+    this._goalPath = path.join(goalDir, wsHash + ".json");   // 目标按工作区（下面按 userKey 覆盖）
     this._goal = this._loadGoal();
     this.contextRetriever = new ContextRetriever(this.memory, this.files);
     this.evolution = new EvolutionEngine(this.memory);
     const soulDir = path.join(require("./config").ROOT, ".pancode", "soul");
-    this.soul = new SoulStore(path.join(soulDir, wsHash + ".json"));
+    this.soul = (ctx && ctx.sharedSoul) ? ctx.sharedSoul : new SoulStore(path.join(soulDir, wsHash + ".json"));
     const progDir = path.join(require("./config").ROOT, ".pancode", "progression");
-    this.progression = new ProgressionStore(path.join(progDir, wsHash + ".json"));
+    this.progression = (ctx && ctx.sharedProgression) ? ctx.sharedProgression : new ProgressionStore(path.join(progDir, wsHash + ".json"));
 
-    /* C6：会话上下文磁盘持久化（跨进程重启恢复 AI 记忆） */
+    /* C6：会话上下文磁盘持久化（跨进程重启恢复 AI 记忆）
+       多用户隔离：目标 + 对话上下文按用户分文件，避免两个用户同工作区互相覆盖。
+       anon（默认单用户模式）沿用原路径 {wsHash}.json，零数据迁移；登录用户走 {wsHash}__{userKey}。 */
     const convDir = path.join(require("./config").ROOT, ".pancode", "conversations");
-    this._convPath = path.join(convDir, wsHash + ".json");
+    const userKey = ctx.userKey || "anon";
+    const dataSuffix = userKey === "anon" ? "" : "__" + userKey;
+    this._userKey = userKey;
+    this._convPath = path.join(convDir, wsHash + dataSuffix + ".json");
+    this._goalPath = path.join(goalDir, wsHash + dataSuffix + ".json");
     this._convSaveTimer = null;
     this._loadConversations();
     // P2 工具注册自检：构造时校验 TOOLS 声明与 execTool 实现是否失配（防止 TOOLS is not defined 类复发）
@@ -757,16 +777,21 @@ class LlmAgent extends AgentBase {
       if (!fs.existsSync(this._convPath)) return;
       const raw = JSON.parse(fs.readFileSync(this._convPath, "utf8"));
       const list = Array.isArray(raw && raw.conversations) ? raw.conversations : [];
+      let expired = 0;
       for (const c of list) {
         if (!c || !c.id || !Array.isArray(c.history)) continue;
+        const ts = Number(c.ts) || Date.now();
+        // 对话 TTL：30 天不活跃的会话不恢复（冷会话自然消退，与记忆衰减同一思想）
+        if (Date.now() - ts > CONV_TTL_MS) { expired++; continue; }
         this.conversations.set(String(c.id), {
           history: _sanitizeHistory(c.history),
           round: Number(c.round) || 0,
-          ts: Number(c.ts) || Date.now(),
+          ts,
           changes: Array.isArray(c.changes) ? c.changes : [],
         });
         if (Array.isArray(c.changes)) this.convChanges[String(c.id)] = c.changes;
       }
+      if (expired) console.log("[pancode] 已按 TTL 清理 " + expired + " 个 30 天未活跃的对话");
       // 恢复上次活跃对话为当前上下文
       const cur = raw && raw.current ? String(raw.current) : "";
       if (cur && this.conversations.has(cur)) {
@@ -934,6 +959,7 @@ ${taskSummary}
     this.history = saved ? saved.history : [];
     this.round = saved ? saved.round : 0;
     this._abort = false;
+    this._lastPrompt = 0; this._lastPromptLen = 0;   // 切换会话 → 旧实测值作废
     this._persistConversations();   // C6：切换即落盘，进程被强杀也不丢
   }
 
@@ -1347,22 +1373,32 @@ ${taskSummary}
   /* ---------------- 上下文预算 / 自动压缩 ---------------- */
   _estTokens(messages) {
     let n = 0;
-    for (const m of messages) {
+    for (const m of messages || []) {
       const c = m.content;
       if (typeof c === "string") n += Math.ceil(c.length / 4);
       else if (Array.isArray(c)) for (const p of c) if (p.type === "text") n += Math.ceil((p.text || "").length / 4);
+      // 工具调用的参数（常是完整文件内容）也要计入——此前漏算导致估算只有真实值的 1/3
+      if (Array.isArray(m.tool_calls)) {
+        for (const t of m.tool_calls) n += Math.ceil(((t.function && t.function.arguments) || "").length / 4);
+      }
     }
-    return n;
+    // system prompt + 工具 schema + role 标记等固定开销按 1.2 系数补偿
+    return Math.ceil(n * 1.2);
   }
 
   /* 模型真实上下文窗口（进度条分母 / 压缩依据）：llm.contextWindow 可配置，默认按 128K 兜底 */
   _ctxBudget() {
     return Number(this.cfg.llm && this.cfg.llm.contextWindow) || 128000;
   }
-  /* 上下文真实占用（进度条分子）：优先用最近一次 LLM 请求返回的真实 prompt_tokens
-     （已包含 system + 工具 schema + 全部历史，是模型侧真实值）；尚无实测时退回历史估算 */
+  /* 上下文真实占用（进度条分子）：最近一次 LLM 请求的真实 prompt_tokens（含 system + 工具 schema +
+     当时全部历史）+ 之后新增消息的估算。_lastPromptLen 记录实测对应的位置，超出的部分按估算补齐，
+     避免实测值"滞后一轮"让进度条忽大忽小；历史被压缩/会话切换后两者同步作废归零。 */
   _ctxUsed(history) {
-    return this._lastPrompt || this._estTokens(history);
+    if (this._lastPrompt && this._lastPromptLen != null) {
+      const tail = (history || []).slice(this._lastPromptLen);
+      return this._lastPrompt + this._estTokens(tail);
+    }
+    return this._estTokens(history);
   }
 
   async _summarize(msgs) {
@@ -1375,14 +1411,17 @@ ${taskSummary}
     } catch (e) { return "(摘要生成失败)"; }
   }
 
-  async compactHistory(hist) {
+  async compactHistory(hist, opts) {
+    opts = opts || {};
     const history = hist || this.history;
     if (!this.cfg.context || !this.cfg.context.autoCompact) return history;
     // 预算取「用户显式配置的 budgetTokens」与「模型窗口 × 0.9」的较小值：
     // 否则 budgetTokens 默认 1M 时，128K 窗口的模型早在压缩触发前就会被 API 拒绝。
     const budget = Math.min(this.cfg.context.budgetTokens || Infinity, Math.round(this._ctxBudget() * 0.9));
-    const used = this._estTokens(history);
-    if (used <= budget * 0.85) return history;
+    // 优先用模型侧真实 prompt_tokens（_ctxUsed），实测缺失才退回估算；阈值 0.8 提前压缩，
+    // 避免"估算达标时真实值早已超限、请求直接被上游拒绝"（goal 长任务爆满的根因之一）
+    const used = this._lastPrompt ? this._ctxUsed(history) : this._estTokens(history);
+    if (!opts.force && used <= budget * 0.8) return history;
     // 重要性加权压缩（P1-5/F4）：用户消息与"报错/关键改动"工具结果始终保留，
     // 其余较早的可压缩消息汇成摘要；最近 keep 条原样保留以维持对话连贯。
     const keep = 10;
@@ -1413,26 +1452,43 @@ ${taskSummary}
     return newHist;
   }
 
-  /* 定期归纳记忆：把多条零散记忆合并为主题摘要，防止记忆爆炸 */
+  /* 定期归纳记忆：把多条零散记忆合并为主题摘要，防止记忆爆炸
+     改动：① 按 valueScore（而非 ts）决定合并谁——高价值条目保留原文，低价值被合并；
+            ② 合并条目继承被合并者最高 valueScore + 总访问次数 + source: consolidate（sticky 豁免裁剪）；
+            ③ 阈值改为"≥5 条且组内总 decayWeight < 组内条数×1.5"——低价值才归纳。 */
   _consolidateMemory(oldMsgs) {
     try {
       const allMemories = this.memory.list({ limit: 100 });
       if (allMemories.length < 20) return; // 不足 20 条不需要归纳
+      // 过滤归档条目，导入 decayWeight
+      const live = allMemories.filter((m) => !m.archived);
+      if (live.length < 20) return;
+      const { decayWeight, isSticky } = require("./memory-store");
       // 按主题分组
       const byTopic = {};
-      for (const m of allMemories) {
+      for (const m of live) {
         const key = m.topic || m.type;
         (byTopic[key] = byTopic[key] || []).push(m);
       }
-      // 同主题超过 5 条的，合并最早的几条为摘要
       for (const topic in byTopic) {
         const group = byTopic[topic];
         if (group.length < 5) continue;
-        const toMerge = group.sort((a, b) => a.ts - b.ts).slice(0, group.length - 2);
+        // 低价值才归纳：组内有效强度总和 < 条数 × 1.5（即平均强度 < 1.5）
+        const totalWeight = group.reduce((s, m) => s + decayWeight(m), 0);
+        if (totalWeight >= group.length * 1.5) continue;
+        // 按 valueScore 排序：分数低的先被合并（保留高价值原文），同分按访问次数排
+        const sorted = group.sort((a, b) => ((a.valueScore || 2) - (b.valueScore || 2)) || ((b.accessCount || 0) - (a.accessCount || 0)));
+        const toMerge = sorted.slice(0, Math.max(0, sorted.length - 2));   // 保留 top 2
         const mergedContent = toMerge.map((m) => m.content).join("；");
-        // 删除旧条目，添加合并条目
+        const bestScore = Math.max(...toMerge.map((m) => m.valueScore || 2));
+        const totalAccess = toMerge.reduce((s, m) => s + (m.accessCount || 0), 0);
         for (const m of toMerge) this.memory.remove(m.id);
-        this.memory.add(toMerge[0].type, topic, "[归纳] " + mergedContent.slice(0, 300), { source: "consolidate" });
+        this.memory.add(toMerge[0].type, topic, "[归纳] " + mergedContent.slice(0, 300), {
+          source: "consolidate",
+          valueScore: Math.max(bestScore, 3),   // 归纳产物至少中等价值
+          accessCount: totalAccess,
+          sticky: true,                          // 归纳产物 sticky，不会被 prune 主动删除
+        });
       }
       this.emit({ type: "term.line", text: "[Agent] 记忆已归纳压缩（" + allMemories.length + " 条 -> " + this.memory.size + " 条）", cls: "tl-info" });
     } catch (e) {}
@@ -1653,12 +1709,29 @@ ${taskSummary}
     const p = Number(u.prompt_tokens) || 0;
     const c = Number(u.completion_tokens) || 0;
     const tot = Number(u.total_tokens) || (p + c);
-    if (p > 0) this._lastPrompt = p;    // 记录最近一次请求的真实上下文占用（供进度条使用）
+    if (p > 0) {
+      this._lastPrompt = p;             // 记录最近一次请求的真实上下文占用（供进度条使用）
+      this._lastPromptLen = this.history.length;  // 实测值对应的历史长度：此后新增部分按估算补齐
+    }
     this._usage.prompt_tokens += p;
     this._usage.completion_tokens += c;
     this._usage.total_tokens += tot;
     this.emit({ type: "agent.usage", usage: this._usage });
     this._traceEnqueue({ seq: ++this._traceSeq, t: Date.now(), type: "usage", data: u }); // 落盘用量
+  }
+
+  /* 兜底硬裁剪：压缩后仍超模型窗口时，从头逐条裁掉最旧的非用户消息（保住最近一轮与用户意图），
+     直到估算值回到窗口的 70% 以内。仅在上游明确报上下文超限时调用。 */
+  _aggressiveTrim(history) {
+    const target = Math.round(this._ctxBudget() * 0.7);
+    while (this._estTokens(history) > target && history.length > 6) {
+      // 从第 2 条开始找第一个"可弃"消息（用户消息与最近 6 条不动）
+      const idx = history.findIndex((m, i) => i >= 1 && i < history.length - 6 && m.role !== "user");
+      if (idx === -1) break;
+      history.splice(idx, 1);
+    }
+    // 压缩/裁剪改变了历史 → 旧实测值作废
+    this._lastPrompt = 0; this._lastPromptLen = 0;
   }
 
   /* ---------------- P1-3 子智能体隔离 ---------------- */
@@ -1769,27 +1842,26 @@ ${taskSummary}
       // Phase 2：智能上下文检索（替代全量注入）
       const smartCtx = this.contextRetriever.buildSmartContext(clean, { files: this.files });
       const aug = this.buildSystemAugment(clean);
-      const messages = [{ role: "system", content: SYSTEM_PROMPT }];
-      if (aug) messages.push({ role: "system", content: aug });
+      // 系统块与历史分离：循环内压缩 history 后可重建 messages = sysBlocks + history。
+      // 旧实现把 messages 一次性拼好后永不重建 → 压缩只作用于持久化的 history，
+      // 实际发给 LLM 的 messages 只增不减，是 goal 长任务中途"上下文超限/连接失败"的根因。
+      const sysBlocks = [{ role: "system", content: SYSTEM_PROMPT }];
+      if (aug) sysBlocks.push({ role: "system", content: aug });
       // .pancoderules：项目规则（用户自定义约束，每次会话读取保证新鲜度）
       if (this.files.exists(".pancoderules")) {
         try {
           const rules = this.files.read(".pancoderules");
           if (rules && rules.trim()) {
-            messages.push({ role: "system", content: "【项目规则 .pancoderules】\n以下是本项目用户定义的规则与约定，请严格遵守：\n\n" + rules.trim() });
+            sysBlocks.push({ role: "system", content: "【项目规则 .pancoderules】\n以下是本项目用户定义的规则与约定，请严格遵守：\n\n" + rules.trim() });
           }
         } catch (e) { /* 读取失败（二进制/过大），忽略 */ }
       }
-      if (smartCtx) messages.push({ role: "system", content: smartCtx });
+      if (smartCtx) sysBlocks.push({ role: "system", content: smartCtx });
       // 规划模式：注入只读约束指令，并从可见工具集中移除所有会改动工作区的工具
       if (this.cfg.planMode) {
-        messages.push({ role: "system", content: "【规划模式已开启】你当前只能阅读、检索代码，并用 create_plan 输出实施计划。严禁调用 write_file / apply_edit / delete_file / run_command 等任何会改动工作区或执行命令的工具。完成计划后请停止，等待用户审阅并切回执行模式。" });
+        sysBlocks.push({ role: "system", content: "【规划模式已开启】你当前只能阅读、检索代码，并用 create_plan 输出实施计划。严禁调用 write_file / apply_edit / delete_file / run_command 等任何会改动工作区或执行命令的工具。完成计划后请停止，等待用户审阅并切回执行模式。" });
       }
-      // 外部 MCP 工具：从管理器取当前已连接的工具定义；规划模式下不暴露（避免改动外部服务）
-      const mcpDefs = (!this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
-      const baseTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
-      const activeTools = baseTools.concat(mcpDefs);
-      // 目标驱动：把会话目标注入每轮系统提示，让 Agent 围绕目标自主推进
+      // 目标驱动：把会话目标注入系统提示，让 Agent 围绕目标自主推进
       if (this._goal) {
         let g = "【本次会话目标】" + this._goal + "\n";
         g += "请在每一步推进时对齐该目标；当目标达成（相关计划任务全部完成，或你判断已实质性满足）时，明确汇报「目标已完成」并停止。";
@@ -1798,9 +1870,17 @@ ${taskSummary}
           const done = ap.tasks.filter((t) => t.status === "done" || t.status === "skipped").length;
           g += " 当前执行计划「" + ap.title + "」已完成 " + done + "/" + ap.tasks.length + " 步。";
         }
-        messages.push({ role: "system", content: g });
+        sysBlocks.push({ role: "system", content: g });
       }
-      for (const h of history) messages.push(h);
+      // 外部 MCP 工具：从管理器取当前已连接的工具定义；规划模式下不暴露（避免改动外部服务）
+      const mcpDefs = (!this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
+      const baseTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
+      const activeTools = baseTools.concat(mcpDefs);
+
+      // messages 每次发送前从「系统块 + 当前历史」重建：循环内压缩/裁剪 history 后，
+      // 下一次 LLM 调用的 messages 立即变小——这是 goal 长任务不再中途爆上下文的关键。
+      const rebuildMessages = () => sysBlocks.concat(history);
+      let messages = rebuildMessages();
 
       let rounds = 0;
       let r = null;   // LLM 调用返回值（提到循环外，避免循环提前 break 时 r 未定义触发 ReferenceError）
@@ -1812,9 +1892,21 @@ ${taskSummary}
             await this.say("已达到单任务最大工具调用轮数（" + this.cfg.llm.maxToolRounds + "），先停在这里。如果还需要继续，请再发一条消息。");
             break;
           }
+          // 每轮发起前再做一次上下文检查（中间多轮工具调用后历史会膨胀，不在工具调用后触发也能捕获）
+          if (this._lastPrompt) {
+            const cur = this._ctxUsed(history);
+            const budget = Math.min(this._ctxBudget(), Math.round(this._ctxBudget() * 0.9));
+            if (cur > budget * 0.85) {
+              history = await this.compactHistory(history) || history;
+              messages = rebuildMessages();               // 关键：压缩后必须重建要发给 LLM 的 messages，否则白压缩
+              this._lastPrompt = 0; this._lastPromptLen = 0;
+              this.emit({ type: "term.line", text: "[Agent] 中间压缩（水位 " + Math.round(cur / budget * 100) + "%）", cls: "tl-info" });
+            }
+          }
 
           let tk = null, mg = null;
           let llmErr = null;
+          let ctxRecovered = false;   // 每轮至多做一次"超限→压缩→重试"，避免死循环
           for (let attempt = 0; attempt < 3; attempt++) {
             try {
               r = await chatStream(this.cfg.llm, messages, activeTools, {
@@ -1829,6 +1921,19 @@ ${taskSummary}
               break;
             } catch (e) {
               llmErr = e;
+              // 上游因上下文超限返回 4xx（"maximum context length" 等）：强制压缩历史后立即重试，
+              // 而不是让整任务失败——goal 长任务在历史膨胀时最常在此处中断（模型本身正常可用）
+              const ctxErr = /4\d\d/.test(e.message)
+                && /(context|token|length|exceed|maximum|上下文|超出.*限制|超出.*长度|content too large)/i.test(e.message);
+              if (ctxErr && !ctxRecovered) {
+                history = await this.compactHistory(history, { force: true }) || history;
+                this._aggressiveTrim(history);
+                messages = rebuildMessages();                   // 系统块 + 压缩后的历史
+                this._lastPrompt = 0; this._lastPromptLen = 0;  // 历史已变，实测值作废
+                ctxRecovered = true;
+                this.emit({ type: "term.line", text: "[Agent] 上下文超出模型限制，已自动压缩历史并重试（" + Math.round(this._estTokens(history) / 1000) + "k）", cls: "tl-warn" });
+                continue;
+              }
               if (attempt < 2) {
                 const wait = Math.pow(2, attempt) * 5;
                 this.emit({ type: "term.line", text: "[Agent] LLM 调用失败（" + e.message.slice(0, 80) + "），第 " + (attempt + 1) + " 次重试，等待 " + wait + " 秒…", cls: "tl-warn" });
@@ -1922,8 +2027,9 @@ ${taskSummary}
               failStreak = 0; // 注入一次后重置，避免每条消息都重复追加
             }
           }
-          // 工具调用后检查是否需要压缩（长任务中间也会膨胀）
+          // 工具调用后检查是否需要压缩（长任务中间也会膨胀）；压缩后同步重建要发的 messages
           history = await this.compactHistory(history) || history;
+          messages = rebuildMessages();    // 无论是否压缩都重建（failstreak 的临时 system 消息不保留，属设计意图）
           this.emit({ type: "context.usage", used: this._ctxUsed(history), budget: this._ctxBudget(), est: !this._lastPrompt });
           this.state(true, "AI 思考中");
         }
@@ -1956,6 +2062,8 @@ ${taskSummary}
             this.proposeSoul(chatStream, this.cfg.llm, history, taskTopic)
               .then((sp) => { if (sp) sediment.push("灵魂微调提案×1（待确认）"); })
               .catch(() => {}),
+            // 每完成一次任务主动衰减裁剪：低强度记忆随任务收口消退，防止"只增不减"
+            new Promise((resolve) => { try { const r = this.memory.prune(); if (r.removed) sediment.push("衰减 " + r.removed + " 条记忆"); } catch (_) {} resolve(); }),
           ]).then(() => {
             // 记忆归纳：每完成一次任务检查是否需要压缩
             this._consolidateMemory(history);
@@ -1965,8 +2073,12 @@ ${taskSummary}
     } catch (err) {
       const msg = (err && err.message ? err.message : String(err)).toLowerCase();
       let kind = "unknown";
-      let hint = "请检查右上角「模型设置」中的 Base URL / API Key / 模型名，或切换到内置演示引擎体验。";
-      if (err && err.status === 429 || msg.includes("429") || msg.includes("rate") || msg.includes("quota") || msg.includes("too many") || msg.includes("limit reached")) {
+      let hint = "调用模型时发生未知错误。模型连接本身可能正常，请点「重试」重新发起；若反复出现可查看右上角终端的 [LLM 引擎异常] 日志。";
+      // 上下文超限 / 流空闲超时 优先归类（此前会被误归为 unknown/network，让用户误以为"模型配置错误"）
+      if (/(context|token|maximum|exceeds|超出.*限制|超出.*长度|content too large)/i.test(msg) || /流空闲超时/.test(msg)) {
+        kind = "context";
+        hint = "上下文超出模型窗口或流式响应挂起（多见于长任务历史累积）。系统已自动压缩重试；若仍出现，可点「重试」或手动开启新会话继续。";
+      } else if (err && err.status === 429 || msg.includes("429") || msg.includes("rate") || msg.includes("quota") || msg.includes("too many") || msg.includes("limit reached")) {
         kind = "quota";
         hint = "API 配额已耗尽或触发限流。请稍后重试，或在「模型设置」中更换 Key / 降低并发请求。";
       } else if (msg.includes("econn") || msg.includes("timeout") || msg.includes("network") || msg.includes("fetch failed") || msg.includes("enotfound") || msg.includes("socket") || msg.includes("aborted")) {
@@ -1981,7 +2093,8 @@ ${taskSummary}
       }
       this.emit({ type: "term.line", text: "[LLM 引擎异常] " + (err && err.message || err), cls: "tl-err" });
       this.emit({ type: "agent.error", kind, message: err && err.message || String(err), hint });
-      await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
+      // 可恢复类错误（配额/网络/上下文）都提供「重试」入口
+      await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network" || kind === "context") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
     } finally {
         // 保存局部 history 到 conversations Map
         this.conversations.set(convId, { history, round, ts: Date.now(), changes: this.convChanges[convId] || [] });

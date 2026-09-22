@@ -68,10 +68,13 @@ ${taskSummary}
   /* ---------- 将提取的经验写入记忆 ---------- */
   persistLessons(lessons, taskTopic) {
     const saved = [];
+    // 进化经验的价值分级：教训/错误/决策 4 分（高），选型/模式 3 分（中），偏好 2 分
+    const SCORE = { lesson: 4, pattern: 3, decision: 4, error: 4, preference: 2 };
     for (const l of lessons) {
       if (!l.content || l.content.length < 10) continue;
       const entry = this.memory.add(l.type, taskTopic || "编程任务", l.content, {
         source: "evolution",
+        valueScore: SCORE[l.type] || 2,
       });
       if (entry) saved.push(entry);
     }

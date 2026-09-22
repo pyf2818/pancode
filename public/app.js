@@ -2414,12 +2414,20 @@ function showAuthModal() {
 function showAgentError(ev) {
   const el = document.createElement("div");
   el.className = "msg msg-ai evo-err-card";
-  const labels = { quota: "配额耗尽 / 触发限流", network: "网络异常", key: "API Key 无效或未授权", model: "模型不存在", unknown: "未知错误" };
+  const labels = {
+    quota: "配额耗尽 / 触发限流",
+    network: "网络异常",
+    key: "API Key 无效或未授权",
+    model: "模型不存在",
+    context: "上下文超限 / 流挂起（自动压缩后重试）",
+    unknown: "未知错误",
+  };
   const label = labels[ev.kind] || "未知错误";
   el.innerHTML = '<div class="evo-err-head">' + ico("warn") + " 出错了：" + esc(label) + "</div>" +
     '<div class="evo-err-msg">' + esc(ev.message || "") + "</div>" +
     '<div class="evo-err-hint">' + esc(ev.hint || "") + "</div>";
-  if (ev.kind === "quota" || ev.kind === "network") {
+  // 可恢复类错误（配额/网络/上下文超限）都提供「重试」入口
+  if (ev.kind === "quota" || ev.kind === "network" || ev.kind === "context") {
     const btn = document.createElement("button");
     btn.className = "set-btn primary"; btn.textContent = "重试";
     btn.onclick = () => { el.remove(); resendLast(); };
@@ -2430,6 +2438,11 @@ function showAgentError(ev) {
 }
 function resendLast() {
   if (!lastUserText) { toast("没有可重试的消息"); return; }
+  // Goal 模式下不能重置会话（会清掉执行计划）：直接发「继续执行计划」续跑，保留 goal 状态
+  if (typeof goalMode !== "undefined" && goalMode) {
+    setTimeout(() => send({ type: "chat", text: "继续执行计划（自动重试）", attachments: [], convId }), 250);
+    return;
+  }
   send({ type: "newchat" });
   setTimeout(() => send({ type: "chat", text: lastUserText, attachments: [], convId }), 250);
 }

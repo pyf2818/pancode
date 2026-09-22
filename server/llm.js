@@ -47,8 +47,16 @@ async function chatStream(cfg, messages, tools, cb, attempt) {
   // 跨会话退避：若处于退避窗口内，先等窗口过期再发起，避免并发会话同时重试放大限流
   await waitBackoff();
 
-  // 请求超时保护：默认 120s（流式 LLM 首字可能慢，但不应无限挂起）；可由 cfg.timeout 覆盖
-  const timeoutMs = Math.max(30000, Number(cfg.timeout) || 120000);
+  // 请求超时保护（分两段，避免长生成被整体超时误杀——goal 长任务中途历史变大后
+  // 单轮生成常超 120s，旧的"整条流 120s 超时"是"跑一段时间就报模型无法连接"的主要来源）：
+  // 1) 连接 + 首字：默认 60s，超时视为服务无响应
+  // 2) 流进行中：改为空闲超时（默认 90s 无任何数据才算挂起），有数据持续流动则不限总时长
+  const connectMs = Math.max(15000, Number(cfg.connectTimeout) || 60000);
+  const idleMs = Math.max(20000, Number(cfg.idleTimeout) || 90000);
+  // 连接阶段单独计时：拿到响应头即清除（AbortSignal.timeout 的定时器在响应后仍在跑，
+  // 会误伤流式输出；必须手动 abort 才可控）
+  const ctl = new AbortController();
+  const connTimer = setTimeout(() => ctl.abort(), connectMs);
   let res;
   try {
     res = await fetch(url, {
@@ -58,14 +66,16 @@ async function chatStream(cfg, messages, tools, cb, attempt) {
         "Authorization": "Bearer " + cfg.apiKey,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: ctl.signal,
     });
   } catch (e) {
     // 网络层错误（ECONNRESET / ENOTFOUND / timeout / socket hang up）→ 抛出可重试错误
-    const msg = String(e && e.message || e);
-    if (/timeout|abort|timed out/i.test(msg)) throw new Error("LLM 请求超时（" + (timeoutMs / 1000) + "s），可能网络不稳或模型服务无响应");
-    throw new Error("LLM 网络错误: " + msg);
+    const nm = String((e && e.message) || e);
+    const isTimeout = ctl.signal.aborted || (e && e.name === "TimeoutError") || /timeout|aborted|timed out/i.test(nm);
+    if (isTimeout) throw new Error("LLM 连接超时（" + (connectMs / 1000) + "s 内未收到响应），可能网络不稳或模型服务无响应");
+    throw new Error("LLM 网络错误: " + nm);
   }
+  clearTimeout(connTimer);   // 响应已到达 → 流式阶段交给下面的空闲超时管理
 
   // 429 限流自动重试（指数退避）；同步把退避窗口推向未来，跨会话共享
   if (res.status === 429 && attempt < MAX_RETRIES) {
@@ -131,21 +141,61 @@ async function chatStream(cfg, messages, tools, cb, attempt) {
     }
   };
 
+  // 空闲超时：每次成功读到数据都重置计时器；流进行中卡死（不报错也不吐字）超过 idleMs 才判定挂起。
+  // 与"整条请求超时"不同——长生成只要持续吐字就不会被误杀（goal 长任务的关键修复）。
+  let idleTimer = null;
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      reader.cancel().catch(() => {});
+      throwIdle();
+    }, idleMs);
+  };
+  let _idleErr = null;
+  function throwIdle() {
+    if (_idleErr) return;
+    _idleErr = new Error("LLM 流空闲超时（" + Math.round(idleMs / 1000) + "s 无数据），流可能已挂起");
+  }
+  armIdle();
   for (;;) {
     let chunk;
     try {
       chunk = await reader.read();
     } catch (e) {
+      if (_idleErr) {
+        // 空闲超时触发的 cancel 会 reject read()：已收到实质内容则保留部分结果，否则报空闲超时
+        if (acc.finish || acc.content || acc.toolCalls.length) {
+          if (idleTimer) clearTimeout(idleTimer);
+          if (cb && cb.onReasoning) cb.onReasoning("[SSE 流空闲超时，已保留已收到的部分结果]");
+          break;
+        }
+        if (idleTimer) clearTimeout(idleTimer);
+        throw _idleErr;
+      }
       // SSE 流中途断开（ECONNRESET / socket hang up / 网络抖动）
       // 若已收到 finish_reason 或有实质内容，当作正常完成返回（避免重试导致前端内容重复）
       if (acc.finish || acc.content || acc.toolCalls.length) {
+        if (idleTimer) clearTimeout(idleTimer);
         if (cb && cb.onReasoning) cb.onReasoning("[SSE 流中断，已保留已收到的部分结果]");
         break;
       }
+      if (idleTimer) clearTimeout(idleTimer);
       throw new Error("SSE 流中断: " + (e && e.message || e));
     }
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     const { done, value } = chunk;
-    if (done) break;
+    if (done) {
+      if (idleTimer) clearTimeout(idleTimer);
+      // 空闲超时触发的 cancel 会让 read() 以 done:true 结束而非抛错，在此显式提示
+      if (_idleErr) {
+        if (acc.finish || acc.content || acc.toolCalls.length) {
+          if (cb && cb.onReasoning) cb.onReasoning("[SSE 流空闲超时，已保留已收到的部分结果]");
+        } else {
+          throw _idleErr;
+        }
+      }
+      break;
+    }
     buf += decoder.decode(value, { stream: true });
     let nl;
     while ((nl = buf.indexOf("\n")) >= 0) {
@@ -153,6 +203,7 @@ async function chatStream(cfg, messages, tools, cb, attempt) {
       buf = buf.slice(nl + 1);
       if (line.startsWith("data:")) handleData(line.slice(5).trim());
     }
+    armIdle();   // 有数据到达 → 重置空闲计时
   }
 
   acc.toolCalls = Array.from(tcMap.keys()).sort((a, b) => a - b).map((k) => tcMap.get(k));

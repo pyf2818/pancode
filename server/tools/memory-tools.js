@@ -33,9 +33,11 @@ module.exports = {
     const lessons = Array.isArray(args.lessons) ? args.lessons : [];
     const rejected = Array.isArray(args.rejected) ? args.rejected : [];
     let saved = 0;
-    decisions.forEach((d) => { if (agent.memory.add("decision", "会话决策", String(d).trim())) saved++; });
-    lessons.forEach((l) => { if (agent.memory.add("lesson", "经验教训", String(l).trim())) saved++; });
-    rejected.forEach((r) => { if (agent.memory.add("error", "被拒操作/反例", String(r).trim())) saved++; });
+    // 价值分级：决策/教训 4 分（高），被拒反例 2 分（中）
+    const VS = { decision: 4, lesson: 4, error: 2 };
+    decisions.forEach((d) => { if (agent.memory.add("decision", "会话决策", String(d).trim(), { valueScore: 4 })) saved++; });
+    lessons.forEach((l) => { if (agent.memory.add("lesson", "经验教训", String(l).trim(), { valueScore: 4 })) saved++; });
+    rejected.forEach((r) => { if (agent.memory.add("error", "被拒操作/反例", String(r).trim(), { valueScore: 2 })) saved++; });
     let skillName = null;
     if (args.skill && args.skill.name) {
       const sk = agent.skills.add({

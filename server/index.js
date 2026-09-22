@@ -25,6 +25,9 @@ const { LspManager, setActiveManager } = require("./lsp-bridge");
 const codeIndex = require("./code-index");
 const { SoulStore } = require("./soul-store");
 const { SkillStore } = require("./skill-store");
+const { MemoryStore } = require("./memory-store");
+const { PlanStore } = require("./plan-store");
+const { WorkflowStore } = require("./workflow-store");
 
 const { ProgressionStore } = require("./progression-store");
 const { computeProgression } = require("./progression");
@@ -50,19 +53,71 @@ function broadcast(ev) {
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
 let files = null, git = null, term = null, procs = null, engine = null, soulStore = null, progressionStore = null, skillStore = null;
+const userEngines = new Map();   // userKey -> LlmAgent（每个登录用户一份，会话/目标/trace 独立）
+const _engineAssets = {};        // 共享资产（memory/skills/plan/... 按工作区一份，跨用户共用）
 
+/* 构建共享资产（不创建 LlmAgent），再由 ensureUserEngine 按 userKey 分片。
+   项目级资产（记忆/技能/计划/灵魂/进度）跨用户共享——它们是"项目知识"而非"个人会话"。 */
 function buildEngine() {
-  // 服务器级 SkillStore 单例（带打包内置 builtin-skills 目录），两种引擎共享，
-  // 确保「无 API Key 演示模式」下内置 skill 同样可见（修复 EXE 用户看不到内置 skill 的回归）
+  // 切换/重挂工作区：先刷盘各用户的会话上下文（防丢失），再清掉旧工作区的按用户引擎（其闭包指向旧 files/git/term），避免残留串用
+  for (const eng of userEngines.values()) {
+    try { if (eng && typeof eng.flushConversations === "function") eng.flushConversations(); } catch (_) {}
+  }
+  userEngines.clear();
   const wsHash = _wsIdHash(WS_DIR);
   const marketDir = path.join(configMod.ROOT, ".pancode", "skills", "market");
   const skillDir = path.join(configMod.ROOT, ".pancode", "skills");
-  skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"));
+  _engineAssets.wsHash = wsHash;
+  _engineAssets.skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"));
+  _engineAssets.memDir = path.join(configMod.ROOT, ".pancode", "memory");
+  _engineAssets.memory = new MemoryStore(path.join(_engineAssets.memDir, wsHash + ".json"));
+  const planDir = path.join(configMod.ROOT, ".pancode", "plans");
+  _engineAssets.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
+  const wfDir = path.join(configMod.ROOT, ".pancode", "workflows");
+  fs.mkdirSync(wfDir, { recursive: true });
+  _engineAssets.workflow = new WorkflowStore(path.join(wfDir, wsHash + ".json"));
+  const soulDir = path.join(configMod.ROOT, ".pancode", "soul");
+  _engineAssets.soul = new SoulStore(path.join(soulDir, wsHash + ".json"));
+  const progDir = path.join(configMod.ROOT, ".pancode", "progression");
+  _engineAssets.progression = new ProgressionStore(path.join(progDir, wsHash + ".json"));
+  _engineAssets.cfg = cfg;
+  // 默认 engine（helloPayload 等全局状态用）
+  engine = ensureUserEngine("anon");
+  soulStore = _engineAssets.soul;
+}
 
-  const ctx = { emit: broadcast, files, git, term, procs, cfg, skills: skillStore };
-  engine = configMod.engineMode(cfg) === "llm" ? new LlmAgent(ctx) : new DemoAgent(ctx);
-  // 统一灵魂实例：复用引擎内部的 soul（指向同文件），避免双实例内存不一致
-  soulStore = engine && engine.soul ? engine.soul : new SoulStore(configMod.soulPath(cfg));
+/* 按 userKey 获取或创建该用户的 LlmAgent 实例。每个用户的 history/conversations/goal/trace 独立，
+   但共享 memory/skills/plan/soul/files/git/term/procs 等重资产。 */
+function ensureUserEngine(userKey) {
+  if (userEngines.has(userKey)) return userEngines.get(userKey);
+  const a = _engineAssets;
+  const ctx = {
+    emit: broadcast, files, git, term, procs, cfg: a.cfg,
+    skills: a.skillStore,
+    sharedMemory: a.memory, sharedPlan: a.plan, sharedWorkflow: a.workflow,
+    sharedSoul: a.soul, sharedProgression: a.progression,
+    userKey,
+  };
+  const eng = configMod.engineMode(cfg) === "llm" ? new LlmAgent(ctx) : new DemoAgent(ctx);
+  userEngines.set(userKey, eng);
+  // 上限：最多 20 个用户实例（与 CONV_MAX 对齐，防止恶意/异常大量连接撑爆内存）
+  if (userEngines.size > 20) {
+    const oldest = userEngines.keys().next().value;
+    if (oldest && oldest !== userKey) {
+      const old = userEngines.get(oldest);
+      try { if (old && typeof old.flushConversations === "function") old.flushConversations(); } catch (_) {}
+      userEngines.delete(oldest);
+    }
+  }
+  return eng;
+}
+
+/* 从 WS 取 userKey：登录用户 = token 的 8 位哈希（会话/目标按人隔离），无 token = "anon"。
+   工作区维度由 agent 构造器内部用 wsHash 组合，此处不重复拼，保持文件名片段干净（Windows 安全）。 */
+function wsUserKey(ws) {
+  const tok = ws._userToken || "";
+  if (!tok) return "anon";
+  return "u" + crypto.createHash("md5").update(tok).digest("hex").slice(0, 8);
 }
 
 function mountWorkspace(dir) {
@@ -142,12 +197,13 @@ function snapshotFilesIncremental(paths) {
 
 function _wsIdHash(p) { let h = 0; for (let i = 0; i < p.length; i++) h = (h * 31 + p.charCodeAt(i)) >>> 0; return h.toString(36); }
 
-function helloPayload() {
+function helloPayload(eng) {
+  const e = eng || engine;
   return {
     type: "hello",
     files: snapshotFiles(),
-    running: engine.running,
-    round: engine.round,
+    running: e.running,
+    round: e.round,
     engine: configMod.publicInfo(cfg),
     agent: configMod.agentSettings(cfg),
     lsp: lspManager.capabilities(),
@@ -456,7 +512,9 @@ app.post("/api/workspace", (req, res) => {
   try {
     const dir = String((req.body || {}).dir || "").trim();
     if (!dir) return res.status(400).json({ ok: false, error: "路径不能为空" });
-    if (engine.running) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" });
+    // 多用户：任一用户引擎运行中都禁止切工作区（其闭包指向旧 files/git/term）
+    if (engine && engine.running) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" });
+    for (const eng of userEngines.values()) { if (eng.running) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" }); }
     if (term) term.closeAll();
     mountWorkspace(dir);
     configMod.saveWorkspace(cfg, WS_DIR);
@@ -961,25 +1019,31 @@ function safe(fn, ws) {
 
 wss.on("connection", (ws) => {
   clients.add(ws);
-  ws.send(JSON.stringify(helloPayload()));
+  // 每连接绑定用户级 engine（会话/目标/trace 隔离；重资产仍共享）。
+  // 注意：不在此处缓存实例引用——LlmAgent 按"每消息查表"取（见下），
+  // 这样 /api/settings 热更新（buildEngine 重建引擎缓存）后旧连接立即用上新引擎。
+  const uKey = wsUserKey(ws);
+  ws._userKey = uKey;
+  ws.send(JSON.stringify(helloPayload(ensureUserEngine(uKey))));
   ws.on("close", () => clients.delete(ws));
   ws.on("message", (raw) => {
     let m;
     try { m = JSON.parse(raw.toString()); } catch (e) { return; }
+    const uEng = ensureUserEngine(ws._userKey || "anon");   // 每条消息按 userKey 查表（Map.get，无分配开销）
 
     switch (m.type) {
       case "chat":
         if (typeof m.text === "string" && m.text.trim()) {
-          // 多会话并行：不切换会话，直接传 convId 给 handleChat
-          engine.handleChat(m.text.slice(0, 8000), { convId: m.convId, attachments: Array.isArray(m.attachments) ? m.attachments : [] });
+          // 多会话并行：不切换会话，直接传 convId 给 handleChat（按连接绑定的用户实例）
+          uEng.handleChat(m.text.slice(0, 8000), { convId: m.convId, attachments: Array.isArray(m.attachments) ? m.attachments : [] });
         }
         break;
 
       /* 前端主动查询上下文实测水位（页面加载 / 会话切换 / 收到回答后调用） */
       case "ctx.query": {
         try {
-          const used = (engine && typeof engine._estTokens === "function" && Array.isArray(engine.history))
-            ? engine._estTokens(engine.history) : 0;
+          const used = (uEng && typeof uEng._estTokens === "function" && Array.isArray(uEng.history))
+            ? uEng._estTokens(uEng.history) : 0;
           ws.send(JSON.stringify({ type: "context.usage", used, budget: (cfg.context || {}).budgetTokens || 1000000 }));
         } catch (e) { /* 引擎未就绪时静默 */ }
         break;
@@ -990,7 +1054,7 @@ wss.on("connection", (ws) => {
         if (typeof m.cmd === "string" && m.cmd.trim() && !term.busyFor(tabId)) {
           term.run(tabId, m.cmd.slice(0, 500)).then(() => {
             broadcast({ type: "fs.sync", files: snapshotFiles() });
-            engine.pushChanges(false);
+            uEng.pushChanges(false);
           });
         }
         break;
@@ -1010,8 +1074,8 @@ wss.on("connection", (ws) => {
         safe(() => {
           files.write(m.path, String(m.content));
           codeIndex.queueFileUpdate(WS_DIR, m.path);
-          engine.fileChanged(m.path);
-          engine.pushChanges(false);
+          uEng.fileChanged(m.path);
+          uEng.pushChanges(false);
           broadcast({ type: "file.saved", path: m.path });
         }, ws);
         break;
@@ -1019,8 +1083,8 @@ wss.on("connection", (ws) => {
         safe(() => {
           files.create(m.path, m.content || "");
           codeIndex.queueFileUpdate(WS_DIR, m.path);
-          engine.fileChanged(m.path);
-          engine.pushChanges(false);
+          uEng.fileChanged(m.path);
+          uEng.pushChanges(false);
           broadcast({ type: "fs.sync", files: snapshotFiles() });
         }, ws);
         break;
@@ -1028,7 +1092,7 @@ wss.on("connection", (ws) => {
         safe(() => {
           files.remove(m.path);
           codeIndex.removeFile(WS_DIR, m.path);
-          engine.pushChanges(false);
+          uEng.pushChanges(false);
           broadcast({ type: "fs.sync", files: snapshotFiles() });
         }, ws);
         break;
@@ -1037,7 +1101,7 @@ wss.on("connection", (ws) => {
           files.rename(m.path, m.newPath);
           codeIndex.removeFile(WS_DIR, m.path);
           codeIndex.queueFileUpdate(WS_DIR, m.newPath);
-          engine.pushChanges(false);
+          uEng.pushChanges(false);
           broadcast({ type: "fs.sync", files: snapshotFiles(), renamed: { from: m.path, to: m.newPath } });
         }, ws);
         break;
@@ -1058,13 +1122,13 @@ wss.on("connection", (ws) => {
       case "reset":
         safe(() => {
           git.discardAll();
-          engine.round = 0;
-          if (engine.history) engine.history = [];
+          uEng.round = 0;
+          if (uEng.history) uEng.history = [];
           // 清空当前会话记录的改动（工作区已回退基线）
-          if (engine.convChanges) engine.convChanges[engine._currentConv] = [];
-          if (typeof engine.saveConversations === "function") engine.saveConversations();
+          if (uEng.convChanges) uEng.convChanges[uEng._currentConv] = [];
+          if (typeof uEng.saveConversations === "function") uEng.saveConversations();
           broadcast({ type: "fs.sync", files: snapshotFiles() });
-          engine.pushChanges(false);
+          uEng.pushChanges(false);
           broadcast({ type: "term.line", text: "[pancode] 工作区已恢复到基线状态", cls: "tl-info" });
           broadcast({ type: "agent.reset" });
         }, ws);
@@ -1073,15 +1137,15 @@ wss.on("connection", (ws) => {
       /* 新建对话：仅清空 AI 对话上下文，不丢弃文件改动 */
       case "newchat":
         safe(() => {
-          if (typeof engine.switchConversation === "function" && m.convId) {
-            engine.switchConversation(String(m.convId));
+          if (typeof uEng.switchConversation === "function" && m.convId) {
+            uEng.switchConversation(String(m.convId));
           }
           // 清空该会话记录的改动（新对话无历史改动）
-          if (engine.convChanges) engine.convChanges[String(m.convId || engine._currentConv)] = [];
+          if (uEng.convChanges) uEng.convChanges[String(m.convId || uEng._currentConv)] = [];
           // newchat 语义 = 该会话上下文清空（新建会话本就为空；重试场景同 ID 也需清空）
-          engine.round = 0;
-          if (engine.history) engine.history = [];
-          if (typeof engine.saveConversations === "function") engine.saveConversations();
+          uEng.round = 0;
+          if (uEng.history) uEng.history = [];
+          if (typeof uEng.saveConversations === "function") uEng.saveConversations();
           broadcast({ type: "agent.reset" });
           broadcast({ type: "term.line", text: "[pancode] 已开始新对话，AI 上下文已清空（文件改动保留）", cls: "tl-info" });
         }, ws);
@@ -1090,12 +1154,12 @@ wss.on("connection", (ws) => {
       /* C6：切换对话 — 把服务端 AI 上下文同步到前端选中的会话 */
       case "switchConv":
         safe(() => {
-          if (typeof engine.switchConversation === "function" && m.convId) {
-            engine.switchConversation(String(m.convId));
-            const n = engine.history ? engine.history.length : 0;
+          if (typeof uEng.switchConversation === "function" && m.convId) {
+            uEng.switchConversation(String(m.convId));
+            const n = uEng.history ? uEng.history.length : 0;
             ws.send(JSON.stringify({ type: "conv.switched", convId: String(m.convId), messages: n }));
             // 同步切换该会话记录的改动清单，前端改动面板一并切换
-            const cl = (engine.convChanges && engine.convChanges[String(m.convId)]) || [];
+            const cl = (uEng.convChanges && uEng.convChanges[String(m.convId)]) || [];
             ws.send(JSON.stringify({ type: "changes", list: cl, convId: String(m.convId) }));
           }
         }, ws);
@@ -1104,8 +1168,8 @@ wss.on("connection", (ws) => {
       /* C6：删除对话 — 同步清理服务端上下文，避免残留占用 */
       case "dropConv":
         safe(() => {
-          if (typeof engine.dropConversation === "function" && m.convId) {
-            engine.dropConversation(String(m.convId));
+          if (typeof uEng.dropConversation === "function" && m.convId) {
+            uEng.dropConversation(String(m.convId));
           }
         }, ws);
         break;
@@ -1113,35 +1177,35 @@ wss.on("connection", (ws) => {
       /* 中断当前 Agent 运行 */
       case "abort":
         safe(() => {
-          if (typeof engine.abort === "function") {
-            engine.abort(m.convId);
+          if (typeof uEng.abort === "function") {
+            uEng.abort(m.convId);
             broadcast({ type: "term.line", text: "[pancode] Agent 已中断", cls: "tl-warn" });
             broadcast({ type: "agent.state", running: false, label: "AI 空闲", convId: m.convId });
-            broadcast({ type: "agent.done", round: engine.round, convId: m.convId });
+            broadcast({ type: "agent.done", round: uEng.round, convId: m.convId });
           }
         }, ws);
         break;
 
-      /* ----- 人工确认：AI 工具的写/删/执行需用户批准 ----- */
+      /* ----- 人工确认：AI 工具的写/删/执行需用户批准（审批队列按用户隔离） ----- */
       case "tool.approve":
-        if (typeof engine.resolveApproval === "function" && m.id) engine.resolveApproval(m.id, true);
+        if (typeof uEng.resolveApproval === "function" && m.id) uEng.resolveApproval(m.id, true);
         break;
       case "tool.reject":
-        if (typeof engine.resolveApproval === "function" && m.id) engine.resolveApproval(m.id, false);
+        if (typeof uEng.resolveApproval === "function" && m.id) uEng.resolveApproval(m.id, false);
         break;
 
       /* ----- 交互式选项列表：用户选择方案后回传 ----- */
       case "tool.choice_result":
-        if (typeof engine.resolveChoice === "function" && m.id) engine.resolveChoice(m.id, m.choice || null);
+        if (typeof uEng.resolveChoice === "function" && m.id) uEng.resolveChoice(m.id, m.choice || null);
         break;
 
-      /* ----- 补丁审阅：用户在 diff 视图逐文件「接受 / 拒绝」 ----- */
+      /* ----- 补丁审阅：用户在 diff 视图逐文件「接受 / 拒绝」（补丁队列按用户隔离） ----- */
       case "patch.approve":
         safe(() => {
-          const convId = m.convId || engine._currentConv;
+          const convId = m.convId || uEng._currentConv;
           const paths = Array.isArray(m.paths) ? m.paths : [];
-          const { applied, conflicts } = typeof engine.applyPatch === "function"
-            ? engine.applyPatch(convId, paths, m.hunks) : { applied: [], conflicts: [] };
+          const { applied, conflicts } = typeof uEng.applyPatch === "function"
+            ? uEng.applyPatch(convId, paths, m.hunks) : { applied: [], conflicts: [] };
           if (applied.length || conflicts.length) {
             // 增量同步：只发 applied 路径，避免大工作区全量读盘
             broadcast({ type: "fs.sync", files: snapshotFilesIncremental(applied), incremental: true });
@@ -1153,9 +1217,9 @@ wss.on("connection", (ws) => {
         break;
       case "patch.reject":
         safe(() => {
-          const convId = m.convId || engine._currentConv;
+          const convId = m.convId || uEng._currentConv;
           const paths = Array.isArray(m.paths) ? m.paths : [];
-          if (typeof engine.rejectPatch === "function") engine.rejectPatch(convId, paths);
+          if (typeof uEng.rejectPatch === "function") uEng.rejectPatch(convId, paths);
           broadcast({ type: "patch.rejected", paths, convId, all: !paths.length });
         }, ws);
         break;
@@ -1189,8 +1253,11 @@ server.listen(cfg.port, "127.0.0.1", () => {
 /* 优雅关闭：中止 Agent → 杀终端子进程 → 关 WS → 停 watch → 关 HTTP，避免孤儿进程 / 端口残留 */
 function shutdown(sig) {
   console.log("\n[pancode] 收到 " + sig + "，正在优雅关闭…");
-  try { if (engine && typeof engine.abort === "function") engine.abort(); } catch (e) {}   // 中止进行中的 Agent 任务
-  try { if (engine && typeof engine.flushConversations === "function") engine.flushConversations(); } catch (e) {}  // C6：同步刷盘会话上下文
+  // 多用户：中止 + 刷盘所有用户引擎（默认 engine 也在 userEngines 里，anon key）
+  for (const eng of userEngines.values()) {
+    try { if (eng && typeof eng.abort === "function") eng.abort(); } catch (e) {}
+    try { if (eng && typeof eng.flushConversations === "function") eng.flushConversations(); } catch (e) {}
+  }
   try { if (term && typeof term.closeAll === "function") term.closeAll(); } catch (e) {}      // 杀掉全部终端子进程，避免孤儿
   try { if (mcpManager) mcpManager.disconnectAll(); } catch (e) {}   // 关闭全部 MCP 子进程，避免孤儿
   try { for (const c of wss.clients) { try { c.close(); } catch (e) {} } } catch (e) {}

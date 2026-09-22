@@ -86,14 +86,18 @@ class ContextRetriever {
       }
     }
 
-    // 2. 相关记忆检索（P2 语义记忆回退：关键词召回 + 新鲜度/重要性加权重排）
+    // 2. 相关记忆检索（P2 语义记忆回退：关键词召回 + 价值/新鲜度加权重排）
+    // 排除归档条目，且与全量记忆块（formatForContext）做去重，避免同一条记忆注入两次互相稀释
     if (this.memory && keywords.length) {
-      let memories = this.memory.search(keywords.join(" "), { limit: 12 });
-      memories = this.rankMemories(memories, keywords).slice(0, 5);
+      const injectIds = new Set((this.memory.topForContext ? this.memory.topForContext(10) : []).map((e) => e.id));
+      let memories = this.memory.search(keywords.join(" "), { limit: 12 })
+        .filter((m) => !m.archived && !injectIds.has(m.id));
+      memories = this.rankMemories(memories, keywords).slice(0, 4);
       if (memories.length) {
         const memText = memories.map((m) => {
-          const age = Math.floor((Date.now() - (m.ts || Date.now())) / (1000 * 60 * 60 * 24));
-          return "- [" + m.type + "] " + (m.topic ? m.topic + "：" : "") + m.content.slice(0, 200) + (age > 0 ? " (" + age + "天前)" : "");
+          const age = Math.floor((Date.now() - (m.lastAccessAt || m.ts || Date.now())) / (1000 * 60 * 60 * 24));
+          const vs = m.valueScore || 2;
+          return "- (" + (vs >= 4 ? "高" : "中") + ") [" + m.type + "] " + (m.topic ? m.topic + "：" : "") + m.content.slice(0, 160) + (age > 0 ? " (" + age + "天前)" : "");
         }).join("\n");
         parts.push("【相关记忆】\n" + memText);
       }
@@ -102,23 +106,25 @@ class ContextRetriever {
     return parts.join("\n\n");
   }
 
-  /* P2 语义记忆回退排序：无 embedding 端点时，用「关键词相关度 + 新鲜度 + 重要性」加权，
-     逼近语义优先级，避免陈旧/低价值记忆排在前面（真·向量检索需 embedding API，作为后续增强）。 */
+  /* P2 语义记忆回退排序：无 embedding 端点时，用「关键词相关度 + 价值分 + 指数新鲜度」加权，
+     逼近语义优先级，避免陈旧/低价值记忆排在前面（真·向量检索需 embedding API，作为后续增强）。
+     新鲜度用指数函数 exp(-age/30) 替代台阶函数：30 天不再一刀切清零，越旧权重平滑下降。 */
   rankMemories(memories, keywords) {
     if (!memories || !memories.length) return [];
     const now = Date.now();
-    const TYPE_WEIGHT = { lesson: 3, decision: 2.5, pattern: 2, preference: 1, default: 1 };
+    const TYPE_WEIGHT = { lesson: 1.5, decision: 1.2, pattern: 1, preference: 0.8, error: 0.8, default: 1 };
     const kwset = new Set((keywords || []).map((k) => String(k).toLowerCase()));
     return memories.map((m) => {
       const content = String(m.content || "").toLowerCase();
       const topic = String(m.topic || "").toLowerCase();
       let rel = 0;
       for (const kw of kwset) if (content.includes(kw) || topic.includes(kw)) rel += 1;
-      const ageDays = (now - (m.ts || now)) / (1000 * 60 * 60 * 24);
-      const recency = ageDays <= 1 ? 2 : ageDays <= 7 ? 1 : ageDays <= 30 ? 0.3 : 0;
-      const imp = TYPE_WEIGHT[m.type] || TYPE_WEIGHT.default;
+      const ageDays = (now - (m.lastAccessAt || m.ts || now)) / (1000 * 60 * 60 * 24);
+      const recency = Math.exp(-Math.max(0, ageDays) / 30);        // 30 天半衰期
+      const imp = (m.valueScore != null ? m.valueScore : 2) * 0.5;  // 写入端价值分（0-6）折半参与竞争
       return { m, score: rel * 2 + recency + imp };
-    }).sort((a, b) => b.score - a.score).map((x) => x.m);
+    }).filter((x) => x.score >= 2)   // 过滤低分条目：纯类型保底分不再让无关旧记忆进入注入
+      .sort((a, b) => b.score - a.score).map((x) => x.m);
   }
 
   /* ---------- 从对话历史中提取任务摘要（用于 compact） ---------- */
