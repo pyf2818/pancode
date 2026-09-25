@@ -34,6 +34,40 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+
+/* ---------- W1：导入安全审计（对齐 skills-security-check 流程） ----------
+   扫描 Skill 全文（description/body 内嵌命令与代码），分级：
+   P0 = 任意代码执行 / 系统破坏 / 凭据窃取 → 拒绝导入，用户显式确认（force）才放行
+   P1 = 网络外发 / 提权 / 全局安装 / 系统目录写入 → 允许但附警告
+   P2 = 通过
+   注：正则清单防不住 base64 混淆等语义级绕过（W15 语义解析范围），故 P0 保留人工裁决出口。 */
+const AUDIT_PATTERNS = [
+  { level: "P0", re: /require\s*\(\s*["']child_process["']\s*\)/i, desc: "调用 child_process 子进程模块（任意命令执行能力）" },
+  { level: "P0", re: /\beval\s*\(/, desc: "使用 eval 动态执行代码" },
+  { level: "P0", re: /new\s+Function\s*\(/, desc: "使用 new Function 动态构造执行" },
+  { level: "P0", re: /(curl|wget)[^|]*\|\s*(sh|bash|zsh|powershell)\b/i, desc: "下载内容直接管道执行（curl|sh 类）" },
+  { level: "P0", re: /\b(rm\s+-[a-z]*r[a-z]*f|del\s+\/[fsq]|rd\s+\/s|mkfs\b|format\s+[a-z]:|dd\s+if=)/i, desc: "递归删除 / 格式化 / 写设备等破坏性命令" },
+  { level: "P0", re: /readFile\S*\([^)]*\.env|cat\s+\.env|type\s+\.env/i, desc: "疑似读取 .env 凭据文件" },
+  { level: "P1", re: /\b(fetch\s*\(|axios[.(]|XMLHttpRequest|http\.request|urllib\.request)/, desc: "包含网络请求（数据可能外发）" },
+  { level: "P1", re: /\b(sudo\b|chmod\s+\+?x|icacls\b)/i, desc: "提权 / 修改执行权限命令" },
+  { level: "P1", re: /\bnpm\s+(install|i)\s+-g\b|\bpip\s+install\s+(-g|--user)\b/i, desc: "全局安装依赖" },
+  { level: "P1", re: /(\/etc\/|C:\\\\Windows|\\Windows\\|\/System\/|regedit\b|reg\s+add)/i, desc: "写入 / 修改系统目录或注册表" },
+  { level: "P1", re: /powershell\s+-enc|base64\s+-d\b|atob\s*\(/i, desc: "编码 / 混淆执行痕迹" },
+];
+
+function auditSkill(text) {
+  const s = String(text || "");
+  const findings = [];
+  for (const p of AUDIT_PATTERNS) {
+    const m = p.re.exec(s);
+    if (m) findings.push({ level: p.level, desc: p.desc, snippet: s.slice(Math.max(0, m.index - 20), m.index + m[0].length + 40).replace(/\s+/g, " ").slice(0, 120) });
+  }
+  const order = { P0: 3, P1: 2, P2: 1 };
+  let level = "P2";
+  for (const f of findings) if (order[f.level] > order[level]) level = f.level;
+  return { level, findings };
+}
 
 /* ---------- 内置 Workflow 模板 ---------- */
 const BUILTIN_WORKFLOWS = [
@@ -121,6 +155,7 @@ function serializeFrontmatter(skill) {
   if (skill.category) lines.push("category: " + skill.category);
   if (skill.tags && skill.tags.length) lines.push("tags: [" + skill.tags.join(", ") + "]");
   if (skill.trigger) lines.push("trigger: " + skill.trigger);
+  if (skill.risk_level) lines.push("risk_level: " + skill.risk_level);
   if (skill.author) lines.push("author: " + skill.author);
   if (skill.version) lines.push("version: " + (skill.version || "1.0.0"));
   lines.push("---");
@@ -142,6 +177,8 @@ function normalize(skill, source) {
     author: skill.author || "user",
     version: skill.version || "1.0.0",
     useCount: skill.useCount || 0,
+    risk_level: skill.risk_level || "",       // W1：风险等级（服务端审计结果为准，自声明仅展示）
+    scope: skill.scope || "",                 // W1：user=用户级（跨项目），空=项目级
     source: source || skill.source || "manual",
     ts: skill.ts || Date.now(),
     deprecated: skill.deprecated || false,
@@ -149,13 +186,15 @@ function normalize(skill, source) {
 }
 
 class SkillStore {
-  constructor(marketDir, localPath, builtinDir) {
+  constructor(marketDir, localPath, builtinDir, userDir) {
     this._marketDir = marketDir;
     this._localPath = localPath;
     this._builtinDir = builtinDir || null;   // 打包内置 skills（只读，asar 内）
+    this._userDir = userDir || path.join(os.homedir(), ".pancode", "skills"); // W1：用户级（跨项目）
     this._marketSkills = [];
     this._localSkills = [];
     this._builtinSkills = [];
+    this._userSkills = [];
     this._load();
   }
 
@@ -192,6 +231,39 @@ class SkillStore {
         }
       } catch (e) {}
     }
+    // W1：用户级 Skills（~/.pancode/skills/*.md，跨项目；同名时项目级优先）
+    this._userSkills = [];
+    try {
+      fs.mkdirSync(this._userDir, { recursive: true });
+      const ufiles = fs.readdirSync(this._userDir).filter((f) => f.endsWith(".md"));
+      for (const f of ufiles) {
+        try {
+          const text = fs.readFileSync(path.join(this._userDir, f), "utf8");
+          const { meta, body } = parseFrontmatter(text);
+          this._userSkills.push(normalize({ ...meta, body, scope: "user", id: "user_" + f.replace(/\.md$/, "") }, "manual"));
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  /* W1：项目级与用户级合并去重（同名项目级覆盖用户级） */
+  _mergedUserSkills() {
+    const marketNames = new Set(this._marketSkills.map((s) => s.name));
+    return this._userSkills.filter((s) => !marketNames.has(s.name) && !s.deprecated);
+  }
+
+  _saveUser() {
+    try {
+      fs.mkdirSync(this._userDir, { recursive: true });
+      const existing = new Set(fs.readdirSync(this._userDir).filter((f) => f.endsWith(".md")));
+      const current = new Set();
+      for (const s of this._userSkills) {
+        const fname = s.id.replace(/^user_/, "") + ".md";
+        current.add(fname);
+        try { fs.writeFileSync(path.join(this._userDir, fname), serializeFrontmatter(s), "utf8"); } catch (e) {} /* W1：单文件锁（EPERM）不拖垮整批 */
+      }
+      for (const f of existing) if (!current.has(f)) { try { fs.unlinkSync(path.join(this._userDir, f)); } catch (e) {} }
+    } catch (e) {}
   }
 
   _saveMarket() {
@@ -202,9 +274,9 @@ class SkillStore {
       for (const s of this._marketSkills) {
         const fname = s.id + ".md";
         current.add(fname);
-        fs.writeFileSync(path.join(this._marketDir, fname), serializeFrontmatter(s), "utf8");
+        try { fs.writeFileSync(path.join(this._marketDir, fname), serializeFrontmatter(s), "utf8"); } catch (e) {} /* W1：单文件锁（EPERM）不拖垮整批 */
       }
-      for (const f of existing) if (!current.has(f)) fs.unlinkSync(path.join(this._marketDir, f));
+      for (const f of existing) if (!current.has(f)) { try { fs.unlinkSync(path.join(this._marketDir, f)); } catch (e) {} }
     } catch (e) {}
   }
 
@@ -213,13 +285,28 @@ class SkillStore {
   }
 
   /* ---------- CRUD ---------- */
-  add(skill, source) {
+  add(skill, source, opts) {
     if (!skill || !skill.name) return null;
-    const all = [...this._marketSkills, ...this._localSkills];
-    if (all.some((s) => s.name === skill.name && !s.deprecated)) return { ...all.find((s) => s.name === skill.name), _duplicate: true };
+    opts = opts || {};
+    /* W1：重名池按 scope 区分——项目级 add 允许与用户级同名（这正是覆盖路径），
+       用户级 add 仍查全池（避免装出一个永远被项目级遮蔽的影子技能） */
+    const dupPool = opts.scope === "user" ? [...this._marketSkills, ...this._userSkills, ...this._localSkills] : [...this._marketSkills, ...this._localSkills];
+    if (dupPool.some((s) => s.name === skill.name && !s.deprecated)) return { ...dupPool.find((s) => s.name === skill.name && !s.deprecated), _duplicate: true };
+    /* W1：装前安全审计——P0 需用户显式确认（force），P1 附警告入库 */
+    const audit = auditSkill((skill.name || "") + "\n" + (skill.description || "") + "\n" + (skill.body || ""));
+    if (audit.level === "P0" && !opts.force) return { _auditRejected: audit };
     const entry = normalize(skill, source || "manual");
-    this._marketSkills.push(entry);
-    this._saveMarket();
+    entry.risk_level = audit.level;   // 审计结果为准
+    entry._audit = audit;
+    if (opts.scope === "user") {
+      entry.scope = "user";
+      entry.id = "user_" + (skill.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 5));
+      this._userSkills.push(entry);
+      this._saveUser();
+    } else {
+      this._marketSkills.push(entry);
+      this._saveMarket();
+    }
     return entry;
   }
 
@@ -246,14 +333,16 @@ class SkillStore {
     if (idx !== -1) { this._marketSkills.splice(idx, 1); this._saveMarket(); return true; }
     idx = this._localSkills.findIndex((s) => s.id === id);
     if (idx !== -1) { this._localSkills.splice(idx, 1); this._saveLocal(); return true; }
+    idx = this._userSkills.findIndex((s) => s.id === id);
+    if (idx !== -1) { this._userSkills.splice(idx, 1); this._saveUser(); return true; }
     return false;
   }
 
-  getById(id) { return this._marketSkills.find((s) => s.id === id) || this._localSkills.find((s) => s.id === id) || null; }
+  getById(id) { return this._marketSkills.find((s) => s.id === id) || this._localSkills.find((s) => s.id === id) || this._userSkills.find((s) => s.id === id) || null; }
 
   list(opts) {
     opts = opts || {};
-    const all = [...this._marketSkills, ...this._localSkills].filter((s) => !s.deprecated);
+    const all = [...this._marketSkills, ...this._mergedUserSkills(), ...this._localSkills];
     let pool = all;
     if (opts.category) pool = pool.filter((s) => s.category === opts.category);
     if (opts.source) pool = pool.filter((s) => s.source === opts.source);
@@ -269,7 +358,7 @@ class SkillStore {
     maxResults = maxResults || 3;
     if (!taskText) return [];
     const text = taskText.toLowerCase();
-    const all = [...this._marketSkills, ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills].filter((s) => !s.deprecated);
+    const all = [...this._marketSkills, ...this._mergedUserSkills(), ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills];
     const scored = all.map((s) => {
       let score = 0;
       const triggers = String(s.trigger || "").toLowerCase().split(/[,;，；\s]+/).filter(Boolean);
@@ -288,7 +377,7 @@ class SkillStore {
 
   findByName(name) {
     const q = name.toLowerCase().trim();
-    const all = [...this._marketSkills, ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills];
+    const all = [...this._marketSkills, ...this._mergedUserSkills(), ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills];
     return all.find((s) => s.name.toLowerCase() === q) || all.find((s) => s.name.toLowerCase().includes(q)) || null;
   }
 
@@ -388,4 +477,4 @@ trigger: 触发关键词1,关键词2
   }
 }
 
-module.exports = { SkillStore, BUILTIN_WORKFLOWS, parseFrontmatter, serializeFrontmatter };
+module.exports = { SkillStore, auditSkill, BUILTIN_WORKFLOWS, parseFrontmatter, serializeFrontmatter };

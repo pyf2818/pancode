@@ -58,6 +58,8 @@ function makeSkillEl(s, sourceType) {
   const el = document.createElement("div");
   el.className = "skill-item";
   const catColor = CAT_COLORS[s.category] || "#808080";
+  const riskBadge = s.risk_level === "P0" ? '<span class="sk-risk sk-risk-p0" title="安全审计 P0：含任意执行/破坏性操作，导入时已显式确认">P0</span>'
+    : s.risk_level === "P1" ? '<span class="sk-risk sk-risk-p1" title="安全审计 P1：含网络请求/提权/全局安装">P1</span>' : "";
   const isBuiltin = s.source === "workflow";
   const isAuto = s.source === "auto";
   const srcTag = isBuiltin ? ' <span style="font-size:9px;color:var(--text-dim)">内置</span>' : (isAuto ? ' <span style="font-size:9px;color:var(--ok)">沉淀</span>' : '');
@@ -66,7 +68,7 @@ function makeSkillEl(s, sourceType) {
   const trashIco = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
   el.innerHTML =
     '<div class="skill-ic" style="background:' + catColor + '">' + esc((s.name || "S")[0]) + '</div>' +
-    '<div class="skill-meta"><div class="skill-name">' + esc(s.name) + srcTag + '</div>' +
+    '<div class="skill-meta"><div class="skill-name">' + esc(s.name) + riskBadge + srcTag + '</div>' +
     '<div class="skill-desc">' + esc(s.description || "无描述") + '</div></div>' +
     '<div class="skill-actions">' +
     '<button class="skill-view" title="查看详情">' + eyeIco + '</button>' +
@@ -256,8 +258,20 @@ $("btnImportSkill").onclick = () => {
     try {
       const text = await file.text();
       const skill = JSON.parse(text);
-      const r = await fetch("/api/skills/market", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(skill) }).then((x) => x.json());
-      if (r.ok) { toast("✅ 导入成功: " + skill.name); loadSkills(); }
+      const doImport = (extra) => fetch("/api/skills/market", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({}, skill, extra || {})) }).then((x) => x.json());
+      const r = await doImport();
+      if (r.ok) { toast("✅ 导入成功: " + skill.name + (r.audit && r.audit.level === "P1" ? "（含 P1 风险警告，已在详情标注）" : "")); loadSkills(); }
+      else if (r.audit && r.audit.findings) {
+        // W1：P0 风险 → 展示审计报告，用户显式确认后 force 重发
+        const rows = r.audit.findings.map((f) => "· <b style='color:var(--err)'>" + esc(f.level) + "</b> " + esc(f.desc)).join("<br>");
+        showConfirm("安全审计：该 Skill 存在 P0 风险",
+          "以下内容将被注入 Agent 上下文并可能被 AI 参考执行，请确认你信任该来源：<br><br>" + rows + "<br><br><span style='color:var(--text-dim)'>确认后将以「已知晓风险」标记导入。</span>",
+          async () => {
+            const r2 = await doImport({ force: true });
+            if (r2.ok) { toast("⚠️ 已确认风险并导入: " + skill.name); loadSkills(); }
+            else toast("❌ 导入失败: " + (r2.error || ""));
+          });
+      }
       else toast("❌ 导入失败: " + r.error);
     } catch (e) { toast("❌ JSON 格式错误"); }
   };

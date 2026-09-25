@@ -801,6 +801,10 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .af-ico{display:flex;align-items:center;flex-shrink:0}
 .af-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--text)}
 .af-kind{font-size:10px;color:var(--text-dim);border:1px solid var(--border);padding:1px 6px;border-radius:8px;flex-shrink:0}
+/* W1 Skill 风险徽标 */
+.sk-risk{font-size:9px;padding:0 4px;border-radius:6px;margin-left:4px;vertical-align:1px}
+.sk-risk-p0{color:var(--err);border:1px solid var(--err)}
+.sk-risk-p1{color:var(--warn);border:1px solid var(--warn)}
 .af-new{font-size:10px;color:var(--ok);border:1px solid var(--ok);padding:0 5px;border-radius:8px;flex-shrink:0}
 .agcf-item{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;background:var(--bg3)}
 .agcf-head{display:flex;align-items:center;gap:8px;padding:8px 11px;cursor:pointer;font-size:12.5px;font-family:var(--mono)}

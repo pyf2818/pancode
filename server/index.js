@@ -85,7 +85,7 @@ function buildEngine() {
   const marketDir = path.join(configMod.ROOT, ".pancode", "skills", "market");
   const skillDir = path.join(configMod.ROOT, ".pancode", "skills");
   _engineAssets.wsHash = wsHash;
-  _engineAssets.skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"));
+  _engineAssets.skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"), path.join(require("os").homedir(), ".pancode", "skills")); // W1：+ 用户级目录
   _engineAssets.memDir = path.join(configMod.ROOT, ".pancode", "memory");
   _engineAssets.memory = new MemoryStore(path.join(_engineAssets.memDir, wsHash + ".json"));
   const planDir = path.join(configMod.ROOT, ".pancode", "plans");
@@ -378,10 +378,12 @@ app.get("/api/skills/all", (req, res) => {
 app.post("/api/skills/market", (req, res) => {
   try {
     if (!engine || !engine.skills) return res.status(503).json({ ok: false, error: "引擎未就绪" });
-    const skill = engine.skills.add(req.body || {}, "manual");
+    const body = req.body || {};
+    const skill = engine.skills.add(body, "manual", { force: !!body.force, scope: body.scope === "user" ? "user" : "" });
     if (!skill) return res.status(400).json({ ok: false, error: "名称不能为空" });
     if (skill._duplicate) return res.status(409).json({ ok: false, error: "同名 Skill 已存在: " + skill.name });
-    res.json({ ok: true, skill });
+    if (skill._auditRejected) return res.status(403).json({ ok: false, error: "安全审计发现 P0 风险，已拒绝导入（需显式确认）", audit: skill._auditRejected });
+    res.json({ ok: true, skill, audit: skill._audit || null });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.put("/api/skills/market/:id", (req, res) => {
