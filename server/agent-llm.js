@@ -631,6 +631,8 @@ const TOOLS = [
 /* 规划模式（planMode）下禁止 Agent 调用的"会改动工作区 / 执行命令"工具 */
 const { MUTATING_TOOLS } = require("./tools/util");
 const { checkHooks, writeAudit } = require("./security");
+const { collectArtifacts, saveArtifacts } = require("./artifacts");
+const ARTIFACTS_ROOT = require("./config").ROOT; // W6 产物持久化根目录
 
 /* 运行环境提示：注入 SYSTEM_PROMPT，避免 agent 用错平台的 shell 语法
    （Windows cmd 无 `&` 后台符 / grep / cat，用 start /B、findstr、type；路径分隔符为 \） */
@@ -938,7 +940,37 @@ ${taskSummary}
   /* 文件变更 → 失效仓库索引缓存（重写基类以加缓存失效） */
   async fileChanged(rel) {
     this._repoDirty = true;
+    this._recordWrite(rel);   // W6 产物收集：所有写路径（write_file/apply_edit/patch/快速写）的汇聚点
     await super.fileChanged(rel);
+  }
+
+  /* W6：会话内写过的文件（convId → Map<path, {isNew, ts}>），产物聚合数据源。
+     isNew 判定：首次记录时异步查 git 基线，null = 新文件（聚合在任务结束，时序安全）。 */
+  _recordWrite(rel) {
+    if (!rel || typeof rel !== "string") return;
+    if (!this._convWrites) this._convWrites = new Map();
+    const c = this._currentConv || "default";
+    let m = this._convWrites.get(c);
+    if (!m) { m = new Map(); this._convWrites.set(c, m); }
+    const prev = m.get(rel);
+    if (prev) { prev.ts = Date.now(); return; }
+    m.set(rel, { isNew: false, ts: Date.now() });
+    try {
+      Promise.resolve(this.git.baseline(rel)).then((b) => {
+        const cur = m.get(rel);
+        if (cur && b === null) cur.isNew = true;
+      }).catch(() => {});
+    } catch (e) { /* git 不可用时 isNew=false，仅影响置顶排序 */ }
+  }
+
+  /* W6：聚合会话产物（可预览交付物）→ emit + 持久化 .pancode/artifacts/<convId>.json */
+  _emitArtifacts(convId) {
+    try {
+      const m = (this._convWrites || new Map()).get(convId);
+      const list = m ? collectArtifacts(m, (p) => { try { return this.files.exists(p); } catch (e) { return true; } }) : [];
+      this.emit({ type: "artifacts", convId, list });
+      saveArtifacts(ARTIFACTS_ROOT, convId, list);
+    } catch (e) { console.warn("[artifacts] 聚合失败:", e.message); }
   }
 
   /* ---------------- 多对话管理 ---------------- */
@@ -952,7 +984,10 @@ ${taskSummary}
       // LRU 上限 20，防止长跑内存只增不减（A4）
       if (this.conversations.size > CONV_MAX) {
         const oldest = this.conversations.keys().next().value;
-        if (oldest && oldest !== this._currentConv) this.conversations.delete(oldest);
+        if (oldest && oldest !== this._currentConv) {
+          this.conversations.delete(oldest);
+          if (this._convWrites) this._convWrites.delete(oldest);   // W6：写记录与 LRU 同步清理
+        }
       }
     }
     this._currentConv = next;
@@ -2143,6 +2178,7 @@ ${taskSummary}
       await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network" || kind === "context") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
     } finally {
         clearTimeout(_wd);
+        try { this._emitArtifacts(convId); } catch (e) { /* 产物聚合失败不影响任务收尾 */ } // W6：中断/异常也聚合已写产物
         // 保存局部 history 到 conversations Map
         this.conversations.set(convId, { history, round, ts: Date.now(), changes: this.convChanges[convId] || [] });
         // 如果是当前活跃会话，同步 this.history/this.round（供 ctx.query 等读取）

@@ -1405,6 +1405,52 @@ function renderChanges(list) {
   });
 }
 
+/* ---------- W6 产物视图：卡片化交付物（点击复用 openFile 全预览链路） ---------- */
+function renderArtifacts() {
+  const host = $("agArtifacts");
+  if (!host) return;
+  const list = (state.convArtifacts || {})[convId] || [];
+  const badge = $("agArtifactBadge");
+  if (badge) { badge.textContent = list.length; badge.style.display = list.length ? "" : "none"; }
+  if (!list.length) {
+    host.innerHTML = '<div class="scm-empty">本会话暂无产物。Agent 生成 HTML / 图片 / 文档等交付物后，会以卡片出现在这里，点击即可预览。</div>';
+    return;
+  }
+  host.innerHTML = "";
+  list.forEach((it) => {
+    const card = document.createElement("div");
+    card.className = "af-card";
+    card.title = it.path + "（点击预览）";
+    card.innerHTML = '<span class="af-ico">' + fileIco(it.path) + '</span>'
+      + '<span class="af-name">' + esc(it.path.split("/").pop()) + '</span>'
+      + '<span class="af-kind">' + esc(it.label) + '</span>'
+      + (it.isNew ? '<span class="af-new">新</span>' : "");
+    card.onclick = () => { try { openFile(it.path); } catch (e) {} };
+    host.appendChild(card);
+  });
+}
+
+function switchAgOutTab(tab) {
+  const tc = $("agTabChanges"), ta = $("agTabArtifacts");
+  if (tc) tc.classList.toggle("active", tab === "changes");
+  if (ta) ta.classList.toggle("active", tab === "artifacts");
+  const cf = $("agChangedFiles"), af = $("agArtifacts");
+  if (cf) cf.style.display = tab === "changes" ? "" : "none";
+  if (af) af.style.display = tab === "artifacts" ? "" : "none";
+  if (tab === "artifacts") renderArtifacts();
+}
+
+/* 历史会话回看：切换会话时从服务端拉取产物清单 */
+async function loadArtifactsHistory(id) {
+  try {
+    const d = await fetch("/api/artifacts?convId=" + encodeURIComponent(id)).then((x) => x.json());
+    state.convArtifacts = state.convArtifacts || {};
+    state.convArtifacts[id] = d.list || [];
+    const ta = $("agTabArtifacts");
+    if (ta && ta.classList.contains("active")) renderArtifacts();
+  } catch (e) { /* 历史清单拉取失败静默，不影响会话切换 */ }
+}
+
 function showDiff(path) {
   if (!state.monacoReady || !state.files[path]) return;
   const f = state.files[path];
@@ -2120,6 +2166,14 @@ function handleEventInner(ev) {
     case "changes": {
       if (!ev.convId || ev.convId === convId) renderChanges(ev.list);
 
+      break;
+    }
+
+    /* ----- W6 产物：会话交付物清单（可预览文件卡片） ----- */
+    case "artifacts": {
+      state.convArtifacts = state.convArtifacts || {};
+      state.convArtifacts[ev.convId] = ev.list || [];
+      if (!ev.convId || ev.convId === convId) renderArtifacts();
       break;
     }
 
@@ -3033,6 +3087,7 @@ function openConv(id) {
   send({ type: "switchConv", convId: id });   // C6：同步切换服务端 AI 上下文
   send({ type: "ctx.query" });
   loadTraceHistory(id);
+  loadArtifactsHistory(id);                     // W6：切换会话恢复产物清单
 
   // 多会话并行：pane 内存中有则直接 move 挂载；无（刷新后首次打开）则从快照 hydrate
   const c = loadConvList().find((x) => x.id === id);
@@ -3535,6 +3590,8 @@ $("goalStart").onclick = () => {
 /* ---------------- 启动 ---------------- */
 applyTheme(getThemePref());
 $("hpClose").onclick = () => togglePreview(false);
+if ($("agTabChanges")) $("agTabChanges").onclick = () => switchAgOutTab("changes");     // W6 产物/变更 tab
+if ($("agTabArtifacts")) $("agTabArtifacts").onclick = () => switchAgOutTab("artifacts");
 $("hpRefresh").onclick = () => renderPreview();
 initResizers();
 initAgRightResizers();

@@ -466,6 +466,14 @@ app.get("/api/templates", (req, res) => {
   } catch (e) { res.json({ ok: true, templates: [] }); }
 });
 
+/* ---------- W6 产物清单（历史会话回看：切换会话时前端拉取渲染） ---------- */
+app.get("/api/artifacts", (req, res) => {
+  try {
+    const artifacts = require("./artifacts");
+    res.json(artifacts.loadArtifacts(configMod.ROOT, req.query.convId || "default"));
+  } catch (e) { res.json({ convId: req.query.convId || "default", ts: 0, list: [] }); }
+});
+
 /* ---------- Git 状态预览 + 一键提交（一站式交付闭环） ---------- */
 app.get("/api/git/status", async (req, res) => {
   try {

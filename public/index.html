@@ -252,7 +252,14 @@
     </section>
     <div class="resizer-h" id="agResize1" title="拖动调整终端高度"></div>
     <section class="ag-panel ag-panel-grow" id="agChangedPanel">
-      <div class="ag-panel-title"><span class="cp-title"><i data-ico="diff"></i>本次改动</span><span id="agChangeCount" class="ag-panel-hint">0 个文件</span></div>
+      <div class="ag-panel-title">
+        <span class="cp-title ag-out-tabs">
+          <button class="ag-out-tab active" id="agTabChanges" title="本次任务的文件改动与 Diff"><i data-ico="diff"></i>变更</button>
+          <button class="ag-out-tab" id="agTabArtifacts" title="本会话产出的可交付文件，点击预览"><i data-ico="save"></i>产物<span id="agArtifactBadge" class="ag-art-badge" style="display:none">0</span></button>
+        </span>
+        <span id="agChangeCount" class="ag-panel-hint">0 个文件</span>
+      </div>
+      <div id="agArtifacts" style="display:none"><div class="scm-empty">本会话暂无产物。</div></div>
       <div id="agChangedFiles"><div class="scm-empty" data-i18n="noChangesAgent">Agent 修改代码后，文件与 Diff 会显示在这里。</div></div>
     </section>
     <div class="resizer-h" id="agResize2" title="拖动调整本次改动高度"></div>
