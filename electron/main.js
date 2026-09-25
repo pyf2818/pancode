@@ -4,7 +4,7 @@
    再用 Chromium 窗口加载本地页面，网页秒变桌面应用。
    ============================================================ */
 "use strict";
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, nativeTheme } = require("electron");
 const http = require("http");
 const path = require("path");
 
@@ -20,6 +20,9 @@ app.commandLine.appendSwitch("disable-software-rasterizer");
 app.commandLine.appendSwitch("no-sandbox");
 
 let win = null;
+
+/* 启动底色跟随系统主题（对齐 styles.css --bg：dark #0a0e13 / light #fafdfb），避免开窗闪错色 */
+const bgFor = () => (nativeTheme.shouldUseDarkColors ? "#0a0e13" : "#fafdfb");
 
 /* 在 Electron 主进程内直接拉起后端（同进程，无需额外 node） */
 function startServer() {
@@ -53,7 +56,7 @@ async function createWindow() {
     minWidth: 960,
     minHeight: 600,
     title: "pancode",
-    backgroundColor: "#1e1e1e",
+    backgroundColor: bgFor(),
     autoHideMenuBar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false }
   });
@@ -72,7 +75,7 @@ async function createWindow() {
   } catch (e) {
     await win.loadURL(
       "data:text/html;charset=utf-8," +
-        encodeURIComponent(`<body style="background:#1e1e1e;color:#ccc;font-family:sans-serif;display:grid;place-items:center;height:100vh;margin:0"><div><h3>pancode 后端启动失败</h3><p>${e.message}</p></div></body>`)
+        encodeURIComponent(`<body style="background:${bgFor()};color:${nativeTheme.shouldUseDarkColors ? "#ccc" : "#333"};font-family:sans-serif;display:grid;place-items:center;height:100vh;margin:0"><div><h3>pancode 后端启动失败</h3><p>${e.message}</p></div></body>`)
     );
   }
 }

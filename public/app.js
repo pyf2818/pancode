@@ -615,14 +615,28 @@ function saveActiveFile() {
 /* ---------- 主题（浅色 / 深色） ---------- */
 
 function applyTheme(t) {
-  document.documentElement.setAttribute("data-theme", t);
-  localStorage.setItem("cw-theme", t);
+  const pref = (t === "auto" || t === "light" || t === "dark") ? t : "dark";
+  const resolved = pref === "auto" ? getSystemTheme() : pref; /* CSS 只认 light/dark */
+  document.documentElement.setAttribute("data-theme", resolved);
+  localStorage.setItem("cw-theme", pref);
   const btn = $("btnTheme");
-  if (btn) btn.innerHTML = ico(t === "light" ? "moon" : "sun");
-  if (state.monacoReady && editor) editor.updateOptions({ theme: t === "light" ? "pancode-light" : "pancode-dark" });
-  if (diffEditor) diffEditor.updateOptions({ theme: t === "light" ? "pancode-light" : "pancode-dark" });
+  if (btn) {
+    btn.innerHTML = ico(resolved === "light" ? "moon" : "sun");
+    btn.title = pref === "auto"
+      ? "主题：跟随系统（当前" + (resolved === "light" ? "浅色" : "深色") + "）· 全局设置可改"
+      : "主题：固定" + (pref === "light" ? "浅色" : "深色") + " · 全局设置可选「跟随系统」";
+  }
+  if (state.monacoReady && editor) editor.updateOptions({ theme: resolved === "light" ? "pancode-light" : "pancode-dark" });
+  if (diffEditor) diffEditor.updateOptions({ theme: resolved === "light" ? "pancode-light" : "pancode-dark" });
 }
-$("btnTheme").onclick = () => applyTheme(getTheme() === "light" ? "dark" : "light");
+$("btnTheme").onclick = () => applyTheme(getTheme() === "light" ? "dark" : "light"); /* 点击 = 显式接管 */
+
+/* auto 档：系统主题变化时实时切换（Electron nativeTheme / 系统 OS 设置均会触发） */
+try {
+  window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+    if (getThemePref() === "auto") applyTheme("auto");
+  });
+} catch (e) { /* 旧环境无 matchMedia 时静默降级为手动档 */ }
 
 /* ---------- 键盘快捷键帮助弹窗 ---------- */
 function openShortcuts() {
@@ -3519,7 +3533,7 @@ $("goalStart").onclick = () => {
 })();
 
 /* ---------------- 启动 ---------------- */
-applyTheme(getTheme());
+applyTheme(getThemePref());
 $("hpClose").onclick = () => togglePreview(false);
 $("hpRefresh").onclick = () => renderPreview();
 initResizers();

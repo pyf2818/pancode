@@ -18,7 +18,19 @@ function fmtSize(n) {
   return (n / 1024 / 1024).toFixed(1) + " MB";
 }
 
-function getTheme() { return localStorage.getItem("cw-theme") || "dark"; }
+/* 主题：cw-theme 存偏好（auto|light|dark），getTheme() 返回解析后的实际主题。
+   auto 档跟随系统（Electron 中 prefers-color-scheme 由 nativeTheme 驱动）。 */
+function getThemePref() { return localStorage.getItem("cw-theme") || "auto"; }
+
+function getSystemTheme() {
+  try { return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"; }
+  catch (e) { return "dark"; }
+}
+
+function getTheme() {
+  const pref = getThemePref();
+  return pref === "auto" ? getSystemTheme() : pref;
+}
 
 function extOf(p) { return String(p).split(".").pop().toLowerCase(); }
 

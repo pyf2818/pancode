@@ -42,7 +42,7 @@
   // ---------- 外观 ----------
   function initAppearance() {
     // 主题
-    const theme = (typeof getTheme === "function" ? getTheme() : "dark");
+    const theme = (typeof getThemePref === "function" ? getThemePref() : (typeof getTheme === "function" ? getTheme() : "dark"));
     const themeSeg = $("gsThemeSeg");
     themeSeg.querySelectorAll("button").forEach((b) => {
       b.classList.toggle("active", b.dataset.val === theme);
