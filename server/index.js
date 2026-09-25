@@ -149,7 +149,8 @@ function mountWorkspace(dir) {
   WS_DIR = abs;
   files = new FileStore(WS_DIR, path.join(configMod.ROOT, ".pancode", "audit"));
   git = new GitLayer(WS_DIR, files);
-  term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
+  require("./security").setAuditDir(path.join(configMod.ROOT, ".pancode", "audit")); // W14：agent 层审计统一落同一目录
+  term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"), cfg.permissions.strictCommand !== false);
   procs = new ProcessLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
   buildEngine();
   files.startWatch(() => {

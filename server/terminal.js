@@ -81,10 +81,11 @@ class TerminalSession {
 
 /* ---------------- 终端池：管理所有标签会话 ---------------- */
 class TerminalLayer {
-  constructor(wsDir, emit, auditDir) {
+  constructor(wsDir, emit, auditDir, strictCommand) {
     this.dir = wsDir;
     this.emit = emit;          // 广播事件
     this.auditDir = auditDir || null;
+    this.strictCmd = strictCommand !== false; // W14 沙箱开关：false 时 AI 命令跳过 strict 黑名单（仅 base 兜底）
     this.sessions = new Map(); // tabId -> TerminalSession
   }
 
@@ -114,7 +115,7 @@ class TerminalLayer {
     opts = opts || {};
     const s = this.open(tabId);
     const display = argv ? argv.join(" ") : displayCmd;
-    const sec = check(display, !!opts.strict);
+    const sec = check(display, !!opts.strict && this.strictCmd !== false);
     if (sec.blocked) {
       this.emit({ type: "term.line", tabId, text: "[已拒绝执行] " + sec.reason + "： " + display.slice(0, 200), cls: "tl-err" });
       return Promise.resolve({ code: -1, out: "", blocked: true, timedOut: false });

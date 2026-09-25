@@ -630,6 +630,7 @@ const TOOLS = [
 
 /* 规划模式（planMode）下禁止 Agent 调用的"会改动工作区 / 执行命令"工具 */
 const { MUTATING_TOOLS } = require("./tools/util");
+const { checkHooks, writeAudit } = require("./security");
 
 /* 运行环境提示：注入 SYSTEM_PROMPT，避免 agent 用错平台的 shell 语法
    （Windows cmd 无 `&` 后台符 / grep / cat，用 start /B、findstr、type；路径分隔符为 \） */
@@ -1156,20 +1157,28 @@ ${taskSummary}
     return false;
   }
 
+  /* 工具参数的规则匹配主体：命令文本 / 文件路径 / 分支名等（hooks 与审批规则共用；MCP 工具 = 工具名+参数） */
+  _hookSubject(toolName, args) {
+    if (toolName === "run_command" || toolName === "start_process") return String(args.command || "");
+    if (toolName === "write_file" || toolName === "delete_file") return String(args.path || "");
+    if (toolName === "git_commit") return String(args.message || "");
+    if (toolName === "git_branch") return String(args.name || "") + " " + String(args.action || "");
+    if (toolName === "stop_process") return String(args.name || "");
+    if (toolName.startsWith("mcp__")) return toolName + " " + JSON.stringify(args || {});
+    return "";
+  }
+
   /* 返回 { action: "allow" | "ask" | "block", reason } */
   _approvalDecision(toolName, args) {
     const perm = this.cfg.permissions || { mode: "ask", allow: [], deny: [] };
     const mode = perm.mode || "ask";
     const allow = perm.allow || [];
     const deny = perm.deny || [];
-    let subject = "";
-    if (toolName === "run_command" || toolName === "start_process") subject = String(args.command || "");
-    else if (toolName === "write_file" || toolName === "delete_file") subject = String(args.path || "");
-    else if (toolName === "git_commit") subject = String(args.message || "");
-    else if (toolName === "git_branch") subject = String(args.name || "") + " " + String(args.action || "");
-    else if (toolName === "stop_process") subject = String(args.name || "");
+    const subject = this._hookSubject(toolName, args);
 
     if (this._matchRule(subject, deny)) return { action: "block", reason: "命中拒绝规则" };
+    // W14：删除文件不可逆——即使 auto 全自动模式也强制人工确认（审批卡片列明后果）
+    if (toolName === "delete_file") return { action: "ask" };
     if (toolName === "read_file" || toolName === "list_files" || toolName === "search_code") return { action: "allow" };
     // Agent Git 工具集 / 进程日志 / 端口探活 / MCP 清单：纯只读，直接放行
     if (toolName === "git_status" || toolName === "git_diff" || toolName === "git_log") return { action: "allow" };
@@ -1188,9 +1197,16 @@ ${taskSummary}
 
   async _gate(toolName, args, danger) {
     const dec = this._approvalDecision(toolName, args);
-    if (dec.action === "block") return { blocked: true, reason: dec.reason };
-    if (dec.action === "allow") return { blocked: false, approved: true };
+    if (dec.action === "block") {
+      writeAudit("gate", toolName + " 拦截(deny规则) " + this._hookSubject(toolName, args));
+      return { blocked: true, reason: dec.reason };
+    }
+    if (dec.action === "allow") {
+      writeAudit("gate", toolName + " 放行(mode=" + ((this.cfg.permissions || {}).mode || "ask") + ") " + this._hookSubject(toolName, args));
+      return { blocked: false, approved: true };
+    }
     const ap = await this.requestApproval(toolName, args, danger);
+    writeAudit("gate", toolName + (ap.approved ? " 用户批准" : " 用户拒绝") + " " + this._hookSubject(toolName, args));
     return { blocked: false, approved: ap.approved, reason: ap.reason };
   }
 
@@ -1592,6 +1608,17 @@ ${taskSummary}
       const t = this.tool("edit", "规划模式·已拦截", name);
       t.done(false, "规划模式禁止修改", false);
       return "你当前处于「规划模式」：只能阅读、检索代码，并用 create_plan 输出实施计划；不能修改文件、执行命令或调用外部 MCP 工具。请等待用户审阅计划并切回「执行模式」后，改动才会真正落地。";
+    }
+    // W14：用户 hooks 规则（pancode.config.json → hooks.pre），deny 直接拦截（覆盖包括 MCP 在内的全部工具）
+    const hooksPre = (this.cfg.hooks || {}).pre || [];
+    if (hooksPre.length) {
+      const hk = checkHooks(hooksPre, name, this._hookSubject(name, args));
+      if (hk.action === "deny") {
+        const t = this.tool("tool", "Hooks·已拦截", name);
+        t.done(false, "被 hooks 规则拦截", false);
+        writeAudit("hooks", name + " 拦截 " + this._hookSubject(name, args).slice(0, 200));
+        return "该调用被用户 hooks 规则拦截（pancode.config.json → hooks.pre）：" + (hk.reason || "未说明原因") + "。请调整方案绕开该限制，不要反复尝试同一调用。";
+      }
     }
     // 外部 MCP 工具：按 mcp__<server>__<tool> 路由到对应 MCP 客户端
     if (isMcp) {

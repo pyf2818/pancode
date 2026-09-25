@@ -31,6 +31,13 @@ const DEFAULTS = {
     mode: "ask",          // ask=全部询问(默认) | semi=半自动(安全操作免确认) | auto=全自动(仅高危硬拦截)
     allow: [],            // 免确认规则（命令子串/正则，或文件 glob），semi/auto 模式生效
     deny: [],             // 强制拦截（命令子串/正则，或文件 glob），所有模式生效
+    strictCommand: true,  // W14 沙箱开关：AI 命令启用 strict 黑名单（sudo/全局安装/系统目录写入等）。
+                          // 关闭 = 降低防护，AI 可执行这些命令，请自行评估风险
+  },
+  // W14 hooks：工具执行前拦截规则（deny），覆盖包括 MCP 在内的全部工具
+  hooks: {
+    // pre: [{ tool: "write_file"（工具名，"*"=全部，省略=全部）, match: "/node_modules/i"（/正则/ 或包含子串，省略=仅按 tool）, action: "deny", reason: "给 AI 的拦截原因" }]
+    pre: [],
   },
   planMode: false,        // 规划模式：开启后 Agent 仅可读/检索/规划，禁止任何写文件/执行命令，待用户批准再切回执行
   persona: {
@@ -153,6 +160,17 @@ function saveAgentSettings(cfg, patch) {
     if (typeof p.permissions.mode === "string") cfg.permissions.mode = p.permissions.mode;
     if (Array.isArray(p.permissions.allow)) cfg.permissions.allow = p.permissions.allow.filter(Boolean).map(String);
     if (Array.isArray(p.permissions.deny)) cfg.permissions.deny = p.permissions.deny.filter(Boolean).map(String);
+    if (typeof p.permissions.strictCommand === "boolean") cfg.permissions.strictCommand = p.permissions.strictCommand;
+  }
+  if (p.hooks && typeof p.hooks === "object" && Array.isArray(p.hooks.pre)) {
+    cfg.hooks.pre = p.hooks.pre
+      .filter((h) => h && typeof h === "object" && h.action === "deny")
+      .map((h) => ({
+        tool: typeof h.tool === "string" ? h.tool.slice(0, 64) : "",
+        match: typeof h.match === "string" ? h.match.slice(0, 300) : "",
+        action: "deny",
+        reason: typeof h.reason === "string" ? h.reason.slice(0, 200) : "",
+      }));
   }
   if (p.persona) {
     if (typeof p.persona.active === "string") cfg.persona.active = p.persona.active;
@@ -170,6 +188,7 @@ function saveAgentSettings(cfg, patch) {
 
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
   onDisk.permissions = cfg.permissions;
+  onDisk.hooks = cfg.hooks;
   onDisk.planMode = cfg.planMode;
   onDisk.agentMode = cfg.agentMode;
   onDisk.persona = cfg.persona;
@@ -209,6 +228,7 @@ function embeddingInfo(cfg) {
 function agentSettings(cfg) {
   return {
     permissions: cfg.permissions,
+    hooks: cfg.hooks,
     planMode: cfg.planMode,
     agentMode: cfg.agentMode,
     persona: cfg.persona,

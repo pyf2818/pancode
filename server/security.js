@@ -5,6 +5,8 @@
    返回 { blocked, reason }
    ============================================================ */
 "use strict";
+const fs = require("fs");
+const path = require("path");
 
 const BASE = [
   /:\s*\(\)\s*\{[^}]*\|[^}]*\}\s*;?/,            // fork bomb :(){ :|:& };
@@ -49,4 +51,39 @@ function check(displayCmd, strict) {
   return { blocked: false };
 }
 
-module.exports = { check };
+/* ---------------- W14：统一审计写入 + 用户 hooks 规则 ---------------- */
+
+let _auditDir = null;
+function setAuditDir(dir) { _auditDir = dir || null; }
+
+/* 审计写入（追加当日 .pancode/audit/<日期>.log）。审计失败只告警，绝不阻塞工具链。 */
+function writeAudit(source, detail) {
+  if (!_auditDir || !detail) return;
+  try {
+    fs.mkdirSync(_auditDir, { recursive: true });
+    const f = path.join(_auditDir, new Date().toISOString().slice(0, 10) + ".log");
+    fs.appendFileSync(f, new Date().toISOString() + " | " + source + " | "
+      + String(detail).replace(/\r?\n/g, " ").slice(0, 500) + "\n");
+  } catch (e) { console.warn("[pancode][audit] 写入失败:", e.message); }
+}
+
+/* hooks.pre 规则匹配：tool 匹配（"*" 或精确或省略）+ subject 匹配（/正则/ 或包含子串，省略=仅按 tool）。
+   返回 { action: "deny", reason } 或 { action: "none" } */
+function checkHooks(rules, toolName, subject) {
+  for (const h of rules || []) {
+    if (!h || h.action !== "deny") continue;
+    if (h.tool && h.tool !== "*" && h.tool !== toolName) continue;
+    if (h.match) {
+      try {
+        const re = /^\/(.+)\/([a-z]*)$/.exec(h.match); /* 支持 /pattern/ 与 /pattern/flags 两种形式 */
+        if (re) {
+          if (!new RegExp(re[1], re[2] || "i").test(String(subject))) continue;
+        } else if (!String(subject).toLowerCase().includes(h.match.toLowerCase())) continue;
+      } catch (e) { continue; }
+    }
+    return { action: "deny", reason: h.reason || "" };
+  }
+  return { action: "none" };
+}
+
+module.exports = { check, setAuditDir, writeAudit, checkHooks };
