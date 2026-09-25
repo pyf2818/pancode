@@ -92,6 +92,9 @@ module.exports = {
       return "编辑未应用：" + res.error + "。请修正 old_string 使其「逐字、唯一且存在于文件中」，然后重试同一处修改。";
     }
     const files = res.staged;
+    // W13：宽松匹配统计——让 LLM 与用户都能感知"机械 merge 介入了哪些 hunk"
+    const fuzzyN = files.reduce((acc, f) => acc + (f.hunks || []).filter((h) => h.fuzzy).length, 0);
+    const fuzzyNote = fuzzyN ? "\n注意：其中 " + fuzzyN + " 处为宽松匹配（相似度阈值 0.85，自动对齐缩进/空白差异），请核对新内容上下文是否正确。" : "";
     const permMode = (agent.cfg.permissions || {}).mode || "ask";
     if (permMode === "auto") {
       const paths = files.map((f) => f.path);
@@ -102,7 +105,7 @@ module.exports = {
         return "已写入 " + applied.length + " 个文件改动；冲突跳过：" + conflicts.join(", ") + "（文件已被其他会话修改，请重新执行 apply_edit）。";
       }
       t.done(true, "已自动接受 " + applied.length + " 个文件改动", false);
-      return "已自动写入 " + applied.length + " 个文件改动（" + paths.join(", ") + "）。";
+      return "已自动写入 " + applied.length + " 个文件改动（" + paths.join(", ") + "）。" + fuzzyNote;
     }
     agent.emit({
       type: "patch.review",
@@ -117,7 +120,7 @@ module.exports = {
     t.done(true, "已暂存 " + files.length + " 个文件，待审阅", false);
     return "已暂存 " + files.length + " 处文件改动（" + files.map((f) => f.path).join(", ") +
       "）。这些改动已进入「审阅面板」，请用户在 diff 视图中逐文件「接受」或「拒绝」后再落盘。" +
-      "不要对同一个文件改用 write_file 整文件覆盖。";
+      "不要对同一个文件改用 write_file 整文件覆盖。" + fuzzyNote;
   },
 
   delete_file: async (agent, args) => {
