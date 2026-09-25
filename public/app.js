@@ -46,7 +46,8 @@ const state = {
   booted: false,
   engine: null,         // { mode, model, ... }
   agent: null,          // { permissions, persona, rules, context, memory }
-  planMode: false,      // 规划模式：仅只读/规划，禁止修改文件与执行命令
+  agentMode: "agent",   // W8：Agent 行为模式 agent=执行 | plan=只读规划 | ask=仅问答（不调用任何工具）
+  planMode: false,      // 派生字段，= (agentMode === "plan")，保留向后兼容
   project: "workspace",
   workspace: null,      // 当前工作区绝对路径（hello 事件设置）
   lsp: null,            // 后端下发的 LSP 能力清单（hello 事件设置）
@@ -163,7 +164,11 @@ inputBox.innerHTML =
   '<textarea id="chatInput" rows="2" placeholder="向 AI 描述你的任务；支持 @file:路径 / @folder:路径 引用，可粘贴或拖入图片…"></textarea>' +
   '<div class="ci-bottom">' +
     '<button id="btnAttach" class="ci-tool" title="添加图片附件（也可直接粘贴 / 拖拽）">' + ico("filePlus") + "</button>" +
-    '<button id="btnPlanMode" class="ci-tool ci-plan" title="规划模式：仅可读 / 检索 / 规划，禁止修改文件或执行命令">规划</button>' +
+    '<span id="modeSeg" class="ci-mode-seg" title="Agent 行为模式：Agent 执行 / Plan 只读规划 / Ask 仅问答">' +
+      '<button type="button" class="ci-mode-btn" data-mode="agent" title="Agent：说做就做（全工具）">Agent</button>' +
+      '<button type="button" class="ci-mode-btn" data-mode="plan" title="Plan：只读规划，禁止改文件 / 执行命令">Plan</button>' +
+      '<button type="button" class="ci-mode-btn" data-mode="ask" title="Ask：仅问答，不调用任何工具">Ask</button>' +
+    '</span>' +
     '<select id="ciPerm" class="ci-perm" title="Agent 权限模式">' +
       '<option value="ask">权限：逐项确认</option>' +
       '<option value="semi">权限：半自动</option>' +
@@ -2160,6 +2165,7 @@ function handleEventInner(ev) {
     case "plan.updated": if (!ev.convId || ev.convId === convId) renderPlan(ev.plan); break;
 
     case "agent.settings": applyAgentSettings(ev.agent); break;
+    case "system.perf": onSystemPerf(ev); break;
     case "mcp.servers": if (typeof window.onMcpServers === "function") window.onMcpServers(ev.servers); break;
     case "context.usage": updateCtxBar(ev.used, ev.budget, ev.est); break;
   }
@@ -2173,13 +2179,14 @@ function applyAgentSettings(a) {
   state.agent = a;
   const sel = inputBox.querySelector("#ciPerm");
   if (sel && a.permissions && a.permissions.mode) sel.value = a.permissions.mode;
-  setPlanModeUI(!!(a.planMode));
+  setAgentModeUI(a.agentMode || "agent");
 }
-/* 规划模式 UI 同步：切换按钮高亮 + 记录状态（不在此处打印提示，避免每次同步都刷屏） */
-function setPlanModeUI(on) {
-  const btn = inputBox.querySelector("#btnPlanMode");
-  if (btn) btn.classList.toggle("on", on);
-  state.planMode = on;
+/* W8：三模式 UI 同步（Agent / Plan / Ask）：高亮当前模式按钮 + 记录状态 */
+function setAgentModeUI(mode) {
+  const seg = inputBox.querySelector("#modeSeg");
+  if (seg) seg.querySelectorAll(".ci-mode-btn").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  state.agentMode = mode;
+  state.planMode = (mode === "plan");
 }
 /* 客户端估算：与服务端 _estTokens 同口径（content.length / 4），用于流式输出时的真实实时预览 */
 function estTokensFromDom() {
@@ -2219,6 +2226,18 @@ function updateCtxBar(used, budget, est) {
 }
 
 /* ---------------- Agent 状态 ---------------- */
+/* W11：ELD（事件循环延迟）展示——>100ms 主进程繁忙（重计算阻塞中），提示用户感知卡顿源 */
+function onSystemPerf(ev) {
+  const el = $("sbEld"); const txt = $("sbEldTxt");
+  if (!el || !txt) return;
+  el.style.display = "";
+  const ms = Math.max(0, Number(ev && ev.eld) || 0);
+  txt.textContent = ms.toFixed(1) + "ms";
+  el.style.color = ms > 100 ? "var(--err, #e5484d)" : (ms > 40 ? "var(--warn, #f5a623)" : "");
+  el.title = "事件循环延迟（ELD）：当前 " + ms.toFixed(1) + "ms"
+    + (ms > 100 ? " · 主进程繁忙，操作可能卡顿" : (ms > 40 ? " · 主进程略有负载" : " · 主进程空闲"));
+}
+
 function setRunning(running, label, evConvId) {
   // 多会话并行：按 convId 更新运行状态
   const cid = evConvId || convId;
@@ -2737,19 +2756,23 @@ function bindInput() {
       toast("权限模式 → " + label);
     } catch (err) { toast("权限切换失败: " + err.message); }
   };
-  // 规划模式开关：开启后 Agent 仅可读/检索/规划，禁止任何写文件或执行命令
-  inputBox.querySelector("#btnPlanMode").onclick = async () => {
-    const on = !state.planMode;
-    try {
-      await fetch("/api/agent-settings", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ planMode: on }),
-      });
-      setPlanModeUI(on);
-      toast(on ? "规划模式已开启：Agent 仅规划，不改动文件" : "已切回执行模式");
-      termLine('<span class="tl-info">[规划模式] ' + (on ? "已开启：Agent 只可阅读/检索/规划，禁止修改文件或执行命令，待你审阅计划后切回执行" : "已关闭：Agent 可正常修改文件与执行命令") + "</span>");
-    } catch (err) { termLine('<span class="tl-err">[规划模式] 切换失败: ' + esc(err.message) + "</span>"); }
-  };
+  // W8：三模式切换（Agent / Plan / Ask）——单一 agentMode 真源，统一走 /api/agent-settings
+  inputBox.querySelectorAll("#modeSeg .ci-mode-btn").forEach((btn) => {
+    btn.onclick = async () => {
+      const mode = btn.dataset.mode;
+      if (mode === state.agentMode) return;
+      try {
+        await fetch("/api/agent-settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentMode: mode }),
+        });
+        setAgentModeUI(mode);
+        const tip = { agent: "已切回 Agent 执行模式：说做就做", plan: "规划模式已开启：Agent 仅规划，不改动文件", ask: "Ask 模式已开启：仅问答，不调用任何工具" }[mode];
+        toast(tip);
+        termLine('<span class="tl-info">[模式] ' + tip + "</span>");
+      } catch (err) { termLine('<span class="tl-err">[模式] 切换失败: ' + esc(err.message) + "</span>"); }
+    };
+  });
 
   // Skill 选择器
   const btnSkillPick = inputBox.querySelector("#btnSkillPick");

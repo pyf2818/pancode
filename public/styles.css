@@ -617,6 +617,13 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .ci-perm:hover{color:var(--text);border-color:var(--accent)}
 .ci-plan.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .ci-plan.on:hover{background:var(--accent);color:#fff}
+/* W8：三模式分段控件 Agent / Plan / Ask */
+.ci-mode-seg{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-left:2px}
+.ci-mode-btn{background:var(--bg2);color:var(--text-dim);font-size:11px;border:none;padding:3px 7px;cursor:pointer;outline:none;line-height:1.4}
+.ci-mode-btn+.ci-mode-btn{border-left:1px solid var(--border)}
+.ci-mode-btn:hover{color:var(--text);background:var(--bg4)}
+.ci-mode-btn.on{background:var(--accent);color:#fff}
+.ci-mode-btn.on:hover{background:var(--accent);color:#fff}
 #ciChips{display:none;flex-wrap:wrap;gap:6px;margin-bottom:6px}
 .ci-chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:11px;color:var(--text-dim);max-width:200px}
 .ci-chip img{width:26px;height:26px;object-fit:cover;border-radius:4px;flex-shrink:0}

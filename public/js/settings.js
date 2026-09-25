@@ -223,7 +223,7 @@ async function openAgentSettings() {
     $("agmMemory").checked = !(a.memory && a.memory.enabled === false);
     $("agmCompact").checked = !(a.context && a.context.autoCompact === false);
     $("agmBudget").value = (a.context && a.context.budgetTokens) || 120000;
-    $("agmPlanMode").checked = !!a.planMode;
+    $("agmAgentMode").value = a.agentMode || "agent";
     $("agmLsp").checked = !(a.lsp && a.lsp.enabled === false);
     agmSyncPromptVis();
   } catch (e) { $("agmStatus").className = "set-status err"; $("agmStatus").textContent = "读取设置失败: " + e.message; }
@@ -246,7 +246,7 @@ $("agmSave").onclick = async () => {
     rules: { enabled: $("agmRules").checked },
     memory: { enabled: $("agmMemory").checked },
     context: { budgetTokens: parseInt($("agmBudget").value, 10) || 120000, autoCompact: $("agmCompact").checked },
-    planMode: $("agmPlanMode").checked,
+    agentMode: $("agmAgentMode").value,
     lsp: { enabled: $("agmLsp").checked },
   };
   try {

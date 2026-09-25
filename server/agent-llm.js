@@ -935,9 +935,9 @@ ${taskSummary}
   }
 
   /* 文件变更 → 失效仓库索引缓存（重写基类以加缓存失效） */
-  fileChanged(rel) {
+  async fileChanged(rel) {
     this._repoDirty = true;
-    super.fileChanged(rel);
+    await super.fileChanged(rel);
   }
 
   /* ---------------- 多对话管理 ---------------- */
@@ -1580,6 +1580,12 @@ ${taskSummary}
   /* ---------- 工具实现 ---------- */
   async execTool(name, args) {
     const isMcp = name.startsWith("mcp__");
+    // W8：Ask（仅问答）模式——不调用任何工具（不读文件 / 不执行命令 / 不写盘）
+    if (this.cfg.agentMode === "ask") {
+      const t = this.tool("tool", "Ask 模式·已拦截", name);
+      t.done(false, "Ask 模式禁止工具调用", false);
+      return "你当前处于「Ask（仅问答）模式」：不进行任何工具调用。请直接以文字回答用户问题。如需操作，请让用户切回 Agent 或 Plan 模式。";
+    }
     // 规划模式：拦截一切会改动工作区 / 执行命令的工具，以及所有外部 MCP 工具
     // （MCP 工具可能改动外部服务/文件系统，规划态一律不调用，待切回执行模式）
     if (this.cfg.planMode && (MUTATING_TOOLS.has(name) || isMcp)) {
@@ -1819,6 +1825,13 @@ ${taskSummary}
     let toolLoop = { fp: null, count: 0 };
     let failStreak = 0;
 
+    // W11：Agent 循环看门狗——单任务最大墙钟时长（默认 30 分钟，可经 cfg.agentMaxMs 配置）。
+    // 到点置 abortRef 让主循环在下一轮检查点优雅中断，防止失控长循环卡死主服务。
+    const _wd = setTimeout(() => {
+      abortRef.value = true;
+      this.emit({ type: "term.line", text: "[Agent] 已达最大运行时长上限，准备中断任务", cls: "tl-warn" });
+    }, (this.cfg.agentMaxMs || 30 * 60 * 1000));
+
     // 临时设置 _currentConv（供 this.plan.getActive 等使用）
     const prevConv = this._currentConv;
     this._currentConv = convId;
@@ -1857,8 +1870,10 @@ ${taskSummary}
         } catch (e) { /* 读取失败（二进制/过大），忽略 */ }
       }
       if (smartCtx) sysBlocks.push({ role: "system", content: smartCtx });
-      // 规划模式：注入只读约束指令，并从可见工具集中移除所有会改动工作区的工具
-      if (this.cfg.planMode) {
+      // W8：Agent 行为模式约束（Ask / Plan / Agent）
+      if (this.cfg.agentMode === "ask") {
+        sysBlocks.push({ role: "system", content: "【Ask（仅问答）模式已开启】你当前只能以文字回答用户问题，严禁调用任何工具（包括读文件、搜索、执行命令）。请基于已有知识直接作答。" });
+      } else if (this.cfg.planMode) {
         sysBlocks.push({ role: "system", content: "【规划模式已开启】你当前只能阅读、检索代码，并用 create_plan 输出实施计划。严禁调用 write_file / apply_edit / delete_file / run_command 等任何会改动工作区或执行命令的工具。完成计划后请停止，等待用户审阅并切回执行模式。" });
       }
       // 目标驱动：把会话目标注入系统提示，让 Agent 围绕目标自主推进
@@ -1873,8 +1888,12 @@ ${taskSummary}
         sysBlocks.push({ role: "system", content: g });
       }
       // 外部 MCP 工具：从管理器取当前已连接的工具定义；规划模式下不暴露（避免改动外部服务）
-      const mcpDefs = (!this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
-      const baseTools = this.cfg.planMode ? TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name)) : TOOLS;
+      const asking = this.cfg.agentMode === "ask";
+      const mcpDefs = (!asking && !this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
+      let baseTools;
+      if (asking) baseTools = [];
+      else if (this.cfg.planMode) baseTools = TOOLS.filter((t) => !MUTATING_TOOLS.has(t.function.name));
+      else baseTools = TOOLS;
       const activeTools = baseTools.concat(mcpDefs);
 
       // messages 每次发送前从「系统块 + 当前历史」重建：循环内压缩/裁剪 history 后，
@@ -2039,7 +2058,7 @@ ${taskSummary}
           this._maybeRememberFromAssistant(r.content);
         }
 
-        const changes = this.pushChanges(true);
+        const changes = await this.pushChanges(true);
         if (changes.length) {
           // 按会话记录本次改动，切换会话时各自显示
           this.convChanges[convId] = changes;
@@ -2096,6 +2115,7 @@ ${taskSummary}
       // 可恢复类错误（配额/网络/上下文）都提供「重试」入口
       await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network" || kind === "context") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
     } finally {
+        clearTimeout(_wd);
         // 保存局部 history 到 conversations Map
         this.conversations.set(convId, { history, round, ts: Date.now(), changes: this.convChanges[convId] || [] });
         // 如果是当前活跃会话，同步 this.history/this.round（供 ctx.query 等读取）

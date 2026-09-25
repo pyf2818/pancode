@@ -176,6 +176,7 @@
       <span class="sb-item" id="sbCursor">行 1, 列 1</span>
       <span class="sb-item" id="sbLang">JavaScript</span>
       <span class="sb-item">UTF-8</span>
+      <span class="sb-item" id="sbEld" style="display:none" title="事件循环延迟（ELD）：主进程繁忙程度">⚡ <span id="sbEldTxt">—</span></span>
       <span class="sb-item" id="sbAgent"><i data-ico="sparkle"></i><span id="sbAgentTxt">AI 空闲</span></span>
       <button class="sb-item" id="sbPatchReview" style="display:none;cursor:pointer;background:var(--warn)22;color:var(--warn);border-radius:5px;padding:2px 8px" title="点击重新打开审阅面板"><i data-ico="robot"></i> 待审阅</button>
     </div>
@@ -403,7 +404,13 @@
             <textarea id="agmPrompt" rows="4" spellcheck="false" placeholder="你是一位……（将追加到系统提示词后）"></textarea>
           </label>
           <div class="agm-sec-title" style="margin-top:6px">上下文 / 记忆 / 规则</div>
-          <label class="agm-check"><input type="checkbox" id="agmPlanMode">规划模式（仅可读 / 检索 / 规划，禁止写入与执行）</label>
+          <label class="agm-check">Agent 行为模式
+            <select id="agmAgentMode" title="Agent 执行 / Plan 只读规划 / Ask 仅问答">
+              <option value="agent">Agent（说做就做）</option>
+              <option value="plan">Plan（只读规划，禁止写入与执行）</option>
+              <option value="ask">Ask（仅问答，不调用任何工具）</option>
+            </select>
+          </label>
           <label class="agm-check"><input type="checkbox" id="agmRules">启用项目规则（.pancode/rules/*.md 强制注入）</label>
           <label class="agm-check"><input type="checkbox" id="agmMemory">启用自动记忆（记住你的纠正与偏好）</label>
           <label class="agm-check"><input type="checkbox" id="agmCompact">上下文超预算 85% 时自动摘要压缩</label>

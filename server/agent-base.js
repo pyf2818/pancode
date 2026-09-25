@@ -74,10 +74,10 @@ class AgentBase {
   }
 
   /* 单个文件内容变化 → 推给前端 */
-  fileChanged(rel) {
+  async fileChanged(rel) {
     let content = null;
     try { content = this.files.read(rel); } catch (e) { /* 已删除 */ }
-    const base = this.git.baseline(rel);
+    const base = await this.git.baseline(rel);
     this.emit({
       type: "file.changed", path: rel,
       content, deleted: content === null,
@@ -88,10 +88,10 @@ class AgentBase {
   }
 
   /* 全量改动列表（基于 Git/快照基线） → 推给前端 */
-  pushChanges(card) {
+  async pushChanges(card) {
     const list = [];
-    for (const ch of this.git.changes()) {
-      let cur = "", base = this.git.baseline(ch.path);
+    for (const ch of await this.git.changes()) {
+      let cur = "", base = await this.git.baseline(ch.path);
       if (ch.status !== "D") { try { cur = this.files.read(ch.path); } catch (e) { continue; } }
       const st = diffStat(base === null ? "" : base, cur);
       list.push({ path: ch.path, status: ch.status, add: st.add, del: st.del });

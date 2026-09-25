@@ -102,6 +102,9 @@ function load() {
   if (process.env.OPENAI_BASE_URL) cfg.llm.baseURL = process.env.OPENAI_BASE_URL;
   if (process.env.OPENAI_API_KEY) cfg.llm.apiKey = process.env.OPENAI_API_KEY;
   if (process.env.OPENAI_MODEL) cfg.llm.model = process.env.OPENAI_MODEL;
+  // W8：agentMode 为行为模式真源；兼容旧 planMode（planMode=true → agentMode=plan）
+  cfg.agentMode = (cfg.agentMode === "agent" || cfg.agentMode === "plan" || cfg.agentMode === "ask") ? cfg.agentMode : (cfg.planMode ? "plan" : "agent");
+  cfg.planMode = (cfg.agentMode === "plan");
   return cfg;
 }
 
@@ -162,11 +165,13 @@ function saveAgentSettings(cfg, patch) {
   }
   if (p.memory && typeof p.memory.enabled === "boolean") cfg.memory.enabled = p.memory.enabled;
   if (typeof p.planMode === "boolean") cfg.planMode = p.planMode;
+  if (p.agentMode === "agent" || p.agentMode === "plan" || p.agentMode === "ask") { cfg.agentMode = p.agentMode; cfg.planMode = (p.agentMode === "plan"); }
   if (p.lsp && typeof p.lsp.enabled === "boolean") cfg.lsp.enabled = p.lsp.enabled;
 
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
   onDisk.permissions = cfg.permissions;
   onDisk.planMode = cfg.planMode;
+  onDisk.agentMode = cfg.agentMode;
   onDisk.persona = cfg.persona;
   onDisk.rules = cfg.rules;
   onDisk.context = cfg.context;
@@ -205,6 +210,7 @@ function agentSettings(cfg) {
   return {
     permissions: cfg.permissions,
     planMode: cfg.planMode,
+    agentMode: cfg.agentMode,
     persona: cfg.persona,
     rules: cfg.rules,
     context: cfg.context,
@@ -253,6 +259,7 @@ function publicInfo(cfg) {
     hasKey: !!cfg.llm.apiKey,
     keyTail: cfg.llm.apiKey ? "…" + cfg.llm.apiKey.slice(-4) : "",
     maxToolRounds: cfg.llm.maxToolRounds,
+    agentMode: cfg.agentMode,
   };
 }
 

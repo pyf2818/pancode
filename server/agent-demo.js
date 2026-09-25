@@ -80,7 +80,7 @@ class DemoAgent extends AgentBase {
     }
   }
 
-  base(rel) { const b = this.git.baseline(rel); return b === null ? "" : b; }
+  async base(rel) { const b = await this.git.baseline(rel); return b === null ? "" : b; }
 
   async mainFlow(userText) {
     this.state(true, "AI 分析任务中");
@@ -139,7 +139,7 @@ class DemoAgent extends AgentBase {
 
     t = this.tool("edit", "编辑文件", "src/utils.js — 新增 sortByPriority");
     await sleep(750);
-    this.files.write("src/utils.js", this.base("src/utils.js") + SORT_BUGGY);
+    const _b1 = await this.base("src/utils.js"); this.files.write("src/utils.js", _b1 + SORT_BUGGY);
     this.fileChanged("src/utils.js");
     t.body("+ const PRIORITY_ORDER = { low: 0, normal: 1, high: 2 };\n" +
            "+ export function sortByPriority(todos) {\n" +
@@ -150,7 +150,7 @@ class DemoAgent extends AgentBase {
 
     t = this.tool("edit", "编辑文件", "tests/todo.test.js — 补充排序测试");
     await sleep(700);
-    this.files.write("tests/todo.test.js", this.base("tests/todo.test.js") + TEST_EXTRA);
+    const _b2 = await this.base("tests/todo.test.js"); this.files.write("tests/todo.test.js", _b2 + TEST_EXTRA);
     this.fileChanged("tests/todo.test.js");
     t.body('+ assert("sortByPriority 高优先级排在最前", ...)');
     t.done(true, "+5 −0");
@@ -194,7 +194,7 @@ class DemoAgent extends AgentBase {
       t.done(r2.code === 0, r2.code === 0 ? "5/5 通过" : "仍有失败");
     }
 
-    const changes = this.pushChanges(false);
+    const changes = await this.pushChanges(false);
     await this.say("**任务完成。** 全部测试通过（真实执行，非模拟）。\n\n**做了什么：**\n1. 修复了 `filterTodos` 中 active/done 条件反转的 bug\n2. 新增 `sortByPriority`，筛选结果按 high > normal > low 排序\n3. 补充了排序回归测试\n4. 期间测试抓到一个排序方向错误，已自主修复并复测通过\n\n共改动 " + changes.length + " 个文件，点击下方任意文件可查看 Diff：");
     this.pushChanges(true);
     this.round = 1;
@@ -207,7 +207,7 @@ class DemoAgent extends AgentBase {
     const r = await this.term.run(AI_TERM_TAB, "node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
     t.body(r.out.trim());
     t.done(r.code === 0, r.code === 0 ? "全部通过" : "有失败");
-    const changes = this.pushChanges(false);
+    const changes = await this.pushChanges(false);
     if (r.code === 0) {
       await this.say("当前工作区一切正常：**测试全部通过**（真实执行），共改动 " + changes.length + " 个文件。\n\n提示：在右上角「模型设置」里填入任意 OpenAI 兼容 API（DeepSeek / Moonshot / Ollama 等），即可切换为**真实 LLM Agent**，让 AI 处理你的任意编程任务。");
     } else {

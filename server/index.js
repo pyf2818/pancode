@@ -50,6 +50,23 @@ function broadcast(ev) {
   for (const c of clients) if (c.readyState === 1) c.send(s);
 }
 
+/* W11：事件循环延迟（ELD）探针
+   每 1s 用 setImmediate 实测"从排定到执行"的偏差，反映主进程是否繁忙 / 被重计算阻塞。
+   用途：(1) 前端状态栏提示用户感知卡顿源；(2) 为"进程隔离"改造提供量化基线。 */
+let _eldMs = 0, _eldMaxMs = 0;
+setInterval(() => {
+  const s = process.hrtime.bigint();
+  setImmediate(() => {
+    const ms = Number(process.hrtime.bigint() - s) / 1e6;
+    _eldMs = ms;
+    if (ms > _eldMaxMs) _eldMaxMs = ms;
+  });
+}, 1000);
+// 周期性把 ELD 推到前端（不依赖会话轮询）
+setInterval(() => {
+  broadcast({ type: "system.perf", eld: Math.round(_eldMs * 10) / 10, eldMax: Math.round(_eldMaxMs * 10) / 10, uptime: Math.round(process.uptime()) });
+}, 3000);
+
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
 let files = null, git = null, term = null, procs = null, engine = null, soulStore = null, progressionStore = null, skillStore = null;
@@ -130,13 +147,13 @@ function mountWorkspace(dir) {
   if (files) files.stopWatch();
   if (procs) { try { procs.stopAll(); } catch (e) {} }   // 切换工作区前清理上一工作区的后台进程（孤儿防护）
   WS_DIR = abs;
-  files = new FileStore(WS_DIR);
+  files = new FileStore(WS_DIR, path.join(configMod.ROOT, ".pancode", "audit"));
   git = new GitLayer(WS_DIR, files);
   term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
   procs = new ProcessLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
   buildEngine();
   files.startWatch(() => {
-    broadcast({ type: "fs.sync", files: snapshotFiles() });
+    snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
   });
   console.log("workspace 已挂载: " + WS_DIR);
 }
@@ -149,7 +166,7 @@ try { fs.mkdirSync(wsAbs, { recursive: true }); } catch (e) {}
 mountWorkspace(wsAbs);
 
 /* ---------- 快照/状态 ---------- */
-function snapshotFiles() {
+async function snapshotFiles() {
   const out = {};
   for (const rel of files.list()) {
     // 二进制文件（Word/图片/压缩包等）：出现在文件树，但不读内容（按文本读必乱码）
@@ -161,7 +178,7 @@ function snapshotFiles() {
     }
     let content;
     try { content = files.read(rel); } catch (e) { continue; }
-    const base = git.baseline(rel);
+    const base = await git.baseline(rel);
     out[rel] = {
       content,
       original: base === null ? "" : base,
@@ -173,7 +190,7 @@ function snapshotFiles() {
 }
 
 /* 增量快照：只读取指定路径，避免大工作区全量读盘 */
-function snapshotFilesIncremental(paths) {
+async function snapshotFilesIncremental(paths) {
   const out = {};
   for (const rel of paths) {
     if (files.isBinary(rel)) {
@@ -184,7 +201,7 @@ function snapshotFilesIncremental(paths) {
     }
     let content;
     try { content = files.read(rel); } catch (e) { continue; }
-    const base = git.baseline(rel);
+    const base = await git.baseline(rel);
     out[rel] = {
       content,
       original: base === null ? "" : base,
@@ -197,11 +214,11 @@ function snapshotFilesIncremental(paths) {
 
 function _wsIdHash(p) { let h = 0; for (let i = 0; i < p.length; i++) h = (h * 31 + p.charCodeAt(i)) >>> 0; return h.toString(36); }
 
-function helloPayload(eng) {
+async function helloPayload(eng) {
   const e = eng || engine;
   return {
     type: "hello",
-    files: snapshotFiles(),
+    files: await snapshotFiles(),
     running: e.running,
     round: e.round,
     engine: configMod.publicInfo(cfg),
@@ -266,7 +283,19 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/api/state", (req, res) => res.json({ version: VERSION, files: snapshotFiles(), git: git.info(), engine: configMod.publicInfo(cfg) }));
+app.get("/api/state", async (req, res) => res.json({ version: VERSION, files: await snapshotFiles(), git: git.info(), eld: { ms: Math.round(_eldMs * 10) / 10, max: Math.round(_eldMaxMs * 10) / 10 }, engine: configMod.publicInfo(cfg) }));
+
+/* W15：审计日志查询——受全局鉴权保护（非白名单），可查指定日期的全部命令/文件变更 */
+app.get("/api/audit", (req, res) => {
+  try {
+    const date = (req.query.date || new Date().toISOString().slice(0, 10)).toString().replace(/[^0-9-]/g, "");
+    const f = path.join(configMod.ROOT, ".pancode", "audit", date + ".log");
+    if (!fs.existsSync(f)) return res.json({ ok: true, date, lines: [] });
+    const lines = fs.readFileSync(f, "utf8").split(/\r?\n/).filter(Boolean);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+    res.json({ ok: true, date, lines: lines.slice(-limit) });
+  } catch (e) { res.json({ ok: false, error: String(e) }); }
+});
 app.get("/api/health", (req, res) => res.json({ ok: true, name: "pancode", version: VERSION, workspace: WS_DIR, engine: configMod.publicInfo(cfg) }));
 app.get("/api/version", (req, res) => res.json({
   ok: true, name: "pancode", version: VERSION,
@@ -437,18 +466,18 @@ app.get("/api/templates", (req, res) => {
 });
 
 /* ---------- Git 状态预览 + 一键提交（一站式交付闭环） ---------- */
-app.get("/api/git/status", (req, res) => {
+app.get("/api/git/status", async (req, res) => {
   try {
     if (!git) return res.json({ ok: true, available: false, branch: "", changes: [] });
-    res.json({ ok: true, available: git.available, branch: git.branch, changes: git.changes() });
+    res.json({ ok: true, available: git.available, branch: git.branch, changes: await git.changes() });
   } catch (e) { res.json({ ok: true, available: false, changes: [] }); }
 });
-app.post("/api/git/commit", (req, res) => {
+app.post("/api/git/commit", async (req, res) => {
   try {
     if (!git) return res.status(503).json({ ok: false, error: "Git 未就绪" });
     const body = req.body || {};
     const files = Array.isArray(body.files) ? body.files : undefined; // undefined → 全量提交（向后兼容）
-    const r = git.commit((body.message) || "", files);
+    const r = await git.commit((body.message) || "", files);
     res.json(Object.assign({ ok: r.ok }, r.ok ? r : { error: r.error, nothing: r.nothing }));
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
@@ -458,16 +487,16 @@ app.post("/api/git/commit", (req, res) => {
 function buildSummaryPayload(subset) {
   return { ok: true, available: git.available, branch: git.branch, summary: summarize(subset), docDraft: docDraft(subset) };
 }
-app.get("/api/git/summary", (req, res) => {
+app.get("/api/git/summary", async (req, res) => {
   try {
     if (!git) return res.json({ ok: true, available: false, summary: null, docDraft: "" });
-    res.json(buildSummaryPayload(git.changes()));
+    res.json(buildSummaryPayload(await git.changes()));
   } catch (e) { res.json({ ok: true, available: false, summary: null, docDraft: "" }); }
 });
-app.post("/api/git/summary", (req, res) => {
+app.post("/api/git/summary", async (req, res) => {
   try {
     if (!git) return res.json({ ok: true, available: false, summary: null, docDraft: "" });
-    const all = git.changes();
+    const all = await git.changes();
     const body = req.body || {};
     let subset = all;
     if (Array.isArray(body.files) && body.files.length) {
@@ -518,7 +547,7 @@ app.post("/api/workspace", (req, res) => {
     if (term) term.closeAll();
     mountWorkspace(dir);
     configMod.saveWorkspace(cfg, WS_DIR);
-    broadcast(helloPayload());   // 所有已连接窗口立即切换到新工作区
+    helloPayload().then((h) => broadcast(h));   // 所有已连接窗口立即切换到新工作区
     res.json({ ok: true, workspace: WS_DIR, project: path.basename(WS_DIR) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
@@ -1024,7 +1053,7 @@ wss.on("connection", (ws) => {
   // 这样 /api/settings 热更新（buildEngine 重建引擎缓存）后旧连接立即用上新引擎。
   const uKey = wsUserKey(ws);
   ws._userKey = uKey;
-  ws.send(JSON.stringify(helloPayload(ensureUserEngine(uKey))));
+  helloPayload(ensureUserEngine(uKey)).then((h) => { if (ws.readyState === 1) ws.send(JSON.stringify(h)); });
   ws.on("close", () => clients.delete(ws));
   ws.on("message", (raw) => {
     let m;
@@ -1053,7 +1082,7 @@ wss.on("connection", (ws) => {
         const tabId = m.tabId || "default";
         if (typeof m.cmd === "string" && m.cmd.trim() && !term.busyFor(tabId)) {
           term.run(tabId, m.cmd.slice(0, 500)).then(() => {
-            broadcast({ type: "fs.sync", files: snapshotFiles() });
+            snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
             uEng.pushChanges(false);
           });
         }
@@ -1085,7 +1114,7 @@ wss.on("connection", (ws) => {
           codeIndex.queueFileUpdate(WS_DIR, m.path);
           uEng.fileChanged(m.path);
           uEng.pushChanges(false);
-          broadcast({ type: "fs.sync", files: snapshotFiles() });
+          snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
         }, ws);
         break;
       case "file.delete":
@@ -1093,7 +1122,7 @@ wss.on("connection", (ws) => {
           files.remove(m.path);
           codeIndex.removeFile(WS_DIR, m.path);
           uEng.pushChanges(false);
-          broadcast({ type: "fs.sync", files: snapshotFiles() });
+          snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
         }, ws);
         break;
       case "file.rename":
@@ -1108,7 +1137,7 @@ wss.on("connection", (ws) => {
       case "file.mkdir":
         safe(() => {
           files.mkdir(m.path);
-          broadcast({ type: "fs.sync", files: snapshotFiles() });
+          snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
         }, ws);
         break;
 
@@ -1121,16 +1150,18 @@ wss.on("connection", (ws) => {
 
       case "reset":
         safe(() => {
-          git.discardAll();
-          uEng.round = 0;
-          if (uEng.history) uEng.history = [];
-          // 清空当前会话记录的改动（工作区已回退基线）
-          if (uEng.convChanges) uEng.convChanges[uEng._currentConv] = [];
-          if (typeof uEng.saveConversations === "function") uEng.saveConversations();
-          broadcast({ type: "fs.sync", files: snapshotFiles() });
-          uEng.pushChanges(false);
-          broadcast({ type: "term.line", text: "[pancode] 工作区已恢复到基线状态", cls: "tl-info" });
-          broadcast({ type: "agent.reset" });
+          // W12：discardAll 已异步化，必须等其真正完成再读快照，否则文件树仍是改动态
+          git.discardAll().then(() => {
+            uEng.round = 0;
+            if (uEng.history) uEng.history = [];
+            // 清空当前会话记录的改动（工作区已回退基线）
+            if (uEng.convChanges) uEng.convChanges[uEng._currentConv] = [];
+            if (typeof uEng.saveConversations === "function") uEng.saveConversations();
+            uEng.pushChanges(false);
+            broadcast({ type: "term.line", text: "[pancode] 工作区已恢复到基线状态", cls: "tl-info" });
+            broadcast({ type: "agent.reset" });
+            snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
+          }).catch((e) => console.error("[reset] discardAll 失败:", e));
         }, ws);
         break;
 
@@ -1208,7 +1239,7 @@ wss.on("connection", (ws) => {
             ? uEng.applyPatch(convId, paths, m.hunks) : { applied: [], conflicts: [] };
           if (applied.length || conflicts.length) {
             // 增量同步：只发 applied 路径，避免大工作区全量读盘
-            broadcast({ type: "fs.sync", files: snapshotFilesIncremental(applied), incremental: true });
+            snapshotFilesIncremental(applied).then((files2) => broadcast({ type: "fs.sync", files: files2, incremental: true }));
             broadcast({ type: "patch.applied", paths: applied, convId, conflicts });
           } else {
             broadcast({ type: "patch.applied", paths: [], convId, empty: true });

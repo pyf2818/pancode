@@ -69,7 +69,8 @@ function langOf(p) {
 }
 
 class FileStore {
-  constructor(wsDir) {
+  constructor(wsDir, auditDir) {
+    this.auditDir = auditDir || null; // W15：文件变更审计目录（.pancode/audit）
     this.dir = wsDir;
     this.watchers = new Map();   // dirPath -> fs.FSWatcher
     this.onExternalChange = null; // (relPath|null) => void
@@ -105,6 +106,17 @@ class FileStore {
   }
 
   rel(abs) { return path.relative(this.dir, abs).replace(/\\/g, "/"); }
+
+  /* W15：文件变更审计——所有写/删/改名操作落盘到 .pancode/audit/<日期>.log，可追溯 */
+  _audit(actor, action, rel) {
+    if (!this.auditDir) return;
+    try {
+      fs.mkdirSync(this.auditDir, { recursive: true });
+      const f = path.join(this.auditDir, new Date().toISOString().slice(0, 10) + ".log");
+      const line = new Date().toISOString() + " | " + actor + " | " + action + " | " + String(rel).replace(/\r?\n/g, " ") + "\n";
+      fs.appendFileSync(f, line);
+    } catch (e) {}
+  }
 
   list(sub) {
     const base = sub ? this.safePath(sub) : this.dir;
@@ -156,6 +168,7 @@ class FileStore {
       throw new AppError("FILE_BINARY", "二进制文件不能以文本方式保存（防止损坏）: " + rel, "该文件为二进制格式，不能以文本方式保存。");
     }
     const abs = this.safePath(rel);
+    this._audit("fs", "write", rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     this._selfWrites.set(rel.replace(/\\/g, "/"), Date.now());
     this._binCache && this._binCache.delete(rel.replace(/\\/g, "/"));
@@ -174,6 +187,7 @@ class FileStore {
   remove(rel) {
     const abs = this.safePath(rel);
     if (abs === path.resolve(this.dir)) throw new AppError("ROOT_DELETE", "不能删除工作区根目录", "无法删除工作区根目录。");
+    this._audit("fs", "remove", rel);
     const st = fs.statSync(abs);
     this._selfWrites.set(rel.replace(/\\/g, "/"), Date.now());
     this._binCache && this._binCache.delete(rel.replace(/\\/g, "/"));
@@ -183,6 +197,7 @@ class FileStore {
 
   rename(rel, relNew) {
     const from = this.safePath(rel), to = this.safePath(relNew);
+    this._audit("fs", "rename", rel + " -> " + relNew);
     if (fs.existsSync(to)) throw new Error("目标已存在: " + relNew);
     fs.mkdirSync(path.dirname(to), { recursive: true });
     this._selfWrites.set(rel.replace(/\\/g, "/"), Date.now());
