@@ -734,6 +734,9 @@ class LlmAgent extends AgentBase {
     // 多用户隔离：记忆库是"项目级"资产，同一工作区跨用户共享一份（由 index.js 注入 sharedMemory），
     // 避免每个用户实例各自 new 一份 MemoryStore 导致内存不一致 + 重复加载。独立构造时（测试/演示）自建兜底。
     this.memory = (ctx && ctx.sharedMemory) ? ctx.sharedMemory : new MemoryStore(path.join(memDir, wsHash + ".json"));
+    // W3：用户级记忆（跨项目）+ 记忆分片目录（search_memory scope=global 扫描用）
+    this.userMemory = (ctx && ctx.sharedUserMemory) || null;
+    this._memDir = memDir;
     const marketDir = path.join(require("./config").ROOT, ".pancode", "skills", "market");
     const builtinDir = path.join(__dirname, "builtin-skills");   // 打包内置 skills（asar 只读，随安装包分发）
     // 优先复用服务器级共享 SkillStore（index.js buildEngine 注入，确保演示模式也带内置 skill）；
@@ -1339,6 +1342,11 @@ ${taskSummary}
     }
     // 结构化记忆
     if (this.cfg.memory && this.cfg.memory.enabled) {
+      // W3：用户级记忆（跨项目偏好/约定）注入在前——"用户本人怎么说"优先于"某个项目里发生了什么"
+      if (this.userMemory) {
+        const um = this.userMemory.formatForContext(800);
+        if (um) parts.push("【用户级记忆（跨项目偏好与约定，优先遵循）】\n" + um);
+      }
       const m = this.memory.formatForContext(3000);
       if (m) parts.push("【项目记忆（参考）】\n" + m);
     }

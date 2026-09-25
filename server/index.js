@@ -88,6 +88,8 @@ function buildEngine() {
   _engineAssets.skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"), path.join(require("os").homedir(), ".pancode", "skills")); // W1：+ 用户级目录
   _engineAssets.memDir = path.join(configMod.ROOT, ".pancode", "memory");
   _engineAssets.memory = new MemoryStore(path.join(_engineAssets.memDir, wsHash + ".json"));
+  // W3：用户级记忆（跨项目偏好/约定），~/.pancode/memory/user.json，随工作区重挂共享同一实例
+  _engineAssets.userMemory = new MemoryStore(path.join(require("os").homedir(), ".pancode", "memory", "user.json"));
   const planDir = path.join(configMod.ROOT, ".pancode", "plans");
   _engineAssets.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
   const wfDir = path.join(configMod.ROOT, ".pancode", "workflows");
@@ -112,6 +114,7 @@ function ensureUserEngine(userKey) {
     emit: broadcast, files, git, term, procs, cfg: a.cfg,
     skills: a.skillStore,
     sharedMemory: a.memory, sharedPlan: a.plan, sharedWorkflow: a.workflow,
+    sharedUserMemory: a.userMemory,
     sharedSoul: a.soul, sharedProgression: a.progression,
     userKey,
   };

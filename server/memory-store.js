@@ -124,12 +124,16 @@ class MemoryStore {
         if (text.includes(kw)) score += 2;
         if (e.topic.toLowerCase().includes(kw)) score += 3; // topic 命中权重更高
       }
+      // W3：hitsOnly（跨片检索用）要求至少一个关键词真命中——decayWeight 是无条件加项，
+      // 不过滤会让高强度但毫不相关的条目占掉 limit 名额
+      if (opts.hitsOnly && score === 0) return null;
       // 有效强度（价值 × 遗忘曲线）：关键词命中的同时，被反复引用/高价值的记忆排前
       score += decayWeight(e);
       return { entry: e, score };
-    }).filter((s) => s.score > 0);
+    }).filter(Boolean);
 
     scored.sort((a, b) => b.score - a.score);
+    if (opts.raw) return scored.slice(0, limit);   // W3：searchAll 用，返回 [{entry, score}] 供跨片归一排序
     const hits = scored.slice(0, limit).map((s) => s.entry);
     if (hits.length) {
       // 命中即"复习"：刷新最后访问时刻（衰减锚点），并落盘——否则进程重启后访问记录丢失
@@ -253,6 +257,35 @@ class MemoryStore {
   }
 
   get size() { return this._entries.length; }
+
+  /* ---------- W3：跨工作区 / 用户级检索（只读） ----------
+     items: [{ path, label }] —— 各记忆分片（{wsHash}.json）与用户级（user.json）。
+     关键约束：绝不能 new MemoryStore(p)——构造会 prune() 触发别的分片裁剪写盘（P0 数据破坏）。
+     用 Object.create 绕构造惰性读入，并遮蔽 _save 为 no-op（search 的"命中即复习"不落盘，
+     跨区检索不改变任何分片状态）；当前活动分片由调用方用内存实例补查（含未落盘更新）。 */
+  static searchAll(items, query, opts) {
+    opts = opts || {};
+    const limit = opts.limit || 12;
+    const perStore = opts.perStore || 5;
+    const merged = [];
+    for (const it of items || []) {
+      if (!it || !it.path) continue;
+      let entries;
+      try { entries = JSON.parse(fs.readFileSync(it.path, "utf8")); } catch (e) { continue; }   // 坏分片跳过
+      if (!Array.isArray(entries) || !entries.length) continue;
+      const tmp = Object.create(MemoryStore.prototype);
+      tmp._path = it.path;
+      tmp._entries = entries;
+      tmp._save = () => {};   // 只读模式：复习只改内存对象，不写回任何文件
+      for (const { entry, score } of tmp.search(query, { type: opts.type, limit: perStore, raw: true, hitsOnly: true })) {
+        entry.__score = score;
+        entry.__src = it.label || path.basename(it.path, ".json");
+        merged.push(entry);
+      }
+    }
+    merged.sort((a, b) => b.__score - a.__score);
+    return merged.slice(0, limit);
+  }
 }
 
 module.exports = { MemoryStore, TYPES, decayWeight, isSticky };
