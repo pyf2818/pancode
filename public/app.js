@@ -1698,8 +1698,14 @@ function renderChatMD(src) {
       const lang = fence[1] || "";
       const code = [];
       i++;
+      let closed = false;
       while (i < lines.length && !/^```\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
-      i++;
+      if (i < lines.length) { closed = true; i++; }
+      // W5：闭合的 widget/svg/diagram 代码块 → 沙箱内联可视化（未闭合时流式期先按代码预览显示）
+      if (closed && /^(widget|svg|diagram)$/i.test(lang) && typeof renderWidgetCard === "function") {
+        html += renderWidgetCard(code.join("\n"), lang);
+        continue;
+      }
       html += '<div class="code-block"><div class="code-head"><span class="code-lang">' + esc(lang || "code") +
         '</span><button class="copy-btn" type="button">复制</button></div><pre class="' + esc(lang) +
         '">' + esc(code.join("\n")) + "</pre></div>";
