@@ -26,6 +26,7 @@ const codeIndex = require("./code-index");
 const { SoulStore } = require("./soul-store");
 const { SkillStore } = require("./skill-store");
 const { MemoryStore } = require("./memory-store");
+const { ExpertStore } = require("./expert-store"); // W2 专家注册表
 const { PlanStore } = require("./plan-store");
 const { WorkflowStore } = require("./workflow-store");
 
@@ -90,6 +91,9 @@ function buildEngine() {
   _engineAssets.memory = new MemoryStore(path.join(_engineAssets.memDir, wsHash + ".json"));
   // W3：用户级记忆（跨项目偏好/约定），~/.pancode/memory/user.json，随工作区重挂共享同一实例
   _engineAssets.userMemory = new MemoryStore(path.join(require("os").homedir(), ".pancode", "memory", "user.json"));
+  // W2：专家注册表（项目级 = <工作区>/.pancode/experts，用户级 = ~/.pancode/experts，内置 = BUILTIN_EXPERTS）
+  _engineAssets.experts = new ExpertStore(WS_DIR ? path.join(WS_DIR, ".pancode", "experts") : null,
+    path.join(require("os").homedir(), ".pancode", "experts"));
   const planDir = path.join(configMod.ROOT, ".pancode", "plans");
   _engineAssets.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
   const wfDir = path.join(configMod.ROOT, ".pancode", "workflows");
@@ -115,6 +119,7 @@ function ensureUserEngine(userKey) {
     skills: a.skillStore,
     sharedMemory: a.memory, sharedPlan: a.plan, sharedWorkflow: a.workflow,
     sharedUserMemory: a.userMemory,
+    sharedExperts: a.experts, // W2：专家注册表
     sharedSoul: a.soul, sharedProgression: a.progression,
     userKey,
   };
@@ -834,6 +839,13 @@ app.get("/api/skills", (req, res) => {
     const q = String(req.query.q || "");
     const results = q ? engine.skills.match(q, 10) : engine.skills.list({ limit: 30 });
     res.json({ ok: true, skills: results, total: engine.skills.size });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- W2：专家（Experts）API ---------- */
+app.get("/api/experts", (req, res) => {
+  try {
+    res.json({ ok: true, experts: engine.experts.list(), active: (cfg.persona && cfg.persona.active) || "default" });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 app.post("/api/skills", (req, res) => {

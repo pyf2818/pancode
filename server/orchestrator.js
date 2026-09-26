@@ -96,6 +96,7 @@ class Orchestrator {
           const taskText = step.task + ctx;
           const result = await this.agent.runSubAgent(taskText, {
             subagent_type: step.agent_type || "general",
+            expert: step.expert, // W2：编排步骤可选专家人设
           });
           const output = (result || "(无返回)").slice(0, 8000);
           results[step.id] = { name: step.name, status: "done", output };

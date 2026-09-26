@@ -226,6 +226,32 @@ async function openAgentSettings() {
     $("agmAgentMode").value = a.agentMode || "agent";
     $("agmLsp").checked = !(a.lsp && a.lsp.enabled === false);
     agmSyncPromptVis();
+    // W2：动态填充专家包选项（项目级/用户级 experts/*.md → optgroup，插在 custom 之前）
+    try {
+      const ex = await fetch("/api/experts").then((x) => x.json());
+      const sel = $("agmPersona");
+      const stale = sel.querySelector('optgroup[data-dyn="experts"]');
+      if (stale) stale.remove();
+      const customOpt = sel.querySelector('option[value="custom"]');
+      let og = null;
+      for (const e of (ex.experts || [])) {
+        // 已有同 value 选项（内置三项或重复请求）：更新标签而非新增，防重复 option；
+        // 内置 id 被项目/用户级包覆盖时，标签同步为覆盖后的专家名
+        const existing = sel.querySelector('option[value="' + e.id + '"]');
+        if (existing) { existing.textContent = e.name + (e.source === "user" ? " · 用户级" : e.source === "project" ? " · 项目级" : ""); continue; }
+        if (e.source === "builtin") continue; // 纯内置项已有静态 option
+        if (!og) {
+          og = document.createElement("optgroup");
+          og.setAttribute("label", "专家包");
+          og.dataset.dyn = "experts";
+          sel.insertBefore(og, customOpt);
+        }
+        const o = document.createElement("option");
+        o.value = e.id;
+        o.textContent = e.name + (e.source === "user" ? " · 用户级" : " · 项目级");
+        og.appendChild(o);
+      }
+    } catch (e2) { /* 专家列表拉取失败不阻塞设置面板 */ }
   } catch (e) { $("agmStatus").className = "set-status err"; $("agmStatus").textContent = "读取设置失败: " + e.message; }
   try { await refreshMcp(); } catch (e) {}
 }

@@ -20,7 +20,7 @@ module.exports = {
     const t = agent.tool("agent", "子智能体", args.task);
     agent.state(true, "子智能体执行中");
     try {
-      const result = await agent.runSubAgent(args.task, { subagent_type: args.subagent_type });
+      const result = await agent.runSubAgent(args.task, { subagent_type: args.subagent_type, expert: args.expert }); // W2：专家人设透传
       t.body((result || "(子智能体无返回)").slice(0, 6000));
       t.done(true, "子智能体完成");
       agent.state(false, "AI 思考中");

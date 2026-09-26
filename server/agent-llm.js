@@ -24,6 +24,7 @@ const crypto = require("crypto");
 const { AsyncLocalStorage } = require("async_hooks");
 const { AgentBase } = require("./agent-base");
 const { chatStream } = require("./llm");
+const { ExpertStore, formatExpertPrompt } = require("./expert-store"); // W2 专家注册表
 
 const convContext = new AsyncLocalStorage();
 const codeIndex = require("./code-index");
@@ -404,6 +405,7 @@ const TOOLS = [
         properties: {
           task: { type: "string", description: "子任务目标，如『为 src/util.js 补充 parseQuery 函数的单元测试』" },
           subagent_type: { type: "string", description: "可选：general/explorer/coder，默认 general" },
+          expert: { type: "string", description: "可选：专家角色 id 或名称（如 fullstack、代码审查专家），子智能体按该专家的方法论执行并收敛工具" },
         },
         required: ["task"],
       },
@@ -672,17 +674,16 @@ ${PLATFORM_HINT}
 - 执行命令前评估风险，高危操作（删除、覆盖、安装）必须通过权限确认。
 - 每次写入文件前确认路径在工作区内，防止路径穿越攻击。`;
 
-/* 人格预设：role + 风格/价值观/侧重。default 不额外追加（SYSTEM_PROMPT 已是通用全栈口吻）。 */
-const PERSONAS = {
-  fullstack: "你是一位资深全栈工程师，习惯前后端协同思考：改动 API 时同步考虑契约、错误码与前端调用；优先复用现有模块，保持接口一致。",
-  frontend: "你是一位注重设计与体验的前端工程师，重视视觉还原、可访问性（a11y）、组件化与交互细节；偏好语义化标签与清晰的状态管理。",
-  backend: "你是一位严谨的后端工程师，重视健壮性、可观测性、错误处理与安全防护（输入校验、鉴权、日志）；改动先评估边界与失败路径。",
-};
+/* W2 子智能体工具黑名单：排除会自我嵌套或污染主流程的工具
+   （原 runSubAgent 内 BLOCK 提升为模块常量，供 _subToolset 使用；
+     内置人格已升级为专家包，见 expert-store.js 的 BUILTIN_EXPERTS） */
+const SUB_AGENT_BLOCK = new Set(["agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template", "save_template", "remove_template", "list_templates", "goal_status", "save_session_memory"]);
 
 class LlmAgent extends AgentBase {
   constructor(ctx) {
     super(ctx);
     this.cfg = ctx.cfg;                 // 全局配置（引用，可热更新）
+    this.experts = (ctx && ctx.sharedExperts) || null; // W2：专家注册表（项目/用户/内置三层，由 index.js 按工作区重建）
     this.history = [];                  // 当前对话历史（切换时保存/恢复）
     this.conversations = new Map();     // convId -> { history, round, changes }
     this.convChanges = {};              // convId -> 该会话改动的文件清单（按会话记录显示）
@@ -1103,20 +1104,42 @@ ${taskSummary}
 
   /* 运行一个子智能体：在父工作区内读/搜/写/改/运行命令，完成一项聚焦子任务并返回结果文本。
      - 禁止递归 agent、禁止 plan/undo，工具集收敛为只读+改动类
+     - W2：opts.expert 可选专家——子智能体按专家 role/methodology 执行，工具按白名单进一步收敛
      - UI 静默：子智能体的工具时间线不刷到主界面（仍真实改动工作区并刷新编辑器）
      - 轮数上限 maxRounds，避免失控 */
-  async runSubAgent(task, opts) {
-    opts = opts || {};
-    const type = opts.subagent_type || "general";
-    const SUB_PROMPT = "你是一个子智能体（类型：" + type + "），在父智能体的同一工作区内执行一项具体子任务。" +
+  /* 子智能体系统提示词（纯函数，可测）：无专家 → 通用约束；有专家 → 专家角色+方法论+约束 */
+  _subSystemPrompt(type, expert) {
+    const base = "你是一个子智能体（类型：" + type + "），在父智能体的同一工作区内执行一项具体子任务。" +
       "要求：目标明确、独立完成，不要向用户追问；不要创建计划、不要调用 plan/undo 类工具；" +
       "优先用 read_file / search_code / search_symbol / repo_map 理解代码，再动手写或改。" +
       "完成后用简洁中文汇报你做了什么、结果如何。你拥有读/搜/写/改/运行命令的权限。";
-    // 子智能体工具白名单：排除会自我嵌套或污染主流程的工具
-    const BLOCK = new Set(["agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template", "save_template", "remove_template", "list_templates", "goal_status", "save_session_memory"]);
-    const subTools = TOOLS.filter((t) => !BLOCK.has(t.function.name));
+    if (!expert) return base;
+    return "你是子智能体，按以下专家角色行事（类型：" + type + "）：\n" +
+      "【专家设定·" + expert.name + "】\n" + formatExpertPrompt(expert) + "\n\n" +
+      "在以上专家角色与方法论的约束下执行子任务：目标明确、独立完成，不要向用户追问；不要创建计划、不要调用 plan/undo 类工具。" +
+      "完成后用简洁中文汇报你做了什么、结果如何。你的可用工具可能被专家白名单收敛。";
+  }
+
+  /* 子智能体工具集（纯函数，可测）：先排除 SUB_AGENT_BLOCK，再按专家白名单收敛。
+     安全：白名单只能进一步收紧（交集），无法解锁 BLOCK 工具；白名单全不命中时回退未收敛集（防呆）。 */
+  _subToolset(expert) {
+    let subTools = TOOLS.filter((t) => !SUB_AGENT_BLOCK.has(t.function.name));
+    if (expert && Array.isArray(expert.tool_whitelist) && expert.tool_whitelist.length) {
+      const wl = new Set(expert.tool_whitelist);
+      const filtered = subTools.filter((t) => wl.has(t.function.name));
+      if (filtered.length) subTools = filtered;
+    }
+    return subTools;
+  }
+
+  async runSubAgent(task, opts) {
+    opts = opts || {};
+    const type = opts.subagent_type || "general";
+    // W2：可选专家人设——按专家 role/methodology 执行，工具按白名单收敛
+    const expert = opts.expert ? (this.experts || ExpertStore.builtinOnly()).byIdOrName(opts.expert) : null;
+    const subTools = this._subToolset(expert);
     const messages = [
-      { role: "system", content: SUB_PROMPT },
+      { role: "system", content: this._subSystemPrompt(type, expert) },
       { role: "user", content: task },
     ];
     const maxRounds = Math.min(opts.maxRounds || 12, 24);
@@ -1308,14 +1331,23 @@ ${taskSummary}
     return args;
   }
 
-  personaText() {
+  /* W2 人格/专家注入：优先级 @专家（单条消息切换） > custom > active（内置 id 或专家包 id）。
+     active 为 default 或未知值时返回空串（与旧行为一致）。 */
+  personaText(userText) {
+    const reg = this.experts || ExpertStore.builtinOnly();
+    // @专家：userText 以 @专家id/名 开头且精确命中注册表时，仅本条消息使用该专家
+    const at = String(userText || "").match(/^\s*@([^\s@]+)/);
+    if (at) {
+      const e = reg.byIdOrName(at[1]);
+      if (e) return "【专家设定·" + e.name + "（仅本条消息生效）】\n" + formatExpertPrompt(e);
+    }
     const active = this.cfg.persona && this.cfg.persona.active;
     if (active === "custom") {
       const sp = (this.cfg.persona.systemPrompt || "").trim();
       return sp ? "【人格设定】\n" + sp : "";
     }
-    const p = PERSONAS[active];
-    return p ? "【人格设定】\n" + p : "";
+    const p = reg.byIdOrName(active);
+    return p ? "【专家设定·" + p.name + "】\n" + formatExpertPrompt(p) : "";
   }
 
   loadRules() {
@@ -1334,7 +1366,7 @@ ${taskSummary}
 
   buildSystemAugment(userText) {
     const parts = [];
-    const persona = this.personaText();
+    const persona = this.personaText(userText);
     if (persona) parts.push(persona);
     if (this.cfg.rules && this.cfg.rules.enabled) {
       const r = this.loadRules();
@@ -2202,4 +2234,4 @@ ${taskSummary}
   }
 }
 
-module.exports = { LlmAgent, PERSONAS };
+module.exports = { LlmAgent, BUILTIN_EXPERTS: require("./expert-store").BUILTIN_EXPERTS }; // W2：PERSONAS 已升级为专家包

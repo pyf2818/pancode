@@ -91,6 +91,15 @@
   1. **Connectors 注册表**：在 `pancode.config.json` 增加 `connectors` 段，描述外部 API/服务的 `baseUrl`/`auth`/`scopes`；复用 MCP 的 stdio/HTTP 通道，但 UI 上归类为"已连接的服务"并支持一键授权（OAuth/Token），对应设置面板新增"连接器"页（参考 `global-settings.js`）。
   2. **Experts 角色**：把现有 `PERSONAS`（fullstack/frontend/backend）升级为 `experts/` 包——每个含 `role`/`methodology`/`tool_whitelist`，可在对话中 `@专家` 或切换当前会话专家；专家可作为子 agent 的"人设"复用 `runSubAgent` 收敛白名单机制。
 - **价值**：让 Pancode 从"编码 agent"演进为"可接外部服务 + 可切换专家"的办公级工作台，对齐 WorkBuddy 生态位。
+- **落地决策（2026-09-26）**：
+  1. **Connectors：不做**。MCP（`cfg.mcp.servers` + 连接状态徽标 + hooks 拦截 `mcp__*` + 审批规则）已 100% 覆盖"外部服务接入"全链路；再建 Connectors 注册表 = 同一能力的重复抽象，违反第一性原理。MCP 即 Pancode 的 Connectors。
+  2. **Experts：已落地（最小完整闭环）**——
+     - 专家包 = md 文件（frontmatter: name/description/tool_whitelist + 正文第一段=role、其余=methodology）；name 缺失回退文件名。
+     - 三层来源 project(`<工作区>/.pancode/experts/`) > user(`~/.pancode/experts/`) > builtin（内置三角色升级为 role+methodology，id 不变零迁移）；agent 可直接 write_file 沉淀项目专家。
+     - `personaText(userText)`：`@专家名/id` 单条消息切换（精确命中才生效） > custom > active（内置 id 或专家包 id）。
+     - `runSubAgent(opts.expert)`：子智能体按专家 role/methodology 执行，工具按白名单收敛（先排 SUB_AGENT_BLOCK 再取交集，白名单无法解锁受限工具；全不命中回退防呆）；`agent`/`orchestrate` 工具均透传 expert。
+     - 设置面板预设下拉动态渲染「专家包」optgroup；同 value 选项更新标签防重复（内置被覆盖时标签同步）。
+     - 明确不做：专家审计（无外部市场来源，专家即用户/agent 自写；若未来引入专家市场再复用 auditSkill）、专家管理面板（md 文件即接口）。
 
 #### W3 · 三层记忆 + 跨会话检索（conversation_search）— P1
 - **对标**：WorkBuddy 云端画像 + 跨会话检索 + 用户级/工作区级记忆。
