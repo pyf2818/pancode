@@ -27,6 +27,7 @@ const { SoulStore } = require("./soul-store");
 const { SkillStore } = require("./skill-store");
 const { MemoryStore } = require("./memory-store");
 const { ExpertStore } = require("./expert-store"); // W2 专家注册表
+const { AutomationStore, Scheduler } = require("./scheduler"); // W4 自动化任务
 const { PlanStore } = require("./plan-store");
 const { WorkflowStore } = require("./workflow-store");
 
@@ -71,6 +72,7 @@ setInterval(() => {
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
 let files = null, git = null, term = null, procs = null, engine = null, soulStore = null, progressionStore = null, skillStore = null;
+let automationStore = null, schedulerInst = null; // W4 自动化任务（随工作区重建）
 const userEngines = new Map();   // userKey -> LlmAgent（每个登录用户一份，会话/目标/trace 独立）
 const _engineAssets = {};        // 共享资产（memory/skills/plan/... 按工作区一份，跨用户共用）
 
@@ -94,6 +96,11 @@ function buildEngine() {
   // W2：专家注册表（项目级 = <工作区>/.pancode/experts，用户级 = ~/.pancode/experts，内置 = BUILTIN_EXPERTS）
   _engineAssets.experts = new ExpertStore(WS_DIR ? path.join(WS_DIR, ".pancode", "experts") : null,
     path.join(require("os").homedir(), ".pancode", "experts"));
+  // W4：自动化任务（ROOT/.pancode/automations/<wsHash>/，随工作区重建；停掉旧调度器防泄漏）
+  if (schedulerInst) { try { schedulerInst.stop(); } catch (_) {} schedulerInst = null; }
+  automationStore = new AutomationStore(path.join(configMod.ROOT, ".pancode", "automations", wsHash));
+  schedulerInst = new Scheduler(automationStore, () => engine);
+  schedulerInst.start();
   const planDir = path.join(configMod.ROOT, ".pancode", "plans");
   _engineAssets.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
   const wfDir = path.join(configMod.ROOT, ".pancode", "workflows");
@@ -846,6 +853,47 @@ app.get("/api/skills", (req, res) => {
 app.get("/api/experts", (req, res) => {
   try {
     res.json({ ok: true, experts: engine.experts.list(), active: (cfg.persona && cfg.persona.active) || "default" });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- W4：自动化任务（Automations）API ---------- */
+app.get("/api/automations", (req, res) => {
+  try { res.json({ ok: true, automations: automationStore.list() }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.post("/api/automations", async (req, res) => {
+  try {
+    const r = await automationStore.create(req.body || {});
+    if (r.error) return res.status(400).json({ ok: false, error: r.error });
+    res.json({ ok: true, automation: r.task });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.post("/api/automations/:id/:action(pause|resume|run)", async (req, res) => {
+  try {
+    const { id, action } = req.params;
+    if (action === "run") {
+      const t = automationStore.get(id);
+      if (!t) return res.status(404).json({ ok: false, error: "任务不存在" });
+      schedulerInst.fire(id); // 异步执行，立即返回（历史见 runs）
+      return res.json({ ok: true, started: true });
+    }
+    const r = await automationStore.update(id, { status: action === "pause" ? "paused" : "active" });
+    if (r.error) return res.status(404).json({ ok: false, error: r.error });
+    res.json({ ok: true, automation: r.task });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.delete("/api/automations/:id", async (req, res) => {
+  try {
+    const r = await automationStore.remove(req.params.id);
+    if (r.error) return res.status(404).json({ ok: false, error: r.error });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.get("/api/automations/:id/runs", (req, res) => {
+  try {
+    const t = automationStore.get(req.params.id);
+    if (!t) return res.status(404).json({ ok: false, error: "任务不存在" });
+    res.json({ ok: true, runs: automationStore.runs(req.params.id, 20) });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 app.post("/api/skills", (req, res) => {

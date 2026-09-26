@@ -1,4 +1,11 @@
-/* ============================================================
+# -*- coding: utf-8 -*-
+# W4 fix v2b: safe-write.js 全文件重写（async 长退避版）
+import io, os
+
+BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+p = os.path.join(BASE, "server", "safe-write.js")
+
+content = '''/* ============================================================
    pancode 安全写入工具（Phase 3 · A5 并发安全）
    - atomicWrite：写临时文件 → rename 顶替，进程崩溃也不会截断 JSON
    - enqueueWrite：按"绝对路径"串行化写入，防止并发请求 / async 窗口覆盖丢更新
@@ -17,8 +24,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function atomicWrite(p, data) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   let lastErr = null;
-  for (let attempt = 0; attempt < 6; attempt++) {
-    if (attempt > 0) await sleep(100 * Math.pow(3, attempt - 1)); // 100/300/900/2400/7200
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) await sleep(100 * Math.pow(3, attempt - 1)); // 100/300/900/2400
     const tmp = p + "." + process.pid + ".tmp";
     try {
       fs.writeFileSync(tmp, data, "utf8");
@@ -57,3 +64,7 @@ function saveJson(p, obj) {
 }
 
 module.exports = { atomicWrite, enqueueWrite, saveJson };
+'''
+
+io.open(p + ".new", "w", encoding="utf-8", newline="").write(content)
+print("safe-write.js v2b full rewrite -> .new written")
