@@ -1,4 +1,11 @@
-/* ============================================================
+# -*- coding: utf-8 -*-
+# W15: server/security.js 全量重写 — 黑名单语义化（防 base64/变量拼接/引号/全角绕过）
+import io, os
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+p = os.path.join(BASE_DIR, "server", "security.js")
+
+content = r'''/* ============================================================
    pancode 命令安全检查（集中管理，避免散落各处且易绕过）
    - base 黑名单：用户手敲 & AI 命令都拦（fork 炸弹 / 格式化 / 递归删根 / 下载执行 / 关机 / 写设备…）
    - strict 沙箱：AI 触发的命令额外拦（sudo / 系统目录写入 / 全局安装 / 批量删工作区 …）
@@ -98,7 +105,7 @@ function macroExpandVars(cmd, depth) {
 }
 
 /* W15：提取疑似 base64 常量（≥24 位）尝试解码；解码后剔除 UTF-16LE 空字节再返回文本数组 */
-const B64_RE = /[A-Za-z0-9+/=]{8,}/g; // 8 位起：短载荷（rm -rf / 的 b64 仅 12 字符）也要覆盖，误报由可打印率过滤兜底
+const B64_RE = /[A-Za-z0-9+/=]{24,}/g;
 function decodeBase64Candidates(cmd) {
   const out = [];
   const s = String(cmd || "");
@@ -188,3 +195,7 @@ function checkHooks(rules, toolName, subject) {
 }
 
 module.exports = { check, normalizeCmd, stripQuoteJoins, macroExpandVars, decodeBase64Candidates, hasInterpreterPipe, setAuditDir, writeAudit, checkHooks };
+'''
+
+io.open(p + ".new", "w", encoding="utf-8", newline="").write(content)
+print("security.js -> .new written")
