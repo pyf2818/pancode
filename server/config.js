@@ -9,6 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { setEnvVar } = require("./dotenv");
+const { saveJson } = require("./safe-write");
 
 // 数据根：打包态(__dirname 落在只读 app.asar)必须指向可写目录，由桌面端 main.js 注入 PANCODE_DATA_DIR(=userData)
 const ROOT = process.env.PANCODE_DATA_DIR || path.join(__dirname, "..");
@@ -71,22 +72,13 @@ function readJsonSafe(p) {
   try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return null; }
 }
 
-/* 皮实的配置写入：
-   直接覆盖写可能被安全软件/环境钩子拦截（EPERM），
-   失败后降级为「写临时文件 → rename 顶替」，再失败只警告不抛错——
-   配置持久化永远不该阻断主流程（比如打开文件夹）。 */
+/* 皮实的配置写入（W7 补漏 · P1）：
+   同步直写/tmprename 在杀软持续锁定下会全链失败（实测 EPERM 连发）→
+   转发 safe-write 队列：按路径串行 + 异步指数退避重试 6 次（~10.9s），不阻塞事件循环、永不抛错。
+   语义为 best-effort 持久化：进程内 cfg 对象仍是事实源（读盘仅在启动），调用点零改动。 */
 function writeJsonSafe(p, obj) {
-  const data = JSON.stringify(obj, null, 2);
-  try { fs.writeFileSync(p, data, "utf8"); return true; } catch (e) {}
-  try {
-    const tmp = p + "." + process.pid + ".tmp";
-    fs.writeFileSync(tmp, data, "utf8");
-    fs.renameSync(tmp, p);
-    return true;
-  } catch (e) {
-    console.warn("[config] 配置持久化失败（不影响本次会话）:", e.message);
-    return false;
-  }
+  saveJson(p, obj);   // fire-and-forget：队列串行 + 退避重试，失败仅 safe-write 内部告警
+  return true;
 }
 
 function deepMerge(base, extra) {

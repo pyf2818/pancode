@@ -22,7 +22,7 @@ beforeAll(() => {
 });
 afterAll(() => {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
-});
+}, 30000);   // Windows Defender 逐文件扫描可超默认 10s（对齐 W4 惯例）
 
 function seedShard(name, entries) {
   const p = path.join(memDir, name);

@@ -1669,6 +1669,45 @@ function mdLite(s) {
   return h;
 }
 
+/* W9 · Markdown 渲染 Worker 化：流式 msg.delta 的全量重渲染移入经典 Worker，主线程只做 DOM 写入。
+   失败兜底：Worker 创建失败（如 Electron file:// 协议）/运行期 onerror → 同步 renderChatMD 回退（绝不白屏）。
+   竞态防护：快照校验 b.buf === src —— buf 已前进则丢弃过期结果（msg.end 的同步最终渲染天然覆盖迟到结果）。 */
+let _mdW = null, _mdWDead = false, _mdWSeq = 0, _mdTimer = null;
+const _mdWCbs = new Map();
+function _mdWorker() {
+  if (_mdW || _mdWDead) return _mdW;
+  try {
+    _mdW = new Worker("js/md-worker.js");
+    _mdW.onmessage = (e) => {
+      const d = e.data || {}; const o = _mdWCbs.get(d.id);
+      if (o) { _mdWCbs.delete(d.id); o.cb(typeof d.html === "string" ? d.html : renderChatMD(o.src)); }
+    };
+    _mdW.onerror = () => {
+      _mdWDead = true; _mdWCbs.forEach((o) => o.cb(renderChatMD(o.src))); _mdWCbs.clear();
+      try { _mdW.terminate(); } catch (e2) {} _mdW = null;
+    };
+  } catch (e) { _mdWDead = true; }
+  return _mdW;
+}
+function renderChatMDAsync(src, cb) {
+  const w = _mdWorker();
+  if (!w) return cb(renderChatMD(src));   // Worker 不可用 → 同步回退（cb 恒有 html）
+  const id = ++_mdWSeq;
+  _mdWCbs.set(id, { src: src, cb: cb });
+  try { w.postMessage({ id: id, src: src }); } catch (e) { _mdWCbs.delete(id); cb(renderChatMD(src)); }
+}
+function _mdRenderBlock(b) {
+  if (_mdTimer) return;   // 节流：65ms 窗口内合并突发 delta，只调度一帧（触发时取最新 buf）
+  _mdTimer = setTimeout(() => {
+    _mdTimer = null;
+    const src = b.buf;
+    renderChatMDAsync(src, (html) => {
+      if (b.buf !== src) return;   // buf 已前进：丢弃过期帧，下一帧渲染最新内容
+      b.el.innerHTML = html; wireCopyButtons(b.el); scrollChat();
+    });
+  }, 65);
+}
+
 /* 富文本 Markdown 渲染（聊天回答）：代码块/标题/列表/引用/表格/行内样式 */
 function renderChatMD(src) {
   if (!src) return "";
@@ -2083,12 +2122,16 @@ function handleEventInner(ev) {
     }
     case "msg.delta": {
       const b = blocks[ev.id]; if (!b) break;
-      b.buf += ev.text; b.el.innerHTML = renderChatMD(b.buf); wireCopyButtons(b.el); b.el.classList.add("type-caret"); scrollChat();
+      b.buf += ev.text; b.el.classList.add("type-caret"); _mdRenderBlock(b);   // W9: Worker 化 + 节流
       break;
     }
     case "msg.end": {
       const b = blocks[ev.id]; if (!b) break;
-      b.el.classList.remove("type-caret"); scrollChat();
+      if (_mdTimer) { clearTimeout(_mdTimer); _mdTimer = null; }
+      b.el.classList.remove("type-caret");
+      // W9: 结束强制同步最终渲染 —— 闭合 widget 块升级为沙箱卡片，且终态与主线程渲染器一致
+      if (b.buf) { b.el.innerHTML = renderChatMD(b.buf); wireCopyButtons(b.el); }
+      scrollChat();
       // 给 AI 回复加「复制全部」按钮（气泡在流式渲染中会被 innerHTML 覆盖，故在结束时挂载）
       const row = b.el.closest(".msg-row");
       if (row && !row.querySelector(".msg-copy")) {
