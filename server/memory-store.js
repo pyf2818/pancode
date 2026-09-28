@@ -38,10 +38,50 @@ class MemoryStore {
 
   /* ---------- 持久化 ---------- */
   _load() {
-    try { this._entries = JSON.parse(fs.readFileSync(this._path, "utf8")); } catch (e) { this._entries = []; }
+    try {
+      this._entries = JSON.parse(fs.readFileSync(this._path, "utf8"));
+      if (!Array.isArray(this._entries)) throw new Error("not-an-array");
+    } catch (e) {
+      // 文件损坏（历史上「沉淀」曾往 JSON 追加 markdown 导致整库被静默清零）：
+      // 先把坏文件留证备份，再尝试从 markdown 行里捞回可读内容，绝不无声丢数据。
+      this._entries = this._rescueCorrupt();
+    }
+  }
+  _rescueCorrupt() {
+    let raw = "";
+    try { raw = fs.readFileSync(this._path, "utf8"); } catch (e) { return []; }
+    try {
+      const bak = this._path + ".corrupt-" + Date.now() + ".bak";
+      fs.writeFileSync(bak, raw, "utf8");
+      console.warn("[memory-store] 记忆库 JSON 损坏，已备份为", bak);
+    } catch (e) {}
+    const out = [];
+    for (const line of raw.split("\n")) {
+      const m = line.match(/^- \*\*(.+?)\*\*（(.+?)）：(.+)$/);   // 旧版沉淀写坏的 markdown 行
+      if (!m) continue;
+      const content = m[3].trim();
+      if (!content || out.some((x) => x.content === content)) continue;
+      out.push({
+        id: "rescued-" + out.length, type: "decision", topic: m[1], content,
+        ts: Date.parse(m[2] + "T12:00:00") || Date.now(), lastAccessAt: Date.now(),
+        accessCount: 1, valueScore: 5, source: "sediment", sticky: true,
+      });
+    }
+    return out;
   }
   _save() {
     require("./safe-write").saveJson(this._path, this._entries);
+  }
+
+  /* 记忆被真正读进上下文 = 一次访问信号：加强它（半衰期随访问次数增长），
+     让"常被用上的记忆"活得更久、"从来没人看"的更快衰减。 */
+  touch(id) {
+    const e = this._entries.find((x) => x.id === id);
+    if (!e) return false;
+    e.accessCount = (e.accessCount || 0) + 1;
+    e.lastAccessAt = Date.now();
+    this._save();
+    return true;
   }
 
   /* ---------- 写入 ---------- */
@@ -114,7 +154,7 @@ class MemoryStore {
     const keywords = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
     if (!keywords.length) return this._recent(limit, type);
 
-    let pool = this._entries;
+    let pool = this._entries.filter((e) => !e.archived);
     if (type) pool = pool.filter((e) => e.type === type);
 
     const scored = pool.map((e) => {
@@ -147,7 +187,7 @@ class MemoryStore {
   }
 
   _recent(limit, type) {
-    let pool = this._entries;
+    let pool = this._entries.filter((e) => !e.archived);
     if (type) pool = pool.filter((e) => e.type === type);
     return pool.sort((a, b) => b.ts - a.ts).slice(0, limit);
   }
@@ -157,10 +197,20 @@ class MemoryStore {
     opts = opts || {};
     let pool = this._entries;
     if (opts.type) pool = pool.filter((e) => e.type === opts.type);
+    if (opts.source) pool = pool.filter((e) => e.source === opts.source);
+    // archived 默认排除（与注入端同口径）；传 "all" 看全部，传 true 只看归档
+    if (opts.archived === "all") { /* 不过滤 */ }
+    else if (opts.archived === true) pool = pool.filter((e) => !!e.archived);
+    else pool = pool.filter((e) => !e.archived);
+    if (opts.sticky !== undefined) pool = pool.filter((e) => !!e.sticky === !!opts.sticky);
     return pool.sort((a, b) => b.ts - a.ts).slice(0, opts.limit || 50);
   }
 
   getById(id) { return this._entries.find((e) => e.id === id) || null; }
+
+  /* 面板用：暴露内部有效强度（遗忘曲线 × 价值分），让"哪条快被忘了"是看得见的 */
+  static strength(entry) { return decayWeight(entry); }
+  static ttlOf(type) { return TYPE_TTL[type] || 90; }
 
   /* ---------- 编辑 ---------- */
   update(id, patch) {
@@ -169,6 +219,9 @@ class MemoryStore {
     if (patch.topic !== undefined) e.topic = String(patch.topic).trim();
     if (patch.content !== undefined) e.content = String(patch.content).trim();
     if (patch.type && TYPES.has(patch.type)) e.type = patch.type;
+    if (patch.archived !== undefined) e.archived = !!patch.archived;
+    if (patch.sticky !== undefined) e.sticky = !!patch.sticky;
+    if (patch.valueScore !== undefined) e.valueScore = Math.max(1, Math.min(5, Number(patch.valueScore) || 2));
     e.ts = Date.now();
     this._save();
     return e;

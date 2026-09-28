@@ -45,6 +45,7 @@ const { Orchestrator } = require("./orchestrator");
 const safeWrite = require("./safe-write");
 const { PatchEngine } = require("./patch");
 const { TOOL_HANDLERS } = require("./tools");
+const rulesLib = require("./rules");
 
 /* ============================================================
    历史 tool_call 净化（防御性）
@@ -81,6 +82,9 @@ const TRACE_MAX_BYTES = 4 * 1024 * 1024; // 单会话 trace 落盘上限 4MB，�
 /* 对话上下文 TTL（天）：不活跃的会话超过该时长，加载/落盘时一并清理。
    与 LRU 容量上限（CONV_MAX）互补——容量管"同时活跃多少"，TTL 管"冷多久就清"。 */
 const CONV_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/* Goal 服务端续跑预算：轮次上限 + 停滞判定（连续 N 轮零改动零新结果即视为卡住） */
+const GOAL_MAX_TURNS = Number(process.env.PANCODE_GOAL_TURNS || 40);
+const GOAL_MAX_STALL = 3;
 
 /* OpenAI 兼容工具定义：供 LLM 做 function calling（ReAct 工具调用循环） */
 const TOOLS = [
@@ -171,7 +175,10 @@ const TOOLS = [
       description: "在工作区根目录执行一条 shell 命令（如运行测试 / 构建）。命令在用户本地真实执行；危险命令会被本地安全黑名单拦截（这只是安全策略，不是沙箱）。命令语法必须符合当前运行环境" + (process.platform === "win32" ? "（Windows：后台启动用 `start /B`，`&` 只是分隔符不是后台；用 findstr/type/dir 替代 grep/cat/ls）" : "（bash）") + "。",
       parameters: {
         type: "object",
-        properties: { command: { type: "string", description: "要执行的命令，如 node tests/run.js" } },
+        properties: {
+          command: { type: "string", description: "要执行的命令，如 node tests/run.js" },
+          timeout: { type: "number", description: "前台最多等多少秒（默认取设置值）。超过即被终止——预计超过 2 分钟的长构建/长测试不要用它，改用 start_process 后台启动 + read_process 轮询。" },
+        },
         required: ["command"],
       },
     },
@@ -251,6 +258,19 @@ const TOOLS = [
           body: { type: "string", description: "Skill 内容（Markdown 格式，包含解决方案和验证方法）" },
         },
         required: ["name", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "use_skill",
+      description: "取回系统提示「相关 Skill」目录里某个 Skill 的完整正文（步骤 / 注意事项 / 验证方法）。" +
+        "目录里只有名字和一句话描述，决定采用某个 Skill 时必须先调用本工具再动手，不要凭名字猜内容。",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "Skill 名称，从目录原样复制" } },
+        required: ["name"],
       },
     },
   },
@@ -632,6 +652,12 @@ const TOOLS = [
 
 /* 规划模式（planMode）下禁止 Agent 调用的"会改动工作区 / 执行命令"工具 */
 const { MUTATING_TOOLS } = require("./tools/util");
+
+/* 不设执行超时的工具：等用户输入 / 可能弹审批门 / 本身要跑很久的编排类 */
+const WAIT_FREE_TOOLS = new Set([
+  "ask_user_choice", "agent", "orchestrate", "set_goal",
+  ...MUTATING_TOOLS,
+]);
 const { checkHooks, writeAudit } = require("./security");
 const { collectArtifacts, saveArtifacts } = require("./artifacts");
 const ARTIFACTS_ROOT = require("./config").ROOT; // W6 产物持久化根目录
@@ -693,7 +719,9 @@ class LlmAgent extends AgentBase {
     this.runningConvs = new Set();      // 并行会话：正在运行的 convId 集合
     this._convAborts = {};              // convId -> abortRef（外部 abort 按会话中断）
     // 包裹 emit：自动从 AsyncLocalStorage 注入 convId（多会话并行时深层调用也能正确标记）
-    const rawEmit = this.emit;
+    // 必须 bind：AgentBase 把 emit 存成构造期箭头函数，但子类 / 测试替身可能定义在原型上，
+    // 裸调 rawEmit(msg) 会丢掉 this（class 体恒为严格模式 → this===undefined）。
+    const rawEmit = this.emit.bind(this);
     this.emit = (msg) => {
       const ctx = convContext.getStore();
       if (ctx && !msg.convId) msg.convId = ctx.convId;
@@ -1135,6 +1163,10 @@ ${taskSummary}
 
   async runSubAgent(task, opts) {
     opts = opts || {};
+    // 中断信号必须取本会话的 abortRef：this._abort 是引擎级旧标志，
+    // 多会话并行时会被别的会话「停止」误伤（自己的子智能体莫名中止）。
+    const _ctx = convContext.getStore();
+    const subAborted = () => (_ctx ? _ctx.abortRef.value : this._abort);
     const type = opts.subagent_type || "general";
     // W2：可选专家人设——按专家 role/methodology 执行，工具按白名单收敛
     const expert = opts.expert ? (this.experts || ExpertStore.builtinOnly()).byIdOrName(opts.expert) : null;
@@ -1144,18 +1176,30 @@ ${taskSummary}
       { role: "user", content: task },
     ];
     const maxRounds = Math.min(opts.maxRounds || 12, 24);
-    // 静默主界面 UI：临时替换为 no-op 句柄，结束后复原
-    const saved = { tool: this.tool, thinkStart: this.thinkStart, msgStart: this.msgStart, state: this.state, say: this.say };
-    const dummy = { body() {}, done() {}, end() {}, delta() {}, start() {} };
-    this.tool = () => dummy;
-    this.thinkStart = () => dummy;
-    this.msgStart = () => dummy;
-    this.state = () => {};
-    this.say = async () => {};
+    // 静默主界面 UI：临时替换为 no-op 句柄，结束后复原。
+    // 用深度计数而非直接覆写：编排同层并行时，先结束的兄弟若复原句柄，正在跑的子智能体会
+    // 把中间过程直接吐到主聊天流上（实测竞态）。计数归零才复原。
+    this._subDepth = (this._subDepth || 0) + 1;
+    let saved = null;
+    if (this._subDepth === 1) {
+      saved = { tool: this.tool, thinkStart: this.thinkStart, msgStart: this.msgStart, state: this.state, say: this.say };
+      const dummy = { body() {}, done() {}, end() {}, delta() {}, start() {} };
+      this.tool = () => dummy;
+      this.thinkStart = () => dummy;
+      this.msgStart = () => dummy;
+      this.state = () => {};
+      this.say = async () => {};
+    }
+    const _subAborted = () => { const c = convContext.getStore(); return c ? c.abortRef.value : this._abort; };
+    // 只有「可能改盘」的子智能体才需要独占快照；只读子智能体（reviewer / tester / 检索型）
+    // 不占锁，保持真并行——这是编排同层并行的价值所在。
+    const mayMutate = subTools.some((t) => MUTATING_TOOLS.has(t.function.name));
+    let releaseMu = null;
+    if (mayMutate) releaseMu = await this._acquireSubLock();
     let finalText = "";
     // P1-3 子智能体隔离：运行前快照整个工作区；结束后把所有"真实落盘"的改动回滚，
     // 并重新暂存进审阅队列，交由用户显式批准 —— 子智能体不再静默污染共享工作区。
-    const snap = this._workspaceSnapshot();
+    const snap = mayMutate ? this._workspaceSnapshot() : null;
     try {
       for (let round = 0; round < maxRounds; round++) {
         if (this._abort) { finalText = finalText || "(子智能体已随主任务中断)"; break; }
@@ -1182,7 +1226,8 @@ ${taskSummary}
         messages.push(...toolMsgs);
       }
     } finally {
-      Object.assign(this, saved);
+      this._subDepth = Math.max(0, (this._subDepth || 1) - 1);
+      if (this._subDepth === 0 && saved) Object.assign(this, saved);
       // 隔离：无论子智能体是否抛错，都把其改动收回并暂存待审阅
       if (snap) {
         const iso = this._isolateSubAgentChanges(snap);
@@ -1192,8 +1237,18 @@ ${taskSummary}
             + "。请到「改动审阅」面板确认或拒绝。", cls: "tl-warn" });
         }
       }
+      if (releaseMu) releaseMu();
     }
     return finalText;
+  }
+
+  /* 子智能体改盘互斥锁：同一时刻只允许一个「可能写盘」的子智能体持有工作区快照，
+     避免并行快照互相回滚掉对方的改动。只读子智能体不取锁。 */
+  _acquireSubLock() {
+    const prev = this._subLock || Promise.resolve();
+    let release;
+    this._subLock = new Promise((r) => { release = r; });
+    return prev.then(() => release);
   }
 
   /* ---------------- 会话目标（goal 驱动） ---------------- */
@@ -1219,6 +1274,47 @@ ${taskSummary}
     return false;
   }
 
+  /* glob → RegExp：* 跨不了层级，** 可以；? 单字符；其余按字面转义。
+     规则写成 `src/**\/*.test.js` 或 `git commit *` 这种直觉形式，而不是让用户猜正则。 */
+  static _globToRe(glob) {
+    return rulesLib.globToRe(glob);
+  }
+
+  /* 规则命中判定。规则可以是：
+       "npm run"                    → 旧版子串 / /regex/ 语法（保持兼容）
+       { tool:"run_command", pattern:"npm run test*", action:"allow" }
+       { tool:"write_file",  pattern:"src/**" }
+     tool 支持 "*" 与逗号分隔多工具。 */
+  _matchPermRule(toolName, subject, rules) {
+    if (!rules || !rules.length) return null;
+    const subj = String(subject || "");
+    for (const r of rules) {
+      if (!r) continue;
+      if (typeof r === "string") {
+        if (this._matchRule(subj, [r])) return r;
+        if (r.length >= 2 && r.startsWith("/") && r.endsWith("/")) continue;
+        // 旧配置里也有人写 "run_command:npm" 这种，兼容一下
+        const colon = r.indexOf(":");
+        if (colon > 0 && (r.slice(0, colon).trim() === toolName || r.slice(0, colon).trim() === "*")) return r;
+        continue;
+      }
+      const toolSpec = String(r.tool || "*").trim();
+      const tools = toolSpec.split(",").map((x) => x.trim()).filter(Boolean);
+      const toolOk = tools.some((t) => t === "*" || t === toolName || (t.endsWith(":") && toolName === t.slice(0, -1)) || (t.endsWith("*") && toolName.startsWith(t.slice(0, -1))));
+      if (!toolOk) continue;
+      if (r.pattern) {
+        const p = String(r.pattern);
+        if (p === "*" || p === "**") return r;
+        if (LlmAgent._globToRe(p).test(subj)) return r;
+        // 命令类规则常写成前缀（"git push"），glob 匹配不上时退化为前缀判定
+        if (subj.toLowerCase().startsWith(p.toLowerCase().replace(/\*+$/g, "").trim())) return r;
+        continue;
+      }
+      return r;   // 只约束了工具名
+    }
+    return null;
+  }
+
   /* 工具参数的规则匹配主体：命令文本 / 文件路径 / 分支名等（hooks 与审批规则共用；MCP 工具 = 工具名+参数） */
   _hookSubject(toolName, args) {
     if (toolName === "run_command" || toolName === "start_process") return String(args.command || "");
@@ -1234,13 +1330,20 @@ ${taskSummary}
   _approvalDecision(toolName, args) {
     const perm = this.cfg.permissions || { mode: "ask", allow: [], deny: [] };
     const mode = perm.mode || "ask";
-    const allow = perm.allow || [];
-    const deny = perm.deny || [];
     const subject = this._hookSubject(toolName, args);
 
-    if (this._matchRule(subject, deny)) return { action: "block", reason: "命中拒绝规则" };
-    // W14：删除文件不可逆——即使 auto 全自动模式也强制人工确认（审批卡片列明后果）
-    if (toolName === "delete_file") return { action: "ask" };
+    // 1) 结构化规则优先于模式档位：deny 命中即拦，allow 命中即放（工具 × glob 粒度）
+    const denyHit = this._matchPermRule(toolName, subject, perm.deny);
+    if (denyHit) return { action: "block", reason: "命中拒绝规则 " + this._ruleLabel(denyHit) };
+    // W14：删除文件不可逆——即使 auto 全自动模式、即使命中 allow 也强制人工确认
+    const irreversible = toolName === "delete_file";
+    const allowHit = irreversible ? null : this._matchPermRule(toolName, subject, perm.allow);
+    if (allowHit) return { action: "allow", reason: "命中放行规则 " + this._ruleLabel(allowHit) };
+    // 2) 本次会话内用户点过「以后都允许」的工具，直接放行
+    if (!irreversible && this._sessionGrants && this._sessionGrants.has(toolName)) {
+      return { action: "allow", reason: "本会话已授权" };
+    }
+
     if (toolName === "read_file" || toolName === "list_files" || toolName === "search_code") return { action: "allow" };
     // Agent Git 工具集 / 进程日志 / 端口探活 / MCP 清单：纯只读，直接放行
     if (toolName === "git_status" || toolName === "git_diff" || toolName === "git_log") return { action: "allow" };
@@ -1249,12 +1352,22 @@ ${taskSummary}
     if (toolName === "web_search" || toolName === "web_fetch") return { action: "allow" };
 
     if (mode === "auto") return { action: "allow" };
-    if (mode === "semi") {
-      if (toolName === "run_command") return this._matchRule(subject, allow) ? { action: "allow" } : { action: "ask" };
-      // 写 / 删：命中 allow 也放行，否则仍询问
-      return this._matchRule(subject, allow) ? { action: "allow" } : { action: "ask" };
-    }
+    if (mode === "semi") return { action: "ask" };
     return { action: "ask" }; // ask
+  }
+
+  _ruleLabel(r) {
+    if (!r) return "";
+    if (typeof r === "string") return r;
+    return (r.tool || "*") + (r.pattern ? " " + r.pattern : "");
+  }
+
+  /* 用户在审批卡上点「本会话内都允许」时调用（tool.approve 带 remember=session） */
+  grantSession(toolName) {
+    if (!this._sessionGrants) this._sessionGrants = new Set();
+    if (toolName === "*") return;
+    this._sessionGrants.add(toolName);
+    writeAudit("gate", "本会话授权工具 " + toolName);
   }
 
   async _gate(toolName, args, danger) {
@@ -1272,19 +1385,42 @@ ${taskSummary}
     return { blocked: false, approved: ap.approved, reason: ap.reason };
   }
 
-  /* 请求人工确认：emit tool.pending 并等待前端 approve/reject（超时 120s 自动拒绝并广播收尾） */
+  /* 等待用户处理的统一计时器：超时上限可配置（默认 20 分钟），每分钟把"已经等了多久"回写到状态栏，
+     避免用户离开一会儿回来发现任务被 120s 自动拒绝了。 */
+  _armUserWait(id, label, onTimeout) {
+    const MS = Math.max(30000, ((this.cfg && this.cfg.timeouts && this.cfg.timeouts.approvalSec) || 1200) * 1000);
+    const started = Date.now();
+    // 立刻把状态切成「等你确认」：等到 60s 后才提醒的话，这 1 分钟界面看着就像卡死
+    this.state(true, "等你确认：" + label);
+    const nag = setInterval(() => {
+      const mins = Math.floor((Date.now() - started) / 60000);
+      this.state(true, "等你确认：" + label + "（已等待 " + mins + " 分钟）");
+    }, 60000);
+    const timer = setTimeout(() => {
+      clearInterval(nag);
+      this.pending.delete(id);
+      onTimeout();
+    }, MS);
+    return { timer, nag };
+  }
+
+  /* 请求人工确认：emit tool.pending 并等待前端 approve/reject（超时后自动拒绝并广播收尾） */
   requestApproval(toolName, args, danger) {
     const id = "ap" + (++this._apSeq);
     const preview = this._previewArgs(toolName, args);
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
+      const sec = Math.round(Math.max(30000, ((this.cfg && this.cfg.timeouts && this.cfg.timeouts.approvalSec) || 1200) * 1000) / 1000);
+      const w = this._armUserWait(id, toolName, () => {
         // 广播合成 tool.end，让前端审批卡片同步进入「已超时」状态
         this.emit({ type: "tool.end", id: "ap_" + id, ok: false, label: "等待超时，已自动拒绝" });
-        resolve({ approved: false, reason: "等待确认超时（120s），已自动拒绝" });
-      }, 120000);
-      this.pending.set(id, { resolve, timer });
-      this.emit({ type: "tool.pending", id, tool: toolName, danger, preview });
+        this.state(false, "AI 空闲");
+        resolve({ approved: false, reason: "等待确认超时（" + sec + "s），已自动拒绝" });
+      });
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(w.timer); clearInterval(w.nag); resolve(v); },
+        timer: w.timer,
+      });
+      this.emit({ type: "tool.pending", id, tool: toolName, danger, preview, timeoutSec: sec });
     });
   }
 
@@ -1297,18 +1433,22 @@ ${taskSummary}
     return true;
   }
 
-  /* 交互式选项列表：emit tool.ask_choice 并等待前端 choice_result（超时 120s 自动取消并广播收尾） */
+  /* 交互式选项列表：emit tool.ask_choice 并等待前端 choice_result（超时后自动取消并广播收尾） */
   requestChoice(question, options) {
     const id = "ch" + (++this._apSeq);
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
+      const sec = Math.round(Math.max(30000, ((this.cfg && this.cfg.timeouts && this.cfg.timeouts.approvalSec) || 1200) * 1000) / 1000);
+      const w = this._armUserWait(id, "选项", () => {
         // 广播合成 tool.end，让前端对应的选项卡片同步进入「已超时」状态（否则永远显示等待中）
         this.emit({ type: "tool.end", id: "choice_" + id, ok: false, label: "等待超时，已自动取消" });
-        resolve({ choice: null, reason: "等待用户选择超时（120s），已自动取消" });
-      }, 120000);
-      this.pending.set(id, { resolve, timer });
-      this.emit({ type: "tool.ask_choice", id, question, options });
+        this.state(false, "AI 空闲");
+        resolve({ choice: null, reason: "等待用户选择超时（" + sec + "s），已自动取消" });
+      });
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(w.timer); clearInterval(w.nag); resolve(v); },
+        timer: w.timer,
+      });
+      this.emit({ type: "tool.ask_choice", id, question, options, timeoutSec: sec });
     });
   }
   resolveChoice(id, choice) {
@@ -1351,18 +1491,76 @@ ${taskSummary}
     return p ? "【专家设定·" + p.name + "】\n" + formatExpertPrompt(p) : "";
   }
 
-  loadRules() {
+  /* 本轮任务"碰到"了哪些路径：用于决定注入哪些子目录 AGENTS.md。
+     来源 = 用户文本里的 @file/@folder 引用 + 当前计划步骤提到的路径。 */
+  _touchedPaths(userText) {
+    const out = [];
+    const txt = String(userText || "");
+    for (const m of txt.matchAll(/@(?:file|folder):([^\s，。;；,]+)/g)) out.push(m[1]);
     try {
-      const all = this.files.list().map((f) => f.replace(/\\/g, "/"));
-      const md = all.filter((f) => f.startsWith(".pancode/rules/") && /\.md$/i.test(f));
-      if (!md.length) return "";
-      const blocks = md.map((f) => {
-        let c = "";
-        try { c = this.files.read(f); } catch (e) { return ""; }
-        return "## " + f + "\n" + c;
-      }).filter(Boolean);
-      return blocks.join("\n\n");
-    } catch (e) { return ""; }
+      const plan = this.plan && this.plan.getActive ? this.plan.getActive(this._currentConv) : null;
+      for (const t of (plan && plan.tasks) || []) {
+        for (const m of String(t.text || "").matchAll(/([\w./-]+\.[A-Za-z]{1,6})/g)) out.push(m[1]);
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  /* 规则层：对齐行业惯例（AGENTS.md / CLAUDE.md / .cursor/rules / .pancode/rules / .pancoderules）。
+     就近覆盖——子目录里的 AGENTS.md 只在该目录下的文件被涉及时才注入，避免长任务被无关规则灌满上下文。 */
+  static get RULE_CANDIDATES() {
+    return ["AGENTS.md", "CLAUDE.md", ".pancoderules", ".cursorrules"];
+  }
+  /* 已声明的工具名（专家白名单校验、工具自检共用一份真相） */
+  static toolNames() { return TOOLS.map((t) => t.function.name); }
+  loadRules(touchedPaths) {
+    const MAX_TOTAL = 12000;   // 规则总预算：超了截断并显式告知，而不是无声丢掉后面的文件
+    const seen = new Set();
+    const blocks = [];
+    const push = (label, content, why) => {
+      const c = String(content || "").trim();
+      if (!c || seen.has(label)) return;
+      seen.add(label);
+      blocks.push({ label, content: c, why });
+    };
+    let files = [];
+    try { files = this.files.list().map((f) => f.replace(/\\/g, "/")); } catch (e) { return ""; }
+    const read = (rel) => { try { return this.files.read(rel); } catch (e) { return ""; } };
+    /* files.list() 按设计忽略一切点开头名字，因此 .pancode/rules 与 .cursor/rules 以及
+       .pancoderules / .cursorrules 必须由 rules 库直接枚举磁盘——否则规则写得进去、面板看得见，
+       模型却一个字都读不到。absRoot 缺失（测试替身）时退回 list 过滤。 */
+    const absRoot = (this.files && this.files.dir) || null;
+    const dotDir = (rel) => absRoot ? rulesLib.listRuleDir(absRoot, rel)
+      : files.filter((x) => x.startsWith(rel + "/") && /\.(md|mdc)$/i.test(x)).sort();
+
+    // 1) 根级规则文件（按优先级）
+    for (const name of rulesLib.rootRuleFiles(absRoot, LlmAgent.RULE_CANDIDATES, files)) push(name, read(name), "根级规则");
+    // 2) .pancode/rules/*.md —— 沉淀 / 规则面板写入处。frontmatter 决定启停与按需命中
+    for (const f of dotDir(".pancode/rules")) {
+      const parsed = rulesLib.parseFrontmatter(read(f));
+      const act = rulesLib.activeFor(parsed.meta, touchedPaths);
+      if (!act.on) continue;
+      push(f, parsed.body, act.conditional ? act.why : "项目规则");
+    }
+    // 3) .cursor/rules/*.mdc —— 直接复用 Cursor 的规则库（frontmatter 语义与本厂一致）
+    for (const f of dotDir(".cursor/rules")) {
+      const parsed = rulesLib.parseFrontmatter(read(f));
+      const act = rulesLib.activeFor(parsed.meta, touchedPaths);
+      if (!act.on) continue;
+      push(f, parsed.body, act.conditional ? "Cursor 规则 · " + act.why : "Cursor 规则");
+    }
+    // 4) 子目录 AGENTS.md：仅在本轮任务真的碰到该目录时注入
+    const dirs = new Set();
+    for (const p of touchedPaths || []) {
+      let d = path.posix.dirname(String(p).replace(/\\/g, "/"));
+      while (d && d !== "." && d !== "/") { dirs.add(d); d = path.posix.dirname(d); }
+    }
+    for (const f of files.filter((x) => /(^|\/)AGENTS\.md$/i.test(x) && x !== "AGENTS.md").sort()) {
+      const own = path.posix.dirname(f);
+      if (dirs.has(own)) push(f, read(f), "命中目录 " + own);
+    }
+
+    return rulesLib.assemble(blocks, MAX_TOTAL);
   }
 
   buildSystemAugment(userText) {
@@ -1370,18 +1568,30 @@ ${taskSummary}
     const persona = this.personaText(userText);
     if (persona) parts.push(persona);
     if (this.cfg.rules && this.cfg.rules.enabled) {
-      const r = this.loadRules();
+      const r = this.loadRules(this._touchedPaths(userText));
       if (r) parts.push("【项目规则（强制遵循）】\n" + r);
     }
     // 结构化记忆
     if (this.cfg.memory && this.cfg.memory.enabled) {
+      /* 记忆溯源：把"这次到底读进了哪几条"记下来，任务结束时回推给前端并各记一次访问。
+         长期记忆最容易自欺欺人的地方是"存了几百条但没人知道用没用上"——这条让它是隐可见。
+         topForContext 可能缺席（共享实例 / 测试替身），取不到就当没有，不影响注入。 */
+      const pick = (store) => (store && typeof store.topForContext === "function" ? store.topForContext(10) || [] : []);
+      const used = [];
       // W3：用户级记忆（跨项目偏好/约定）注入在前——"用户本人怎么说"优先于"某个项目里发生了什么"
       if (this.userMemory) {
         const um = this.userMemory.formatForContext(800);
-        if (um) parts.push("【用户级记忆（跨项目偏好与约定，优先遵循）】\n" + um);
+        if (um) {
+          parts.push("【用户级记忆（跨项目偏好与约定，优先遵循）】\n" + um);
+          for (const e of pick(this.userMemory)) used.push({ scope: "user", id: e.id, type: e.type, topic: e.topic, valueScore: e.valueScore || 2, accessCount: e.accessCount || 0 });
+        }
       }
       const m = this.memory.formatForContext(3000);
-      if (m) parts.push("【项目记忆（参考）】\n" + m);
+      if (m) {
+        parts.push("【项目记忆（参考）】\n" + m);
+        for (const e of pick(this.memory)) used.push({ scope: "project", id: e.id, type: e.type, topic: e.topic, valueScore: e.valueScore || 2, accessCount: e.accessCount || 0 });
+      }
+      this._usedMemory = used;
     }
     // 当前任务计划
     const planCtx = this.plan.formatForContext(this._currentConv);
@@ -1493,11 +1703,22 @@ ${taskSummary}
     return this._estTokens(history);
   }
 
+  /* 压缩摘要：固定分段模板（对齐主流 agent 的 structured compaction）。
+     自由式"200 字总结"会丢掉文件路径与未决问题，恢复执行时 Agent 只能重读一遍工作区。 */
   async _summarize(msgs) {
     try {
       const txt = msgs.map((m) => (m.role || "") + ": " + (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n").slice(0, 12000);
       const r = await chatStream(this.cfg.llm,
-        [{ role: "system", content: "用中文把以下对话压缩为不超过 200 字的关键要点（保留决策、结论、未决问题），不要解释。" },
+        [{ role: "system", content: [
+          "你在压缩一段编程 Agent 的对话历史，输出「恢复执行时不需要重读工作区就能接着干」的状态快照。",
+          "严格用以下中文小标题分段，没有内容的小标题写「无」，总长 ≤ 600 字：",
+          "【任务目标】用户到底要什么",
+          "【已定决策】采纳/否决过的方案与理由",
+          "【已改文件】路径 + 一句话改动（逐个列，不要合并成「若干文件」）",
+          "【验证状态】跑过什么命令、通过/失败、失败原因",
+          "【未决问题】下一步该做什么、卡在哪",
+          "只输出这五段，不要解释、不要前言后语。",
+        ].join("\n") },
          { role: "user", content: txt }], null, null);
       return (r.content || "").trim() || "(无摘要)";
     } catch (e) { return "(摘要生成失败)"; }
@@ -1536,7 +1757,17 @@ ${taskSummary}
       ...criticalKept,
       ...recent,
     ];
-    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(this._estTokens(newHist)/1000) + "k，保留最近 " + keep + " 条 + 关键消息）", cls: "tl-info" });
+    const after = this._estTokens(newHist);
+    this.emit({
+      type: "context.compact",
+      before: used, after, budget,
+      dropped: head.length - criticalKept.length,
+      keptCritical: criticalKept.length,
+      keptRecent: recent.length,
+      forced: !!opts.force,
+      summary: summary.slice(0, 1200),
+    });
+    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(after/1000) + "k，保留最近 " + keep + " 条 + 关键消息）", cls: "tl-info" });
     // 压缩后同时归纳记忆
     if (this.cfg.memory && this.cfg.memory.enabled) {
       this._consolidateMemory(head);
@@ -1725,16 +1956,17 @@ ${taskSummary}
      ============================================================ */
 
   /* 统一工具执行守卫：中断检查 + 超时保护。
-     等用户输入的工具（ask_user_choice）与可能弹审批门的 mutating 工具不设超时；
-     读类工具 120s 超时兜底，防止挂起卡死整轮 ReAct 循环。 */
+     不设超时的三类：等用户输入的（ask_user_choice）、可能弹审批门的（mutating）、
+     以及本身就要跑很久的编排类工具（agent 子智能体 / orchestrate）——
+     给它们套 120s 会让多 agent 派遣在子任务跑到一半时被塞进一条假"[超时]"结果，
+     子智能体其实还在后台跑，模型却以为失败了。 */
   _runToolGuarded(name, args) {
     const ctx = convContext.getStore();
     const aborted = ctx ? ctx.abortRef.value : this._abort;
     if (aborted) return Promise.resolve("[已中断] 用户停止了本次任务，工具未执行。");
-    const waitUser = name === "ask_user_choice" || MUTATING_TOOLS.has(name);
+    if (WAIT_FREE_TOOLS.has(name)) return Promise.resolve().then(() => this.execTool(name, args));
     const p = Promise.resolve().then(() => this.execTool(name, args));
-    if (waitUser) return p;
-    const MS = 120000;
+    const MS = Math.max(15000, ((this.cfg && this.cfg.timeouts && this.cfg.timeouts.toolSec) || 120) * 1000);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => resolve("[超时] 工具 " + name + " 执行超过 " + (MS / 1000)
         + " 秒未返回，已中止等待。请缩小查询范围（如指定更短的路径/更少的条数）后重试，或改用其他工具。"), MS);
@@ -1899,7 +2131,7 @@ ${taskSummary}
     try {
       const declared = new Set(TOOLS.map((t) => t.function.name));
       const src = this.execTool.toString();
-      const handled = new Set();
+      const handled = new Set(Object.keys(TOOL_HANDLERS));   // 大部分工具走 TOOL_HANDLERS 表，不在 execTool 的 switch 里
       const re = /case\s+"([a-zA-Z_][\w]*)"\s*:/g;
       let m;
       while ((m = re.exec(src))) handled.add(m[1]);
@@ -1909,6 +2141,42 @@ ${taskSummary}
       if (orphan.length) console.warn("[pancode][工具自检] 有 handler 但不在 TOOLS 中的工具：" + orphan.join(", "));
       return { missing, orphan };
     } catch (e) { return { missing: [], orphan: [] }; }
+  }
+
+  /** 工具参数 schema 校验：只查「声明里能确定」的三类硬错误——缺必填、类型不符、枚举越界。
+      刻意不做深度校验：工具内部本就有各自的兜底与友好报错，过度校验反而会拦掉合法的宽松调用。 */
+  _validateArgs(name, args) {
+    const decl = TOOLS.find((t) => t.function && t.function.name === name);
+    if (!decl) return null;
+    const schema = decl.function.parameters || {};
+    const props = schema.properties || {};
+    const required = schema.required || [];
+    if (!args || typeof args !== "object" || Array.isArray(args)) {
+      return "[参数不合法] 工具 " + name + " 需要一个 JSON 对象作为参数，收到的是 "
+        + (Array.isArray(args) ? "数组" : typeof args) + "。请按 schema 重新给出。";
+    }
+    const problems = [];
+    for (const key of required) {
+      const v = args[key];
+      if (v === undefined || v === null || v === "") {
+        problems.push("缺少必填参数 `" + key + "`（" + String(props[key] && props[key].description || "无描述").slice(0, 90) + "）");
+      }
+    }
+    const TYPEOK = { string: (v) => typeof v === "string", number: (v) => typeof v === "number" && isFinite(v), boolean: (v) => typeof v === "boolean", object: (v) => v && typeof v === "object" && !Array.isArray(v), array: (v) => Array.isArray(v) };
+    for (const key of Object.keys(args)) {
+      const spec = props[key];
+      if (!spec || args[key] === undefined || args[key] === null) continue;
+      if (spec.type && TYPEOK[spec.type] && !TYPEOK[spec.type](args[key])) {
+        problems.push("参数 `" + key + "` 类型应为 " + spec.type + "，实际是 " + (Array.isArray(args[key]) ? "array" : typeof args[key]));
+      }
+      if (spec.enum && spec.enum.indexOf(args[key]) === -1) {
+        problems.push("参数 `" + key + "` 取值必须是 " + spec.enum.join(" / ") + " 之一，实际是 " + JSON.stringify(args[key]));
+      }
+    }
+    if (!problems.length) return null;
+    const shape = Object.keys(props).map((k) => k + (required.indexOf(k) >= 0 ? "*" : "") + (props[k].type ? ":" + props[k].type : "")).join(", ");
+    return "[参数校验未通过] 工具 " + name + "：\n- " + problems.join("\n- ")
+      + "\n该工具的参数形如 {" + shape + "}（* 为必填）。请修正后重新调用，本次调用未执行、也未产生任何改动。";
   }
 
   /* ---------- 主循环（多会话并行） ---------- */
@@ -1963,15 +2231,8 @@ ${taskSummary}
       // 实际发给 LLM 的 messages 只增不减，是 goal 长任务中途"上下文超限/连接失败"的根因。
       const sysBlocks = [{ role: "system", content: SYSTEM_PROMPT }];
       if (aug) sysBlocks.push({ role: "system", content: aug });
-      // .pancoderules：项目规则（用户自定义约束，每次会话读取保证新鲜度）
-      if (this.files.exists(".pancoderules")) {
-        try {
-          const rules = this.files.read(".pancoderules");
-          if (rules && rules.trim()) {
-            sysBlocks.push({ role: "system", content: "【项目规则 .pancoderules】\n以下是本项目用户定义的规则与约定，请严格遵守：\n\n" + rules.trim() });
-          }
-        } catch (e) { /* 读取失败（二进制/过大），忽略 */ }
-      }
+      // 项目规则统一由 loadRules() 分层装配（AGENTS.md / CLAUDE.md / .pancoderules / .pancode/rules /
+      // .cursor/rules），这里不再单独塞一份 .pancoderules，避免同一条规则被注入两遍。
       if (smartCtx) sysBlocks.push({ role: "system", content: smartCtx });
       // W8：Agent 行为模式约束（Ask / Plan / Agent）
       if (this.cfg.agentMode === "ask") {
@@ -2112,6 +2373,16 @@ ${taskSummary}
               continue;
             }
 
+            /* 参数 schema 校验（对齐主流 agent）：缺必填 / 类型不符 / 枚举越界时，
+               不执行工具，直接把结构化错误回灌给模型自我纠正——省一次无意义的落盘尝试与人工审阅。 */
+            const vErr = this._validateArgs(callName, args);
+            if (vErr) {
+              this._traceEvent("tool.arg_invalid", { name: callName, err: vErr });
+              const toolMsg = { role: "tool", tool_call_id: resolvedIds[ci], content: this._wrapToolData(callName, vErr) };
+              messages.push(toolMsg); history.push(toolMsg);
+              continue;
+            }
+
             // P1-5：循环检测 —— 跨轮追踪相同 (tool,args) 指纹，连续重复到阈值即阻断死循环
             const fp = callName + "::" + JSON.stringify(args);
             if (fp === toolLoop.fp) toolLoop.count++;
@@ -2127,11 +2398,24 @@ ${taskSummary}
             }
 
             const result = await this._runToolGuarded(call.name, args);
+            /* 风险回灌（pancode 原创）：改盘后把静态风险评估结论一并告诉模型。
+               主流 agent 只把风险给人看，Agent 自己"不知道刚才那刀有多深"；
+               这里让它在高风险改动后主动补一次诊断/测试，而不是等用户发现。 */
+            let riskNote = "";
+            if (MUTATING_TOOLS.has(callName)) {
+              try {
+                await this.pushChanges(false);
+                const rs = this._lastRiskSummary;
+                if (rs && rs.level !== "low" && rs.focus.some((f) => f.path === (args.path || ""))) {
+                  riskNote = "\n\n" + require("./risk").forAgent({ level: rs.level, score: rs.score, focus: rs.focus.filter((f) => f.path === (args.path || "")) });
+                }
+              } catch (e) { /* 风险评估失败不影响主流程 */ }
+            }
             // P1-2 结构化截断（保留头部 + 尾部，报错/结论通常在尾部）+ P1-4 注入防护包裹
             const toolMsg = {
               role: "tool",
               tool_call_id: resolvedIds[ci],
-              content: this._wrapToolData(callName, this._truncateToolResult(result)),
+              content: this._wrapToolData(callName, this._truncateToolResult(result) + riskNote),
             };
             messages.push(toolMsg);
             history.push(toolMsg);
@@ -2225,6 +2509,11 @@ ${taskSummary}
         // 如果是当前活跃会话，同步 this.history/this.round（供 ctx.query 等读取）
         if (this._currentConv === convId) { this.history = history; this.round = round; }
         this._persistConversations();
+        // 记忆溯源回推：本次任务实际注入过哪些记忆
+        if (this._usedMemory && this._usedMemory.length) {
+          this.emit({ type: "memory.recall", entries: this._usedMemory.slice(0, 12), convId });
+          for (const u of this._usedMemory) { try { this.memory.touch(u.id); } catch (e) {} }
+        }
         this.state(false);
         this.emit({ type: "agent.done", round, convId });
       }
@@ -2232,6 +2521,42 @@ ${taskSummary}
 
     this.runningConvs.delete(convId);
     delete this._convAborts[convId];
+
+    /* Goal 服务端续跑：目标 / 轮次预算 / 停滞判定全部放在服务端。
+       旧实现是浏览器监听 agent.done 自续跑——刷新页面、切窗口、断网都会让长任务静默停住，
+       而且用户看到的"Goal 模式"其实从没告诉过后端自己设了什么目标。 */
+    if (!this._abort && this._goal) {
+      const st = (this._goalState = this._goalState || {});
+      const g = (st[convId] = st[convId] || { turns: 0, stall: 0, lastSig: "" });
+      const plan = this.plan && this.plan.getActive ? this.plan.getActive(convId) : null;
+      const pending = plan ? (plan.tasks || []).filter((t) => t.status !== "done" && t.status !== "skipped") : null;
+      const sig = (this.convChanges[convId] || []).map((c) => c.path + ":" + (c.add || 0) + ":" + (c.del || 0)).join("|");
+      if (sig === g.lastSig) g.stall++; else g.stall = 0;
+      g.lastSig = sig;
+      g.turns++;
+
+      let why = null;
+      if (plan && pending && pending.length === 0) why = null;                 // 计划全部完成 → 收口
+      else if (!plan && g.turns >= 2) why = null;                              // 一直没建计划 → 不无限追问
+      else if (g.turns > GOAL_MAX_TURNS) { why = null; this.emit({ type: "term.line", text: "[Goal] 已达轮次预算上限 " + GOAL_MAX_TURNS + "，自动停止。请检查目标是否过大需要拆分。", cls: "tl-warn" }); }
+      else if (g.stall >= GOAL_MAX_STALL) { why = null; this.emit({ type: "term.line", text: "[Goal] 连续 " + GOAL_MAX_STALL + " 轮没有任何改动或新结果，判定停滞并暂停。你可以补充信息后重新点「启动 Goal」。", cls: "tl-warn" }); }
+      else {
+        why = pending && pending.length
+          ? "仍有 " + pending.length + " 步未完成：" + pending.slice(0, 4).map((t) => t.text).join("；")
+          : "请先用 create_plan 把目标拆成可验收的步骤，再逐步执行";
+      }
+      if (why) {
+        this.emit({ type: "goal.continue", turn: g.turns, max: GOAL_MAX_TURNS, reason: why, convId });
+        this.emit({ type: "term.line", text: "[Goal] 第 " + g.turns + "/" + GOAL_MAX_TURNS + " 轮续跑：" + why.slice(0, 90), cls: "tl-info" });
+        setTimeout(() => {
+          this.handleChat("【Goal 自动续跑 · 第 " + g.turns + " 轮】目标：" + this._goal + "\n" + why + "\n继续自主推进，不要停下来问我；完成一步就用 update_plan 标记，全部完成后结束。", { convId });
+        }, 800);
+      } else if (g.turns > 1) {
+        this.emit({ type: "goal.settled", turns: g.turns, convId });
+        this.emit({ type: "term.line", text: "[Goal] 目标收口（共续跑 " + g.turns + " 轮）", cls: "tl-info" });
+        st[convId] = undefined;
+      }
+    }
   }
 }
 

@@ -44,7 +44,7 @@ function renderWidgetCard(body, lang) {
   const isSvg = /^\s*<svg[\s>]/i.test(body);
   const doc = "<!DOCTYPE html><html><head><meta charset='utf-8'><style>" + WG_CSS + "</style></head><body>" + body + WG_BRIDGE + "</body></html>";
   const srcdoc = doc.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-  const head = '<div class="wg-head"><span class="wg-title">' + (isSvg ? "📊 可视化 · SVG" : "🧩 可视化 · HTML") + "</span>" +
+  const head = '<div class="wg-head"><span class="wg-title">' + (isSvg ? "可视化 · SVG" : "可视化 · HTML") + "</span>" +
     '<span style="flex:1"></span>' +
     (isSvg
       ? '<button class="wg-btn" data-wg="' + id + '" data-act="svg" type="button">下载 SVG</button>' +

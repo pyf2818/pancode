@@ -26,15 +26,22 @@ const codeIndex = require("./code-index");
 const { SoulStore } = require("./soul-store");
 const { SkillStore } = require("./skill-store");
 const { MemoryStore } = require("./memory-store");
-const { ExpertStore } = require("./expert-store"); // W2 专家注册表
+const { histList: orchHistList, histGet: orchHistGet } = require("./orchestrator"); // 编排历史（服务端落盘）
+const { ExpertStore, parseExpertMd } = require("./expert-store"); // W2 专家注册表
+const rulesLib = require("./rules"); // T4 规则可视化管理：与 loadRules 同源
 const { AutomationStore, Scheduler } = require("./scheduler"); // W4 自动化任务
 const { PlanStore } = require("./plan-store");
 const { WorkflowStore } = require("./workflow-store");
 
 const { ProgressionStore } = require("./progression-store");
-const { computeProgression } = require("./progression");
+const { computeProgression, PATHS } = require("./progression");
 const auth = require("./auth");
 const VERSION = (() => { try { return require("../package.json").version; } catch (e) { return "2.3.0"; } })();
+/* 接口指纹：前端 public/app.js 里有一份同名常量，两边必须一起改。
+   用途是"后端进程比界面旧"的自检——express.static 每次从磁盘读 public/，所以刷新页面就拿到新界面，
+   但 /api/* 由启动时 require 的这份进程决定；只重启前端不重启服务时，新界面会去调旧进程里没有的接口，
+   用户看到的就是设置里整片「HTTP 404 加载失败」。 */
+const API_STAMP = process.env.PANCODE_API_STAMP || "2026.09.28.2";
 
 const cfg = configMod.load();
 
@@ -312,7 +319,17 @@ app.get("/api/audit", (req, res) => {
     res.json({ ok: true, date, lines: lines.slice(-limit) });
   } catch (e) { res.json({ ok: false, error: String(e) }); }
 });
-app.get("/api/health", (req, res) => res.json({ ok: true, name: "pancode", version: VERSION, workspace: WS_DIR, engine: configMod.publicInfo(cfg) }));
+/* 审计日志按天分文件：先让前端知道有哪些日期可查 */
+app.get("/api/audit/dates", (req, res) => {
+  try {
+    const dir = path.join(configMod.ROOT, ".pancode", "audit");
+    const dates = fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.log$/.test(f)).map((f) => f.slice(0, 10)).sort().reverse().slice(0, 60)
+      : [];
+    res.json({ ok: true, dates });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.get("/api/health", (req, res) => res.json({ ok: true, name: "pancode", version: VERSION, apiStamp: API_STAMP, workspace: WS_DIR, wsClients: clients.size, engine: configMod.publicInfo(cfg) }));
 app.get("/api/version", (req, res) => res.json({
   ok: true, name: "pancode", version: VERSION,
   features: ["repo_map", "search_symbol", "chat_history", "resizable_preview", "permissions", "attachments", "persona", "rules", "auto_memory"],
@@ -359,18 +376,18 @@ app.get("/api/auth/status", (req, res) => {
   const user = auth.verify(userToken);
   res.json({ ok: true, loggedIn: !!user, username: user ? user.username : null, hasUsers: auth.hasUsers() });
 });
-app.post("/api/auth/register", (req, res) => {
+app.post("/api/auth/register", async (req, res) => {
   const { username, password } = req.body || {};
-  const r = auth.register(String(username || "").trim(), String(password || ""));
-  res.json(r);
+  try { res.json(await auth.register(String(username || "").trim(), String(password || ""))); }
+  catch (e) { res.json({ ok: false, error: "注册失败：" + e.message }); }
 });
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body || {};
-  const r = auth.login(String(username || "").trim(), String(password || ""));
-  res.json(r);
+  try { res.json(await auth.login(String(username || "").trim(), String(password || ""))); }
+  catch (e) { res.json({ ok: false, error: "登录失败：" + e.message }); }
 });
 app.post("/api/auth/logout", (req, res) => {
-  const userToken = req.headers["x-user-token"];
+  const userToken = req.headers["x-user-token"] || req.query.userToken;
   auth.logout(userToken);
   res.json({ ok: true });
 });
@@ -495,8 +512,17 @@ app.get("/api/artifacts", (req, res) => {
 app.get("/api/git/status", async (req, res) => {
   try {
     if (!git) return res.json({ ok: true, available: false, branch: "", changes: [] });
-    res.json({ ok: true, available: git.available, branch: git.branch, changes: await git.changes() });
+    let remote = "";
+    try { remote = (await git.remotes())[0] || ""; } catch (e) {}
+    res.json({ ok: true, available: git.available, branch: git.branch, remote, changes: await git.changes() });
   } catch (e) { res.json({ ok: true, available: false, changes: [] }); }
+});
+app.post("/api/git/push", async (req, res) => {
+  try {
+    if (!git) return res.status(503).json({ ok: false, error: "Git 未就绪" });
+    const r = await git.push();
+    res.json(r);
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.post("/api/git/commit", async (req, res) => {
   try {
@@ -660,23 +686,98 @@ function listSubdirs(abs) {
   return out;
 }
 
-/* 代理拉取模型列表：服务端请求外部 API，避免前端 CORS 被拦截 */
-app.get("/api/models", async (req, res) => {
+/* 拉取模型列表的公共实现：规范化地址 → 请求 <base>/models → 归一化模型 ID。
+   失败时把「到底请求了哪个地址、返回了什么」原样带回。以前只说「网关返回 HTTP 404」，
+   用户不知道 404 出在自己刚填的地址上，以为还得额外架一个网关。 */
+async function listModels(baseURL, apiKey) {
+  const base = configMod.normalizeBaseURL(baseURL);
+  if (!base) return { ok: false, models: [], error: "还没填接口地址" };
+  let target;
+  try { target = new URL(base + "/models"); } catch (e) { return { ok: false, models: [], error: "接口地址不是合法 URL（要带 http:// 或 https://）：" + base }; }
+  if (target.protocol !== "http:" && target.protocol !== "https:") {
+    return { ok: false, models: [], error: "接口地址必须以 http:// 或 https:// 开头：" + base };
+  }
+  const tried = target.origin + target.pathname;   // 只回报到路径，绝不带上密钥
+  const headers = { "Accept": "application/json" };
+  if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
+  let r;
   try {
-    const baseURL = String(req.query.baseURL || cfg.llm.baseURL || "").replace(/\/+$/, "");
-    const apiKey = String(req.query.apiKey || cfg.llm.apiKey || "");
-    if (!baseURL) return res.status(400).json({ ok: false, error: "Base URL 不能为空" });
-    const url = baseURL.replace(/\/+$/, "") + "/models";
-    const headers = {};
-    if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
-    const r = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
-    const data = await r.json();
-    res.json(data);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    r = await fetch(target, { headers, signal: AbortSignal.timeout(20000) });
+  } catch (e) {
+    // fetch 失败时真正的错在 e.cause 上；e.name 只会给出没用的 "TypeError"
+    const c = (e && e.cause) || {};
+    const why = String(c.code || c.message || (e && e.message) || (e && e.name) || "未知错误");
+    return { ok: false, models: [], attempted: tried, error: /timeout|abort/i.test(why)
+      ? "连 " + tried + " 超时（20 秒）：地址不通或对方响应太慢"
+      : "连不上 " + tried + "：" + why };
+  }
+  if (!r.ok) {
+    const hint = r.status === 404 ? "——多半是地址少了 /v1 这类版本段，或多写了 /chat/completions"
+      : (r.status === 401 || r.status === 403) ? "——密钥不对或没有权限" : "";
+    return { ok: false, models: [], attempted: tried, error: tried + " 返回 HTTP " + r.status + hint };
+  }
+  const data = await r.json().catch(() => null);
+  const raw = Array.isArray(data && data.data) ? data.data : (Array.isArray(data && data.models) ? data.models : (Array.isArray(data) ? data : []));
+  const models = raw.map((m) => (typeof m === "string" ? m : (m && (m.id || m.name)))).filter(Boolean);
+  if (!models.length) return { ok: false, models: [], attempted: tried, error: tried + " 返回 200 但列表是空的：这个服务可能不提供 /models，直接填模型 ID 就行" };
+  return { ok: true, models: [...new Set(models)].sort(), attempted: tried };
+}
+
+/* 代理拉取模型列表：服务端请求外部 API，避免前端 CORS 被拦截。
+   GET 只认服务端已保存的 baseURL/apiKey；POST 可带表单当前值（见下）。返回 { ok, models, attempted, error }。 */
+app.get("/api/models", async (req, res) => {
+  try { res.json(await listModels(cfg.llm.baseURL, cfg.llm.apiKey)); }
+  catch (e) { res.json({ ok: false, error: e.message, models: [] }); }
 });
 
-app.get("/api/settings", (req, res) => res.json(configMod.publicInfo(cfg)));
-app.post("/api/settings", (req, res) => {
+/* 用「表单里正填着的」地址和密钥拉取：设置里刚填完就点「拉取模型」，不必先保存，
+   也不受保存落盘时序影响。密钥只走请求体——绝不进 URL（URL 会留在访问日志与历史记录里），
+   用完即弃：不写进配置、不落盘、不回显。 */
+app.post("/api/models", async (req, res) => {
+  const p = req.body || {};
+  const baseURL = String(p.baseURL || "").trim() || cfg.llm.baseURL || "";
+  const apiKey = String(p.apiKey || "").trim() || cfg.llm.apiKey || "";
+  try { res.json(await listModels(baseURL, apiKey)); }
+  catch (e) { res.json({ ok: false, error: e.message, models: [] }); }
+});
+
+/* ---------- 多份模型配置（profile）：接口地址 + 模型名存配置，密钥各自存本地 .env ---------- */
+app.get("/api/llm/profiles", (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      profiles: (cfg.llmProfiles || []).map(configMod.profilePublic),
+      active: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, hasKey: !!cfg.llm.apiKey,
+        keyTail: cfg.llm.apiKey ? "…" + cfg.llm.apiKey.slice(-4) : "",
+        contextWindow: cfg.llm.contextWindow, maxToolRounds: cfg.llm.maxToolRounds },
+    });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.post("/api/llm/profiles", (req, res) => {
+  try {
+    const p = configMod.upsertLlmProfile(cfg, req.body || {});
+    if (!p) return res.status(400).json({ ok: false, error: "配置需要名称与接口地址" });
+    buildEngine();
+    res.json({ ok: true, profile: p, profiles: (cfg.llmProfiles || []).map(configMod.profilePublic) });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.post("/api/llm/profiles/:id/apply", (req, res) => {
+  try {
+    const r = configMod.applyLlmProfile(cfg, req.params.id);
+    if (!r) return res.status(404).json({ ok: false, error: "配置不存在" });
+    buildEngine();
+    broadcast({ type: "engine.info", engine: configMod.publicInfo(cfg) });
+    res.json({ ok: true, ...r, engine: configMod.publicInfo(cfg) });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.delete("/api/llm/profiles/:id", (req, res) => {
+  try {
+    configMod.removeLlmProfile(cfg, req.params.id);
+    res.json({ ok: true, profiles: (cfg.llmProfiles || []).map(configMod.profilePublic) });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+app.get("/api/settings", (req, res) => res.json(configMod.publicInfo(cfg)));app.post("/api/settings", (req, res) => {
   try {
     configMod.saveLlm(cfg, req.body || {});
     buildEngine();
@@ -688,16 +789,22 @@ app.post("/api/settings", (req, res) => {
 app.post("/api/settings/test", async (req, res) => {
   const p = req.body || {};
   const testCfg = {
-    baseURL: p.baseURL || cfg.llm.baseURL,
-    apiKey: p.apiKey || cfg.llm.apiKey,
-    model: p.model || cfg.llm.model,
+    baseURL: String(p.baseURL || "").trim() || cfg.llm.baseURL,
+    apiKey: String(p.apiKey || "").trim() || cfg.llm.apiKey,
+    model: String(p.model || "").trim() || cfg.llm.model,
     temperature: 0,
   };
-  if (!testCfg.baseURL || !testCfg.apiKey) return res.json({ ok: false, error: "Base URL 与 API Key 不能为空" });
+  // 密钥不是必填：本地 Ollama / LM Studio 这类服务压根不校验。以前缺 Key 直接拒测，
+  // 用户对着本机服务看到"不能为空"，只会更确信自己少配了个网关。
+  if (!testCfg.baseURL) return res.json({ ok: false, error: "还没填接口地址（形如 https://…/v1 或 http://127.0.0.1:11434）" });
+  if (!testCfg.model) return res.json({ ok: false, error: "还没填模型名：点「拉取模型」选一个，或直接输入模型 ID" });
   try {
     const r = await ping(testCfg);
     res.json({ ok: true, sample: r.sample });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    // 把实际请求的地址带上（chatStream 挂在 err.endpoint 上）：设置面板里"不通"必须说清不通在哪
+    res.json({ ok: false, error: String(e.message || e) + (e.endpoint ? "（请求 " + e.endpoint + "）" : "") });
+  }
 });
 
 /* ---------- 内联代码补全（Tab completion）---------- */
@@ -809,34 +916,212 @@ app.post("/api/mcp", (req, res) => {
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
-/* ---------- Phase 2：长期记忆 API ---------- */
+/* ---------- T3：设置工作台聚合 API ----------
+   一次 GET 拿到全部可配置面（模型 / Agent 行为 / 权限 / MCP / Embedding / 资产计数），
+   避免前端为每一页各拉一次；写操作仍按段落分派到各自已有的持久化函数，不散布第二套写入口。 */
+function configSnapshot() {
+  const memCount = _engineAssets.memory ? _engineAssets.memory.size : 0;
+  const ruleCount = collectRuleRecords([]).length;
+  return {
+    engine: configMod.publicInfo(cfg),
+    llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow },
+    agent: configMod.agentSettings(cfg),
+    embedding: configMod.embeddingInfo(cfg),
+    mcp: { configured: (cfg.mcp && Array.isArray(cfg.mcp.servers)) ? cfg.mcp.servers : [], running: mcpManager.statusList() },
+    workspace: { dir: WS_DIR, recent: cfg.recentWorkspaces || [] },
+    assets: { memory: memCount, rules: ruleCount, skills: engine && engine.skills ? engine.skills.stats : null, experts: expertRecords().length },
+    paths: { root: configMod.ROOT, configFile: configMod.CONFIG_PATH, rulesWorkspace: ".pancode/rules（工作区内，Agent 实际读取处）", rulesApp: configMod.rulesDir() },
+    version: VERSION,
+    features: ["repo_map", "search_symbol", "permissions", "persona", "rules", "auto_memory", "skills", "experts", "sediment", "orchestration", "risk_scan", "mcp", "automation", "progression"],
+  };
+}
+app.get("/api/config", (req, res) => {
+  try { res.json(Object.assign({ ok: true }, configSnapshot())); }
+  catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/config", (req, res) => {
+  try {
+    const { section, patch } = req.body || {};
+    const p = patch || {};
+    let out = {};
+    if (section === "llm") { configMod.saveLlm(cfg, p); buildEngine(); out = { engine: configMod.publicInfo(cfg) }; broadcast({ type: "engine.info", engine: out.engine }); }
+    else if (section === "agent") { configMod.saveAgentSettings(cfg, p); out = { agent: configMod.agentSettings(cfg) }; broadcast({ type: "agent.settings", agent: out.agent }); }
+    else if (section === "embedding") { configMod.saveEmbedding(cfg, p); out = { embedding: configMod.embeddingInfo(cfg) }; }
+    else if (section === "mcp") {
+      if (!Array.isArray(p.servers)) return res.json({ ok: false, error: "servers 必须是数组" });
+      configMod.saveMcpServers(cfg, { servers: p.servers });
+      mcpManager.sync();
+      out = { mcp: { configured: cfg.mcp.servers, running: mcpManager.statusList() } };
+    }
+    else return res.json({ ok: false, error: "未知设置分组：" + section });
+    res.json(Object.assign({ ok: true, section }, out));
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 导出 / 导入：密钥永不进出（导出里没有，导入时即使带了也拒绝），只搬可共享的行为配置 */
+app.get("/api/config/export", (req, res) => {
+  try {
+    const dump = {
+      _kind: "pancode-config", _version: VERSION, _exportedAt: new Date().toISOString(),
+      llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow },
+      agent: configMod.agentSettings(cfg),
+      embedding: { endpoint: cfg.embedding.endpoint, model: cfg.embedding.model, dim: cfg.embedding.dim },
+      mcp: { servers: (cfg.mcp && cfg.mcp.servers) || [] },
+    };
+    res.json({ ok: true, filename: "pancode-config-" + new Date().toISOString().slice(0, 10) + ".json", json: JSON.stringify(dump, null, 2), note: "导出内容不含任何 API Key" });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/config/import", (req, res) => {
+  try {
+    let d = req.body && req.body.json;
+    if (typeof d === "string") { try { d = JSON.parse(d); } catch (e) { return res.json({ ok: false, error: "不是合法 JSON" }); } }
+    if (!d || typeof d !== "object") return res.json({ ok: false, error: "缺少配置内容" });
+    if (d._kind && d._kind !== "pancode-config") return res.json({ ok: false, error: "这不是 pancode 的配置文件（_kind=" + d._kind + "）" });
+    const applied = [], skipped = [];
+    const dropped = (o) => { const c = Object.assign({}, o); delete c.apiKey; delete c.apikey; delete c.key; return c; };
+    if (d.llm && typeof d.llm === "object") {
+      if (d.llm.apiKey) skipped.push("llm.apiKey（密钥不通过导入写入，请在模型设置里手动填）");
+      configMod.saveLlm(cfg, dropped(d.llm)); applied.push("llm");
+    }
+    if (d.agent && typeof d.agent === "object") { configMod.saveAgentSettings(cfg, d.agent); applied.push("agent"); }
+    if (d.embedding && typeof d.embedding === "object") {
+      if (d.embedding.apiKey) skipped.push("embedding.apiKey（同上，需手动填）");
+      configMod.saveEmbedding(cfg, dropped(d.embedding)); applied.push("embedding");
+    }
+    if (d.mcp && Array.isArray(d.mcp.servers)) { configMod.saveMcpServers(cfg, { servers: d.mcp.servers }); mcpManager.sync(); applied.push("mcp"); }
+    buildEngine();
+    res.json({ ok: true, applied, skipped, snapshot: configSnapshot() });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+/* ---------- Phase 2：长期记忆 API（T4：可视化管理所需的全量读过滤 + 治理动作） ---------- */
+const MEM_TYPES = ["preference", "lesson", "pattern", "decision", "error", "skill"];
+
+function memScopeStore(scope) {
+  return scope === "user" ? _engineAssets.userMemory : _engineAssets.memory;
+}
+/* 把内部衰减权重翻成面板看得懂的话：强度档 / 距归档天数 / 是否快被遗忘 */
+function enrichMem(e) {
+  let w = 0;
+  try { w = MemoryStore.strength(e); } catch (err) { w = 0; }
+  const anchor = e.lastAccessAt || e.ts || 0;
+  const ageDays = Math.floor((Date.now() - anchor) / 86400000);
+  let ttl = 90;
+  try { ttl = MemoryStore.ttlOf(e.type); } catch (err) {}
+  const sticky = !!e.sticky;
+  return Object.assign({}, e, {
+    strength: Math.round(w * 10) / 10,
+    tier: w >= 4 ? "high" : w >= 1 ? "mid" : "low",
+    ageDays,
+    ttlDays: ttl,
+    sticky,
+    injected: !e.archived && w >= 1,
+    risk: !sticky && w < 2.5 ? (w < 0.5 ? "drop" : "archive") : "keep",
+  });
+}
 app.get("/api/memory", (req, res) => {
   try {
     const q = String(req.query.q || "");
-    const type = req.query.type || null;
-    const results = q ? engine.memory.search(q, { type, limit: 20 }) : engine.memory.list({ type, limit: 30 });
-    res.json({ ok: true, entries: results, total: engine.memory.size });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+    const opts = {
+      type: req.query.type || null,
+      source: req.query.source || null,
+      limit: Math.min(500, Number(req.query.limit) || 200),
+    };
+    const arch = String(req.query.archived || "visible");
+    const wantArch = arch === "all" ? "all" : arch === "only" ? true : false;
+    const scope = req.query.scope === "user" ? "user" : "project";
+    const store = memScopeStore(scope);
+    if (!store) return res.json({ ok: false, error: "记忆库未就绪" });
+    const keep = (e) => wantArch === "all" || !!e.archived === !!wantArch;
+    let raw;
+    if (q && wantArch !== true) {
+      // hitsOnly：不传的话 search() 会把"零命中"的条目按衰减强度补位返回，搜索结果里混进无关记忆
+      raw = store.search(q, { type: opts.type, limit: 500, hitsOnly: true }).filter(keep).slice(0, opts.limit);
+    } else {
+      // 归档视图 / 空检索：走 list 再按关键词粗筛（search 对归档条目已隐身）
+      const kw = q.toLowerCase();
+      raw = store.list(Object.assign({}, opts, { archived: wantArch, limit: 500 }))
+        .filter((e) => !kw || (e.topic + " " + e.content).toLowerCase().includes(kw))
+        .slice(0, opts.limit);
+    }
+    const entries = raw.map(enrichMem);
+    const all = store.list({ archived: "all", limit: 500 }).map(enrichMem);
+    const byType = {};
+    for (const t of MEM_TYPES) byType[t] = all.filter((e) => e.type === t).length;
+    res.json({
+      ok: true, entries, query: q, scope,
+      total: store.size,
+      stats: {
+        total: all.length,
+        byType,
+        archived: all.filter((e) => e.archived).length,
+        sticky: all.filter((e) => e.sticky).length,
+        injected: all.filter((e) => e.injected).length,
+        atRisk: all.filter((e) => e.risk !== "keep").length,
+        avgStrength: Math.round((all.reduce((n, e) => n + e.strength, 0) / (all.length || 1)) * 10) / 10,
+      },
+      types: MEM_TYPES,
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 最近一轮真正注入进上下文的是哪几条（"存了几百条但没人知道用没用上"的解药） */
+app.get("/api/memory/used", (req, res) => {
+  try {
+    const used = (engine && engine._usedMemory) || [];
+    res.json({ ok: true, entries: used.map((e) => ({ id: e.id, type: e.type, topic: e.topic, content: e.content, scope: e.scope || "project" })) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 app.post("/api/memory", (req, res) => {
   try {
-    const { type, topic, content } = req.body || {};
+    const { type, topic, content, scope, valueScore, sticky } = req.body || {};
     if (!content) return res.status(400).json({ ok: false, error: "内容不能为空" });
-    const entry = engine.memory.add(type || "lesson", topic || "", content);
-    res.json({ ok: true, entry });
+    const store = memScopeStore(scope);
+    if (!store) return res.status(400).json({ ok: false, error: "记忆库不可用" });
+    const meta = { source: "manual" };
+    if (valueScore != null) meta.valueScore = Math.max(1, Math.min(5, Number(valueScore) || 2));
+    if (sticky) meta.sticky = true;
+    const entry = store.add(MEM_TYPES.includes(type) ? type : "lesson", topic || "", content, meta);
+    if (!entry) return res.status(400).json({ ok: false, error: "内容不能为空" });
+    res.json({ ok: true, entry: enrichMem(entry) });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+/* 治理：主动裁剪（低强度归档/删除）与清除归档 */
+app.post("/api/memory/prune", (req, res) => {
+  try {
+    const store = memScopeStore(req.body && req.body.scope);
+    const r = store.prune();
+    res.json({ ok: true, ...r, total: store.size });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/memory/purge", (req, res) => {
+  try {
+    const store = memScopeStore(req.body && req.body.scope);
+    const removed = store.purgeArchived();
+    res.json({ ok: true, removed, total: store.size });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 归档 / 恢复：归档 = 不注入不检索但不删（可逆） */
+app.post("/api/memory/:id/archive", (req, res) => {
+  try {
+    const store = memScopeStore(req.body && req.body.scope);
+    const archived = req.body ? req.body.archived !== false : true;
+    const entry = store.update(req.params.id, { archived });
+    if (!entry) return res.status(404).json({ ok: false, error: "条目不存在" });
+    res.json({ ok: true, entry: enrichMem(entry) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.delete("/api/memory/:id", (req, res) => {
   try {
-    const ok = engine.memory.remove(req.params.id);
+    const store = memScopeStore(req.query && req.query.scope);
+    const ok = store.remove(req.params.id);
     res.json({ ok });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.put("/api/memory/:id", (req, res) => {
   try {
-    const entry = engine.memory.update(req.params.id, req.body || {});
+    const store = memScopeStore(req.body && req.body.scope);
+    const entry = store.update(req.params.id, req.body || {});
     if (!entry) return res.status(404).json({ ok: false, error: "条目不存在" });
-    res.json({ ok: true, entry });
+    res.json({ ok: true, entry: enrichMem(entry) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
@@ -850,10 +1135,116 @@ app.get("/api/skills", (req, res) => {
 });
 
 /* ---------- W2：专家（Experts）API ---------- */
+function expertRecords() {
+  const reg = _engineAssets.experts || ExpertStore.builtinOnly();
+  const active = (cfg.persona && cfg.persona.active) || "default";
+  const toolNames = (() => {
+    try { return new Set(LlmAgent.toolNames()); }
+    catch (e) { return null; }
+  })();
+  return reg.list().map((e) => Object.assign({}, e, {
+    builtin: e.source === "builtin",
+    editable: e.source !== "builtin",
+    active: e.id === active || e.name === active,
+    unknownTools: toolNames && Array.isArray(e.tool_whitelist)
+      ? e.tool_whitelist.filter((t) => t !== "*" && !toolNames.has(t)) : [],
+  }));
+}
 app.get("/api/experts", (req, res) => {
   try {
-    res.json({ ok: true, experts: engine.experts.list(), active: (cfg.persona && cfg.persona.active) || "default" });
+    res.json({
+      ok: true,
+      experts: expertRecords(),
+      active: (cfg.persona && cfg.persona.active) || "default",
+      customPrompt: (cfg.persona && cfg.persona.systemPrompt) || "",
+      scopes: { project: !!(WS_DIR), user: true },
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+/* 生效预览：与 personaText() 同源，面板里看到的就是模型读到的 */
+app.get("/api/experts/preview", (req, res) => {
+  try {
+    const reg = _engineAssets.experts || ExpertStore.builtinOnly();
+    const probeCfg = { persona: Object.assign({}, cfg.persona, { active: req.query.id || (cfg.persona && cfg.persona.active) }) };
+    const shim = { experts: reg, cfg: probeCfg };
+    const text = req.query.custom != null
+      ? (String(req.query.custom).trim() ? "【人格设定】\n" + String(req.query.custom).trim() : "")
+      : LlmAgent.prototype.personaText.call(shim, req.query.sample || "");
+    res.json({ ok: true, preview: text, chars: text.length });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 保存专家包（内置只读：改法是在 project/user 层放同名包覆盖） */
+app.post("/api/experts", (req, res) => {
+  try {
+    const reg = _engineAssets.experts;
+    if (!reg) return res.json({ ok: false, error: "专家注册表未就绪" });
+    const b = req.body || {};
+    const r = reg.save({
+      id: b.id, name: b.name, description: b.description,
+      role: b.role, methodology: b.methodology,
+      tool_whitelist: Array.isArray(b.tool_whitelist) ? b.tool_whitelist.filter(Boolean).slice(0, 60) : [],
+    }, b.scope === "user" ? "user" : "project");
+    if (!r.ok) return res.json(r);
+    res.json(Object.assign({ ok: true, experts: expertRecords() }, r));
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.put("/api/experts/:id", (req, res) => {
+  try {
+    const reg = _engineAssets.experts;
+    const cur = reg && reg.byIdOrName(req.params.id);
+    if (!cur) return res.json({ ok: false, error: "专家不存在" });
+    if (cur.source === "builtin") return res.json({ ok: false, error: "内置专家不可直接改，另存为项目级同名包即可覆盖" });
+    const b = req.body || {};
+    const r = reg.save({
+      id: cur.id, name: b.name != null ? b.name : cur.name,
+      description: b.description != null ? b.description : cur.description,
+      role: b.role != null ? b.role : cur.role,
+      methodology: b.methodology != null ? b.methodology : cur.methodology,
+      tool_whitelist: b.tool_whitelist != null ? (Array.isArray(b.tool_whitelist) ? b.tool_whitelist.filter(Boolean) : []) : cur.tool_whitelist,
+    }, b.scope || (cur.source === "user" ? "user" : "project"));
+    if (!r.ok) return res.json(r);
+    res.json(Object.assign({ ok: true, experts: expertRecords() }, r));
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.delete("/api/experts/:id", (req, res) => {
+  try {
+    const reg = _engineAssets.experts;
+    const r = reg ? reg.remove(req.params.id) : { ok: false, error: "专家注册表未就绪" };
+    res.json(Object.assign({ experts: expertRecords() }, r));
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 切换当前角色：active=专家 id / "custom"（配 systemPrompt）/ "default"（无角色层） */
+app.post("/api/experts/active", (req, res) => {
+  try {
+    const id = String((req.body || {}).active || "default");
+    const reg = _engineAssets.experts || ExpertStore.builtinOnly();
+    if (id !== "default" && id !== "custom" && !reg.byIdOrName(id))
+      return res.json({ ok: false, error: "专家不存在：" + id });
+    cfg.persona = cfg.persona || {};
+    cfg.persona.active = id;
+    if (req.body && req.body.systemPrompt != null) cfg.persona.systemPrompt = String(req.body.systemPrompt).slice(0, 4000);
+    try { configMod.saveAgentSettings(cfg, { persona: cfg.persona }); } catch (e) { return res.json({ ok: false, error: "已切换但未能持久化：" + e.message }); }
+    res.json({ ok: true, active: id, experts: expertRecords(), customPrompt: cfg.persona.systemPrompt || "" });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.get("/api/experts/export/:id", (req, res) => {
+  try {
+    const reg = _engineAssets.experts || ExpertStore.builtinOnly();
+    const e = reg.byIdOrName(req.params.id);
+    if (!e) return res.json({ ok: false, error: "专家不存在" });
+    res.json({ ok: true, id: e.id, markdown: ExpertStore.toMd(e) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/experts/import", (req, res) => {
+  try {
+    const md = String((req.body || {}).markdown || "");
+    if (!md.trim()) return res.json({ ok: false, error: "内容为空" });
+    const parsed = parseExpertMd(md, (req.body.name || "").trim(), "project");
+    if (!parsed) return res.json({ ok: false, error: "无法解析专家包：需要 --- frontmatter（含 name）与正文角色定位" });
+    const reg = _engineAssets.experts;
+    const r = reg.save(parsed, req.body.scope === "user" ? "user" : "project");
+    res.json(Object.assign({ experts: expertRecords() }, r));
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 /* ---------- W4：自动化任务（Automations）API ---------- */
@@ -915,6 +1306,81 @@ app.delete("/api/skills/:id", (req, res) => {
     const ok = engine.skills.remove(req.params.id);
     res.json({ ok });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+/* ---------- T4：技能资产可视化管理（启停 / 导出 / 导入 / 注入预览） ---------- */
+function skillRecords(q) {
+  const st = engine.skills;
+  const all = st.list({ limit: 500, search: q || undefined });
+  const bk = st.builtinWorkflows || [];
+  const rows = [...all, ...bk.map((s) => Object.assign({ builtin: true }, s))].map((s) => ({
+    id: s.id, name: s.name, description: s.description, trigger: s.trigger, tags: s.tags || [],
+    source: s.builtin ? "builtin" : s.source, scope: s.scope || (s.source === "auto" ? "project" : s.source === "user" ? "user" : "app"),
+    version: s.version, useCount: s.useCount || 0, ts: s.ts, disabled: !!s.disabled,
+    risk: s.risk_level || "OK", builtin: !!s.builtin || s.source === "workflow",
+    chars: (s.body || "").length, steps: Array.isArray(s.steps) ? s.steps.length : 0,
+  }));
+  return rows;
+}
+app.get("/api/skills/managed", (req, res) => {
+  try {
+    const rows = skillRecords(String(req.query.q || ""));
+    res.json({
+      ok: true, skills: rows,
+      counts: {
+        total: rows.length, on: rows.filter((r) => !r.disabled && !r.builtin).length,
+        off: rows.filter((r) => r.disabled).length, builtin: rows.filter((r) => r.builtin).length,
+        risky: rows.filter((r) => r.risk === "P0" || r.risk === "P1").length,
+      },
+      stats: engine.skills.stats,
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.get("/api/skills/content", (req, res) => {
+  try {
+    const s = engine.skills.getById(req.query.id) || engine.skills.findByName(req.query.name || "");
+    if (!s) return res.json({ ok: false, error: "技能不存在" });
+    res.json({ ok: true, skill: { id: s.id, name: s.name, description: s.description, trigger: s.trigger, tags: s.tags, version: s.version, body: s.body || "", steps: s.steps || [], risk: s.risk_level, disabled: !!s.disabled, source: s.source } });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/skills/:id/toggle", (req, res) => {
+  try {
+    const cur = engine.skills.getById(req.params.id);
+    if (!cur) return res.json({ ok: false, error: "技能不存在或为内置项（内置不可启停）" });
+    const next = req.body && req.body.disabled != null ? !!req.body.disabled : !cur.disabled;
+    engine.skills.update(req.params.id, { disabled: next });
+    res.json({ ok: true, disabled: next, skills: skillRecords("") });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.get("/api/skills/export/:id", (req, res) => {
+  try {
+    const r = engine.skills.exportMarkdown(req.params.id);
+    res.json(r ? { ok: true, ...r } : { ok: false, error: "技能不存在" });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/skills/import", (req, res) => {
+  try {
+    const md = String((req.body || {}).markdown || "");
+    if (!md.trim()) return res.json({ ok: false, error: "内容为空" });
+    const r = engine.skills.importMarkdown(md);
+    if (!r) return res.json({ ok: false, error: "无法解析：markdown 需要 --- frontmatter 且包含 name" });
+    if (r._auditRejected) return res.json({ ok: false, error: "安全审计判定为 " + r._auditRejected.level + "：" + (r._auditRejected.findings || []).join("；"), needForce: true });
+    if (r._duplicate) return res.json({ ok: false, error: "已存在同名技能「" + r.name + "」，如需替换请先删除", duplicate: true });
+    res.json({ ok: true, skill: r, risk: r.risk_level, skills: skillRecords("") });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 注入预览：这轮任务模型真正会看到哪几条技能目录 */
+app.get("/api/skills/preview", (req, res) => {
+  try {
+    const q = String(req.query.q || "");
+    const matched = q ? engine.skills.match(q, 5) : [];
+    res.json({
+      ok: true, query: q,
+      matched: matched.map((s) => ({ id: s.id, name: s.name, source: s.source })),
+      directory: engine.skills.formatForContext(matched),
+      disclosure: "只注入目录，正文由 use_skill 按需取回",
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 /* ---------- Phase 2：进化报告 API ---------- */
@@ -989,38 +1455,65 @@ app.get("/api/evolution/tree", (req, res) => {
 });
 
 /* ---------- 灵魂(Soul)读写 + 微调提案确认 ---------- */
+function soulInst() { return soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg))); }
 app.get("/api/soul", (req, res) => {
   try {
-    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
-    res.json({ ok: true, soul: ss.get() });
+    const soul = soulInst().get();
+    res.json({
+      ok: true, soul,
+      editable: { text: ["name", "vibe", "emoji"], lists: ["values", "boundaries", "principles"] },
+      pending: (soul.proposals || []).filter((p) => p.status === "pending").length,
+    });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 app.put("/api/soul", (req, res) => {
   try {
-    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
-    const updated = ss.update(req.body || {});
-    res.json({ ok: true, soul: updated });
+    res.json({ ok: true, soul: soulInst().update(req.body || {}) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+/* 一键回到出厂人格：清空自定义条目与提案历史 */
+app.post("/api/soul/reset", (req, res) => {
+  try { res.json({ ok: true, soul: soulInst().reset() }); }
+  catch (e) { res.json({ ok: false, error: e.message }); }
 });
 app.post("/api/soul/proposal", (req, res) => {
   try {
-    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
-    const p = ss.addProposal(req.body || {});
+    const p = soulInst().addProposal(req.body || {});
     if (!p) return res.status(400).json({ ok: false, error: "提案内容不能为空" });
     res.json({ ok: true, proposal: p });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.put("/api/soul/proposal/:id", (req, res) => {
   try {
-    const ss = soulStore || (soulStore = new SoulStore(configMod.soulPath(cfg)));
     const accept = req.query.accept !== "0" && req.query.accept !== "false";
-    const p = ss.resolveProposal(req.params.id, accept);
+    const p = soulInst().resolveProposal(req.params.id, accept);
     if (!p) return res.status(404).json({ ok: false, error: "提案不存在" });
-    res.json({ ok: true, proposal: p });
+    res.json({ ok: true, proposal: p, soul: soulInst().get() });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
+app.delete("/api/soul/proposal/:id", (req, res) => {
+  try { res.json({ ok: soulInst().removeProposal(req.params.id), soul: soulInst().get() }); }
+  catch (e) { res.json({ ok: false, error: e.message }); }
+});
 
-/* ---------- 进度：设定进化路线（持久化） ---------- */
+/* ---------- 进度：进化路线（读 + 设定） ---------- */
+app.get("/api/progression", (req, res) => {
+  try {
+    const ps = progressionStore || (progressionStore = new ProgressionStore(configMod.progressionPath(cfg)));
+    const st = engine.skills;
+    const prog = computeProgression({
+      soul: soulInst().get(),
+      memEntries: _engineAssets.memory ? _engineAssets.memory.list({ limit: 500, archived: "all" }) : [],
+      skills: st.list({ limit: 500 }),
+      builtin: st.builtinWorkflows || [],
+      path: ps.get().path,
+    });
+    res.json({
+      ok: true, path: ps.get().path, progression: prog,
+      paths: Object.keys(PATHS).map((k) => ({ id: k, name: PATHS[k].name, desc: PATHS[k].desc })),
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
 app.post("/api/progression", (req, res) => {
   try {
     const ps = progressionStore || (progressionStore = new ProgressionStore(configMod.progressionPath(cfg)));
@@ -1030,47 +1523,242 @@ app.post("/api/progression", (req, res) => {
 });
 
 /* ---------- 会话沉淀：把有效决策 / 约定沉淀为「项目规则」或「项目记忆」 ---------- */
-app.get("/api/sediment", (req, res) => {
+/* ---------- 编排历史（多 Agent 编排的服务端运行记录，可点开回放） ---------- */
+app.get("/api/orch/history", (req, res) => {
+  try { res.json({ ok: true, runs: orchHistList() }); }
+  catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.get("/api/orch/history/:id", (req, res) => {
   try {
-    const memFile = configMod.memoryPath(cfg);
-    let memory = "";
-    try { memory = fs.readFileSync(memFile, "utf8"); } catch (e) {}
-    const rd = configMod.rulesDir();
-    let rules = [];
-    try {
-      if (fs.existsSync(rd)) {
-        rules = fs.readdirSync(rd).filter((f) => /\.md$/i.test(f)).map((f) => {
-          let c = ""; try { c = fs.readFileSync(path.join(rd, f), "utf8"); } catch (e) {}
-          return { file: f, content: c.slice(0, 4000) };
-        });
-      }
-    } catch (e) {}
-    res.json({ ok: true, memory, rules });
+    const r = orchHistGet(req.params.id);
+    res.json(r ? { ok: true, run: r } : { ok: false, error: "记录不存在" });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
-app.post("/api/sediment", (req, res) => {
+
+/* 规则清单：工作区 .pancode/rules + ROOT 级历史遗留。与 Agent loadRules() 严格同源。 */
+function collectRuleRecords(touched) {
+  const out = [];
+  const cand = LlmAgent.RULE_CANDIDATES;
+  const seen = new Set();
+  const pushRec = (file, content, scope) => {
+    if (seen.has(file)) return;
+    // 应用级文件带 "app:/" 前缀只为区分来源，分类时先剥掉，展示时再放回去
+    const rec = rulesLib.describe(file.replace(/^app:\/?/, ""), content, scope, cand);
+    if (!rec) return;
+    seen.add(file);
+    rec.file = file;
+    const parsed = rulesLib.parseFrontmatter(content);
+    const act = rulesLib.activeFor(parsed.meta, touched);
+    // 应用级（数据根 .pancode/rules）历史遗留文件：loadRules() 不读它，面板不能谎称"生效"
+    rec.active = scope === "app" ? false : act.on;
+    rec.activeWhy = scope === "app" ? "应用级遗留目录，Agent 不读取（要生效请沉淀/新建到工作区 .pancode/rules）" : act.why;
+    out.push(rec);
+  };
+  let listed = [];
+  try { listed = files.list().map((x) => x.replace(/\\/g, "/")); } catch (e) {}
+  // files.list() 看不见点开头目录，规则目录必须另外枚举磁盘（与 loadRules 同一套枚举函数）
+  const dotFiles = [];
+  for (const rel of rulesLib.RULE_DIRS) {
+    try { dotFiles.push.apply(dotFiles, rulesLib.listRuleDir(files.dir, rel)); } catch (e) {}
+  }
+  for (const f of rulesLib.rootRuleFiles(files.dir, cand, listed)) dotFiles.push(f);
+  for (const f of listed) if (rulesLib.kindOf(f, cand)) {
+    let c = ""; try { c = files.read(f); } catch (e) {}
+    pushRec(f, c, "workspace");
+  }
+  for (const f of dotFiles) {
+    let c = ""; try { c = files.read(f); } catch (e) {}
+    pushRec(f, c, "workspace");
+  }
   try {
-    const { target, title, content } = req.body || {};
+    const rd = configMod.rulesDir();
+    if (fs.existsSync(rd)) {
+      for (const f of fs.readdirSync(rd).filter((x) => /\.md$/i.test(x))) {
+        let c = ""; try { c = fs.readFileSync(path.join(rd, f), "utf8"); } catch (e) {}
+        pushRec("app:/.pancode/rules/" + f, c, "app");
+      }
+    }
+  } catch (e) {}
+  out.sort((a, b) => a.order - b.order || String(a.file).localeCompare(String(b.file)));
+  return out;
+}
+
+/* 沉淀规则预览：沿用同一份收集逻辑 */
+function listSedimentRules() {
+  return collectRuleRecords([]).filter((r) => r.kind === "pancode" || r.kind === "root")
+    .map((r) => {
+      let c = "";
+      try { c = r.file.startsWith("app:/") ? fs.readFileSync(path.join(configMod.rulesDir(), path.posix.basename(r.file)), "utf8") : files.read(r.file); } catch (e) {}
+      return { file: r.file, content: String(c).slice(0, 4000), scope: r.scope };
+    });
+}
+
+/* ---------- T4：规则（Rules）可视化管理 CRUD ----------
+   只允许编辑工作区内的 .pancode/rules/*.md：AGENTS.md / CLAUDE.md 是跨工具共享的
+   约定文件，Cursor 规则库属于另一个产品，改它们等于替用户动了别的工具的资产。 */
+function rulePath(file) {
+  const f = String(file || "").replace(/\\/g, "/");
+  if (!f.startsWith(rulesLib.RULES_DIR + "/") || !/\.md$/i.test(f)) return null;
+  if (f.includes("..")) return null;
+  return f;
+}
+app.get("/api/rules", (req, res) => {
+  try {
+    const q = String(req.query.q || "");
+    let touched = [];
+    if (q) { try { touched = files.list().filter((x) => String(x).toLowerCase().includes(q.toLowerCase())).slice(0, 40); } catch (e) {} }
+    const rules = collectRuleRecords(touched);
+    res.json({
+      ok: true, rules,
+      counts: {
+        total: rules.length,
+        active: rules.filter((r) => r.active).length,
+        off: rules.filter((r) => !r.enabled).length,
+        conditional: rules.filter((r) => r.globs && r.globs.length).length,
+        editable: rules.filter((r) => r.editable).length,
+      },
+      budget: {
+        chars: rules.filter((r) => r.active).reduce((n, r) => n + r.chars + r.file.length + 24, 0),
+        max: 12000,
+      },
+      enabledGlob: !!(cfg.rules && cfg.rules.enabled),
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.get("/api/rules/content", (req, res) => {
+  try {
+    const f = String(req.query.file || "");
+    if (f.startsWith("app:/")) return res.json({ ok: false, error: "应用级规则为只读遗留文件，请直接在工作区 .pancode/rules 新建同名规则覆盖" });
+    const rel = rulePath(f);
+    if (!rel) return res.json({ ok: false, error: "非法规则路径" });
+    if (!files.exists(rel)) return res.json({ ok: false, error: "规则文件不存在" });
+    const raw = files.read(rel);
+    const parsed = rulesLib.parseFrontmatter(raw);
+    res.json({ ok: true, file: rel, raw, meta: parsed.meta, body: parsed.body });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/rules", (req, res) => {
+  try {
+    const b = req.body || {};
+    const body = String(b.content || b.body || "").trim();
+    if (!body) return res.json({ ok: false, error: "规则正文不能为空" });
+    const meta = {
+      title: String(b.title || "").trim().slice(0, 60),
+      description: String(b.description || "").trim().slice(0, 120),
+      enabled: b.enabled !== false,
+      always: !!b.always,
+      globs: Array.isArray(b.globs) ? b.globs.map((x) => String(x).trim()).filter(Boolean).slice(0, 20) : [],
+    };
+    const file = rulesLib.RULES_DIR + "/" + rulesLib.safeName(meta.title, b.file) + ".md";
+    if (files.exists(file) && !b.overwrite) return res.json({ ok: false, error: "已存在同名规则「" + meta.title + "」，请改名或选择覆盖" });
+    files.write(file, rulesLib.toMd(meta, body));
+    res.json({ ok: true, file, rules: collectRuleRecords([]) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.put("/api/rules", (req, res) => {
+  try {
+    const b = req.body || {};
+    const rel = rulePath(b.file);
+    if (!rel) return res.json({ ok: false, error: "只能编辑工作区 .pancode/rules 下的规则" });
+    if (!files.exists(rel)) return res.json({ ok: false, error: "规则文件不存在" });
+    const cur = rulesLib.parseFrontmatter(files.read(rel));
+    const meta = Object.assign({}, cur.meta, {
+      title: b.title != null ? String(b.title).trim().slice(0, 60) : cur.meta.title,
+      description: b.description != null ? String(b.description).trim().slice(0, 120) : cur.meta.description,
+      enabled: b.enabled != null ? !!b.enabled : cur.meta.enabled,
+      always: b.always != null ? !!b.always : cur.meta.always,
+      globs: b.globs != null ? (Array.isArray(b.globs) ? b.globs.map((x) => String(x).trim()).filter(Boolean).slice(0, 20) : []) : cur.meta.globs,
+    });
+    const body = b.content != null ? String(b.content).trim() : cur.body;
+    if (!body) return res.json({ ok: false, error: "规则正文不能为空" });
+    files.write(rel, rulesLib.toMd(meta, body));
+    res.json({ ok: true, file: rel, rules: collectRuleRecords([]) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.delete("/api/rules", (req, res) => {
+  try {
+    const rel = rulePath(req.body && req.body.file);
+    if (!rel) return res.json({ ok: false, error: "只能删除工作区 .pancode/rules 下的规则" });
+    if (!files.exists(rel)) return res.json({ ok: false, error: "规则文件不存在" });
+    files.remove(rel);
+    res.json({ ok: true, rules: collectRuleRecords([]) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 一键启停：只重写 frontmatter，正文一字不动 */
+app.post("/api/rules/toggle", (req, res) => {
+  try {
+    const rel = rulePath(req.body && req.body.file);
+    if (!rel) return res.json({ ok: false, error: "该规则不可编辑" });
+    if (!files.exists(rel)) return res.json({ ok: false, error: "规则文件不存在" });
+    const raw = files.read(rel);
+    const parsed = rulesLib.parseFrontmatter(raw);
+    const next = req.body.enabled != null ? !!req.body.enabled : !parsed.meta.enabled;
+    files.write(rel, rulesLib.toMd(Object.assign({}, parsed.meta, { enabled: next }), parsed.body));
+    res.json({ ok: true, enabled: next, rules: collectRuleRecords([]) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 生效预览：直接调真实的 loadRules，面板里看到的就是模型读到的 */
+app.get("/api/rules/preview", (req, res) => {
+  try {
+    const q = String(req.query.q || "");
+    let touched = [];
+    if (q) { try { touched = files.list().filter((x) => String(x).toLowerCase().includes(q.toLowerCase())).slice(0, 40); } catch (e) {} }
+    let text = "";
+    try { text = LlmAgent.prototype.loadRules.call({ files }, touched); }
+    catch (e) { return res.json({ ok: false, error: "预览失败：" + e.message }); }
+    res.json({ ok: true, preview: text, chars: text.length, max: 12000, touched: touched.length, query: q });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+app.get("/api/sediment", (req, res) => {
+  try {
+    // 规则：Agent 的 loadRules() 读的是「工作区内」.pancode/rules/*.md，预览必须同源
+    const rules = listSedimentRules();
+    const mem = (_engineAssets.memory ? _engineAssets.memory.list({ limit: 200 }) : [])
+      .filter((e) => e.source === "sediment" || e.sticky)
+      .map((e) => ({ id: e.id, type: e.type, topic: e.topic, content: e.content, ts: e.ts }));
+    res.json({ ok: true, rules, memory: mem, counts: { rules: rules.length, memory: mem.length, total: _engineAssets.memory ? _engineAssets.memory.size : 0 } });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/sediment", async (req, res) => {
+  try {
+    const { target, title, content, scope } = req.body || {};
     if (!content || !String(content).trim()) return res.status(400).json({ ok: false, error: "沉淀内容不能为空" });
     const stamp = new Date().toISOString().slice(0, 10);
+    const topic = (title || "沉淀").toString().trim().slice(0, 60);
+    const text = String(content).trim().slice(0, 4000);
     if (target === "rule") {
-      const rd = configMod.rulesDir();
-      fs.mkdirSync(rd, { recursive: true });
-      const file = path.join(rd, "user-rules.md");
-      const head = "## " + (title || "沉淀规则") + "（" + stamp + "）\n\n";
-      const prev = fs.existsSync(file)
-        ? fs.readFileSync(file, "utf8")
-        : "# 用户沉淀的规则\n\n> 由「沉淀」入口写入，每次对话强制注入系统提示词。\n\n";
-      fs.writeFileSync(file, prev + head + String(content).trim() + "\n\n", "utf8");
-    } else {
-      const memFile = configMod.memoryPath(cfg);
-      fs.mkdirSync(path.dirname(memFile), { recursive: true });
-      const prev = fs.existsSync(memFile) ? fs.readFileSync(memFile, "utf8") : "";
-      const line = "- **" + (title || "沉淀") + "**（" + stamp + "）：" + String(content).trim() + "\n";
-      fs.writeFileSync(memFile, (prev && !prev.endsWith("\n") ? prev + "\n" : prev) + line, "utf8");
+      const rel = ".pancode/rules/sediment-" + stamp + ".md";
+      let prev = "";
+      try { if (files.exists(rel)) prev = files.read(rel); } catch (e) {}
+      const head = prev ? "" : "# 沉淀规则\n\n> 由「沉淀」入口写入。Agent 每次对话强制读取本目录并遵循。\n\n";
+      files.write(rel, prev + head + "## " + topic + "（" + stamp + "）\n\n" + text + "\n\n");
+      return res.json({ ok: true, target, file: rel });
     }
-    res.json({ ok: true, target });
+    // 记忆：写入结构化 MemoryStore（sticky + 高价值，免于遗忘曲线裁剪）
+    const store = target === "user" ? _engineAssets.userMemory : _engineAssets.memory;
+    if (!store) return res.status(500).json({ ok: false, error: "记忆库未就绪" });
+    const type = ["preference", "lesson", "pattern", "decision", "error", "skill"].includes(scope) ? scope : "decision";
+    const e = store.add(type, topic, text, { source: "sediment", valueScore: 5, sticky: true });
+    res.json({ ok: true, target: target || "memory", id: e && e.id });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+/* 自动提炼：把本次会话交给 LLM，产出「值得沉淀」的候选清单，用户勾选后再落库 */
+app.post("/api/sediment/distill", async (req, res) => {
+  try {
+    const msgs = (req.body && req.body.messages) || [];
+    if (msgs.length < 2) return res.json({ ok: false, error: "会话内容太少，暂无可提炼" });
+    const transcript = msgs.slice(-40).map((m) => (m.role === "user" ? "用户" : "Agent") + ": " + String(typeof m.content === "string" ? m.content : JSON.stringify(m.content) || "").slice(0, 600)).join("\n").slice(0, 16000);
+    const { chatStream } = require("./llm");
+    const r = await chatStream(cfg.llm, [
+      { role: "system", content: '你是记忆蒸馏器。从对话中挑出「未来同类任务真的会用上」的长期资产，最多 5 条。只输出 JSON 数组，每项形如 {"target":"rule|memory","scope":"preference|lesson|decision|pattern","title":"≤20字","content":"≤200字，陈述句，不含对话指代"}。rule=必须遵守的约定；memory=经验参考。不要沉淀一次性闲聊、不要复述任务过程。' },
+      { role: "user", content: transcript },
+    ], null, null);
+    const raw = (r.content || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "");
+    let items = [];
+    try { items = JSON.parse(raw); } catch (e) { const m = raw.match(/\[[\s\S]*\]/); if (m) { try { items = JSON.parse(m[0]); } catch (_e) {} } }
+    res.json({ ok: true, items: (Array.isArray(items) ? items : []).slice(0, 5).filter((x) => x && x.content) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 /* ---------- 轻量代码向量索引 REST ---------- */
@@ -1127,9 +1815,14 @@ wss.on("connection", (ws) => {
   // 这样 /api/settings 热更新（buildEngine 重建引擎缓存）后旧连接立即用上新引擎。
   const uKey = wsUserKey(ws);
   ws._userKey = uKey;
+  ws._alive = true;                    // 心跳存活标记，见文件底部 wsHeartbeat
+  ws.on("pong", () => { ws._alive = true; });
+  // 缺省无 error 监听时，ws 抛出的连接错误会成为未处理事件（靠全局兜底吞掉，连接却残留在集合里）
+  ws.on("error", () => clients.delete(ws));
   helloPayload(ensureUserEngine(uKey)).then((h) => { if (ws.readyState === 1) ws.send(JSON.stringify(h)); });
   ws.on("close", () => clients.delete(ws));
   ws.on("message", (raw) => {
+    ws._alive = true;                  // 客户端有来流即证明链路可用
     let m;
     try { m = JSON.parse(raw.toString()); } catch (e) { return; }
     const uEng = ensureUserEngine(ws._userKey || "anon");   // 每条消息按 userKey 查表（Map.get，无分配开销）
@@ -1145,10 +1838,60 @@ wss.on("connection", (ws) => {
       /* 前端主动查询上下文实测水位（页面加载 / 会话切换 / 收到回答后调用） */
       case "ctx.query": {
         try {
-          const used = (uEng && typeof uEng._estTokens === "function" && Array.isArray(uEng.history))
-            ? uEng._estTokens(uEng.history) : 0;
-          ws.send(JSON.stringify({ type: "context.usage", used, budget: (cfg.context || {}).budgetTokens || 1000000 }));
+          // 与 compactHistory 用同一套预算口径，否则前端进度条按 1M 分母显示、与服务端
+          // 实际触发压缩的阈值（min(budgetTokens, 模型窗口×0.9)）永远对不上。
+          const budget = uEng && uEng._ctxBudget
+            ? Math.min((cfg.context || {}).budgetTokens || Infinity, Math.round(uEng._ctxBudget() * 0.9))
+            : ((cfg.context || {}).budgetTokens || 1000000);
+          const used = (uEng && typeof uEng._ctxUsed === "function" && Array.isArray(uEng.history))
+            ? uEng._ctxUsed(uEng.history) : 0;
+          ws.send(JSON.stringify({ type: "context.usage", used, budget, est: !(uEng && uEng._lastPrompt) }));
         } catch (e) { /* 引擎未就绪时静默 */ }
+        break;
+      }
+
+      /* Goal：前端只负责「说要设什么目标」，设定与续跑预算全部落在服务端，
+         这样刷新页面 / 断线重连后 Goal 仍然继续。不走 execTool，避免被 Ask 模式拦截。 */
+      case "goal.set": {
+        if (!uEng) break;
+        const g = typeof m.goal === "string" ? m.goal.trim().slice(0, 2000) : "";
+        const cid = m.convId || uEng._currentConv || "default";
+        uEng._goal = g || null;
+        uEng._saveGoal();
+        uEng._goalState = uEng._goalState || {};
+        uEng._goalState[cid] = { turns: 0, stall: 0, lastSig: "" };
+        broadcast({ type: "goal.set", goal: g || null, convId: cid });
+        if (g && !uEng.runningConvs.has(cid)) {
+          uEng.handleChat("【Goal】请围绕以下目标自主推进直到完成：\n" + g + "\n先用 create_plan 拆解为可验收步骤，逐步执行并验证，全部完成后结束。", { convId: cid });
+        }
+        break;
+      }
+      case "goal.clear": {
+        if (!uEng) break;
+        uEng._goal = null; uEng._saveGoal();
+        if (uEng._goalState) uEng._goalState[m.convId || uEng._currentConv] = undefined;
+        broadcast({ type: "goal.set", goal: null, convId: m.convId || uEng._currentConv });
+        break;
+      }
+
+      /* /compact：用户主动压缩当前会话上下文（不等水位线到 80%） */
+      case "compact.now": {
+        if (!uEng || typeof uEng.compactHistory !== "function") break;
+        (async () => {
+          try {
+            const before = Array.isArray(uEng.history) ? uEng.history.slice() : [];
+            const after = await uEng.compactHistory(before, { force: true });
+            if (Array.isArray(after) && after !== before) {
+              uEng.history = after;
+              uEng._lastPrompt = null; uEng._lastPromptLen = null;
+              if (ws.readyState === 1) ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 已按你的要求手动压缩上下文（" + before.length + " 条 → " + after.length + " 条）", cls: "tl-info" }));
+            } else if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 未压缩：自动压缩已关闭，或历史条数不足以压缩", cls: "tl-warn" }));
+            }
+          } catch (e) {
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 压缩失败：" + e.message, cls: "tl-err" }));
+          }
+        })();
         break;
       }
 
@@ -1265,7 +2008,10 @@ wss.on("connection", (ws) => {
             ws.send(JSON.stringify({ type: "conv.switched", convId: String(m.convId), messages: n }));
             // 同步切换该会话记录的改动清单，前端改动面板一并切换
             const cl = (uEng.convChanges && uEng.convChanges[String(m.convId)]) || [];
-            ws.send(JSON.stringify({ type: "changes", list: cl, convId: String(m.convId) }));
+            ws.send(JSON.stringify({
+              type: "changes", list: cl, convId: String(m.convId),
+              risk: (uEng.convRisk && uEng.convRisk[String(m.convId)]) || null,
+            }));
           }
         }, ws);
         break;
@@ -1294,6 +2040,8 @@ wss.on("connection", (ws) => {
       /* ----- 人工确认：AI 工具的写/删/执行需用户批准（审批队列按用户隔离） ----- */
       case "tool.approve":
         if (typeof uEng.resolveApproval === "function" && m.id) uEng.resolveApproval(m.id, true);
+        // 「本会话内都允许」：记住这次批准的工具，后续同名工具不再逐次询问（不可逆操作不受影响）
+        if (m.remember === "session" && m.tool && typeof uEng.grantSession === "function") uEng.grantSession(m.tool);
         break;
       case "tool.reject":
         if (typeof uEng.resolveApproval === "function" && m.id) uEng.resolveApproval(m.id, false);
@@ -1332,6 +2080,27 @@ wss.on("connection", (ws) => {
   });
 });
 
+/* 长任务保活：WebSocket 协议层心跳
+   为什么必需：TCP 半开（休眠唤醒、代理静默丢包、杀软断链、VPN 切换）时 ws.readyState 仍是 1，
+   而 broadcast 只看 readyState → 每个事件都"发送成功"却无人收到，前端永远停在"AI 思考中"，
+   表现为"跑几分钟就卡住/断了"。浏览器会自动应答协议层 ping，所以只要链路真活着必回 pong；
+   连续两轮（约 40s）未回即判定链路已死，terminate() 触发前端 onclose → 指数退避重连 →
+   hello 携带 running/round/tabs 恢复现场，正在跑的 Agent 任务不受影响（它在服务端继续）。 */
+const WS_PING_MS = Math.max(500, Number(process.env.PANCODE_WS_PING_MS) || 20000);
+const wsHeartbeat = setInterval(() => {
+  for (const c of Array.from(wss.clients)) {
+    if (c.readyState !== 1) { clients.delete(c); continue; }
+    if (c._alive === false) {
+      clients.delete(c);
+      try { c.terminate(); } catch (e) {}
+      continue;
+    }
+    c._alive = false;
+    try { c.ping(); } catch (e) { clients.delete(c); try { c.terminate(); } catch (_) {} }
+  }
+}, WS_PING_MS);
+wsHeartbeat.unref();   // 不阻止进程退出（优雅关闭路径无需等待心跳）
+
 /* A7：清理上次异常退出遗留的原子写临时文件（pancode.config.json.<pid>.tmp），避免根目录残留 */
 function cleanupTmpOrphans() {
   try {
@@ -1364,6 +2133,7 @@ function shutdown(sig) {
     try { if (eng && typeof eng.flushConversations === "function") eng.flushConversations(); } catch (e) {}
   }
   try { if (term && typeof term.closeAll === "function") term.closeAll(); } catch (e) {}      // 杀掉全部终端子进程，避免孤儿
+  try { auth.flushSessions(); } catch (e) {}                        // 会话同步落盘：合并窗里没来得及写的登录态不能随进程丢
   try { if (mcpManager) mcpManager.disconnectAll(); } catch (e) {}   // 关闭全部 MCP 子进程，避免孤儿
   try { for (const c of wss.clients) { try { c.close(); } catch (e) {} } } catch (e) {}
   try { if (files) files.stopWatch(); } catch (e) {}

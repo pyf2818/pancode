@@ -17,11 +17,23 @@ module.exports = {
     }
     const t = agent.tool("terminal", "运行终端", args.command);
     agent.state(true, "AI 正在执行命令");
-    const r = await agent.term.run(AI_TERM_TAB, args.command, null, { timeout: 90_000, strict: true, ai: true });
+    // 前台等待上限：模型可显式要更久；再长的任务应走 start_process 后台 + read_process 轮询
+    const defSec = (agent.cfg && agent.cfg.timeouts && agent.cfg.timeouts.commandSec) || 600;
+    const sec = Math.max(15, Math.min(7200, Math.round(Number(args.timeout) || defSec)));
+    const r = await agent.term.run(AI_TERM_TAB, args.command, null, { timeout: sec * 1000, strict: true, ai: true });
     if (r.blocked) {
       t.body("命令被安全沙箱拦截：" + args.command);
       t.done(false, "已拦截", false);
       return "命令被安全沙箱拦截，未执行";
+    }
+    if (r.timedOut) {
+      t.body((r.out || "(无输出)").slice(-4000) + "\n\n[超时 " + sec + "s，进程已终止]");
+      t.done(false, "超时 " + sec + "s", true);
+      agent.pushChanges(false);
+      return "命令运行超过 " + sec + " 秒被终止。已产生的输出：\n" + (r.out || "(无输出)").slice(-6000)
+        + "\n\n这条命令不适合前台等待。请改用 start_process 把它放到后台（起服务、跑长构建就用这个），"
+        + "再用 read_process 按名字轮询输出、stop_process 结束它；或者把命令拆成更短的步骤，"
+        + "或显式传更大的 timeout（上限 7200 秒）。";
     }
     t.body((r.out || "(无输出)").slice(-4000) + "\n\n(exit code " + r.code + ")");
     t.done(r.code === 0, r.code === 0 ? "退出码 0" : "退出码 " + r.code, r.code !== 0);

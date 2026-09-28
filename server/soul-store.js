@@ -113,6 +113,22 @@ class SoulStore {
     return p;
   }
 
+  /* 丢弃一条提案（连记录一起删，区别于"拒绝"保留 rejected 痕迹） */
+  removeProposal(id) {
+    const i = this._data.proposals.findIndex((x) => x.id === id);
+    if (i === -1) return false;
+    this._data.proposals.splice(i, 1);
+    this._save();
+    return true;
+  }
+
+  /* 回到出厂灵魂：人格/价值观/边界/原则全部重置，提案记录一并清空 */
+  reset() {
+    this._data = JSON.parse(JSON.stringify(DEFAULT_SOUL));
+    this._save();
+    return this.get();
+  }
+
   get size() {
     return (this._data.values.length + this._data.boundaries.length + this._data.principles.length);
   }

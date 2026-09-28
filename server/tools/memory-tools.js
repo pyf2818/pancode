@@ -53,6 +53,18 @@ module.exports = {
     return sk && sk._duplicate ? "同名 Skill 已存在: " + sk.name : "Skill 创建失败";
   },
 
+  /* 渐进式披露的第二半：系统提示里只给 Skill 目录，正文由 Agent 按需取回 */
+  use_skill: async (agent, args) => {
+    const name = String(args.name || "").trim();
+    if (!name) return "请提供要展开的 Skill 名称";
+    const sk = agent.skills.findByName(name) || (agent.skills.match ? agent.skills.match(name, 1)[0] : null);
+    if (!sk) return "未找到 Skill：" + name + "。系统提示里列出的目录名可以直接复制过来。";
+    agent.skills.recordUse(sk.id);
+    const body = agent.skills.formatBodyFor(sk);
+    if (!body || body.length < 24) return "Skill「" + sk.name + "」没有正文书写，只有描述：" + (sk.description || "（空）");
+    return body;
+  },
+
   save_session_memory: async (agent, args) => {
     const decisions = Array.isArray(args.decisions) ? args.decisions : [];
     const lessons = Array.isArray(args.lessons) ? args.lessons : [];

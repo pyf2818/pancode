@@ -186,6 +186,40 @@ class GitLayer {
     }
   }
 
+  /* 已配置的远端名列表（界面据此决定"推送"是否可用） */
+  async remotes() {
+    if (!this.available) return [];
+    try { return (await _git(this.dir, ["remote"])).trim().split("\n").filter(Boolean); }
+    catch (e) { return []; }
+  }
+
+  /* 推送到远端。没有 remote / 上游时把话说清楚，而不是静默失败——
+     界面上的按钮写的是"提交或推送"，之前根本没有推送实现，点了自然没反应。
+     push 走网络，_git 默认 15s 太短，这里单独给 60s。 */  async push() {
+    if (!this.available) return { ok: false, error: "当前工作区不是 Git 仓库，无法推送" };
+    try {
+      const remotes = (await _git(this.dir, ["remote"])).trim().split("\n").filter(Boolean);
+      if (!remotes.length) return { ok: false, noRemote: true, error: "这个仓库还没有远端（git remote 为空），只能本地提交" };
+      const branch = (await _git(this.dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+      if (!branch || branch === "HEAD") return { ok: false, error: "当前处于游离 HEAD，请先切到一个分支再推送" };
+      const remote = remotes.indexOf("origin") >= 0 ? "origin" : remotes[0];
+      let out;
+      try {
+        out = (await _git(this.dir, ["push", remote, branch], { timeout: 60000 })).trim();
+      } catch (e) {
+        const t = ((e.stderr || "") + " " + (e.stdout || "")).toString().trim();
+        if (/rejected|non-fast-forward/i.test(t)) return { ok: false, rejected: true, error: "远端有更新的提交，推送被拒绝：先拉取（git pull）合并后再推" };
+        if (/Could not resolve host|unable to access|Connection refused|timed out|The requested URL returned error/i.test(t)) {
+          return { ok: false, network: true, error: "连不上远端 " + remote + "：" + (t.split("\n").pop() || e.message).slice(0, 200) };
+        }
+        return { ok: false, error: (t || e.message || "推送失败").slice(0, 300) };
+      }
+      return { ok: true, remote, branch, summary: out.split("\n").slice(-3).join(" ").slice(0, 300) };
+    } catch (e) {
+      return { ok: false, error: (e.stderr || e.stdout || e.message || "").toString().slice(0, 300) };
+    }
+  }
+
   /* ============ Agent Git 工具集（结构化封装，数组传参无 shell 注入） ============ */
 
   /* 最近提交历史 */

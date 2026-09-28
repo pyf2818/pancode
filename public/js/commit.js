@@ -9,15 +9,23 @@ function openCommit() {
   m.style.display = "flex";
   $("cmResult").textContent = ""; $("cmResult").className = "cm-result";
   const branch = $("cmBranch"), box = $("cmChanges");
+  const pushBtn = $("cmPush");
+  const setPush = (enabled, why) => {
+    if (!pushBtn) return;
+    pushBtn.disabled = !enabled;
+    pushBtn.title = why || "";
+  };
   branch.textContent = "加载中…"; box.innerHTML = "";
+  setPush(false, "加载中…");
   if ($("cmSummaryWrap")) $("cmSummaryWrap").style.display = "none";
   fetch("/api/git/status").then((r) => r.json()).then((d) => {
     if (!d.available) {
       branch.textContent = "当前工作区不是 Git 仓库（快照模式），无法提交";
       box.innerHTML = '<div class="cm-empty">未检测到 Git 仓库</div>';
-      $("cmSubmit").disabled = true; return;
+      $("cmSubmit").disabled = true; setPush(false, "不是 Git 仓库"); return;
     }
-    branch.textContent = "分支：" + d.branch;
+    branch.textContent = "分支：" + d.branch + (d.remote ? " · 远端：" + d.remote : " · 无远端");
+    setPush(!!d.remote, d.remote ? "提交后推送到 " + d.remote + "/" + d.branch : "这个仓库还没有远端（git remote 为空），只能本地提交");
     if (!d.changes || !d.changes.length) {
       box.innerHTML = '<div class="cm-empty">没有未提交的改动</div>';
       $("cmSubmit").disabled = true; return;
@@ -122,14 +130,31 @@ if ($("cmCancel")) $("cmCancel").onclick = () => { $("commitModal").style.displa
 if ($("commitModal")) {
   $("commitModal").addEventListener("click", (e) => { if (e.target === $("commitModal")) $("commitModal").style.display = "none"; });
 }
-if ($("cmSubmit")) $("cmSubmit").onclick = () => {
+/* 提交 → 可选推送。返回 true=已提交 / "nothing"=无改动可提交 / false=失败 */
+function doCommit() {
+  const res = $("cmResult");
   const msg = $("cmMsg").value.trim();
   const files = Array.from(document.querySelectorAll("#cmChanges .cm-chk"))
     .filter((c) => c.checked).map((c) => c.dataset.path);
-  const res = $("cmResult"); res.textContent = "提交中…"; res.className = "cm-result";
-  fetch("/api/git/commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: msg, files }) })
+  res.textContent = "提交中…"; res.className = "cm-result";
+  return fetch("/api/git/commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: msg, files }) })
     .then((r) => r.json()).then((d) => {
-      if (d.ok) { res.textContent = "已提交（" + d.committed + " 个文件）✓"; res.className = "cm-result ok"; setTimeout(() => { $("commitModal").style.display = "none"; }, 1200); }
-      else { res.textContent = d.nothing ? "没有可提交的改动" : ("提交失败：" + (d.error || "")); res.className = "cm-result err"; }
-    }).catch((e) => { res.textContent = "提交失败：" + e.message; res.className = "cm-result err"; });
+      if (d.ok) { res.textContent = "已提交（" + d.committed + " 个文件）"; res.className = "cm-result ok"; return true; }
+      if (d.nothing) { res.textContent = "没有可提交的改动"; res.className = "cm-result"; return "nothing"; }
+      res.textContent = "提交失败：" + (d.error || ""); res.className = "cm-result err"; return false;
+    }).catch((e) => { res.textContent = "提交失败：" + e.message; res.className = "cm-result err"; return false; });
+}
+function closeCommitLater(ms) { setTimeout(() => { const m = $("commitModal"); if (m) m.style.display = "none"; }, ms); }
+function doPush() {
+  const res = $("cmResult");
+  res.textContent = "推送中…"; res.className = "cm-result";
+  return fetch("/api/git/push", { method: "POST" }).then((r) => r.json()).then((d) => {
+    if (d.ok) { res.textContent = "已推送到 " + d.remote + "/" + d.branch; res.className = "cm-result ok"; closeCommitLater(1400); return; }
+    res.textContent = "推送失败：" + (d.error || "");
+    res.className = "cm-result" + (d.noRemote ? "" : " err");
+  }).catch((e) => { res.textContent = "推送失败：" + e.message; res.className = "cm-result err"; });
+}
+if ($("cmSubmit")) $("cmSubmit").onclick = () => { doCommit().then((ok) => { if (ok === true) closeCommitLater(1200); }); };
+if ($("cmPush")) $("cmPush").onclick = () => {
+  doCommit().then((ok) => { if (ok !== false) doPush(); });
 };

@@ -17,9 +17,15 @@ function buildCmdList() {
     { id: "preview", title: "切换 HTML / Markdown 预览", icon: "eye", group: "视图", run: () => togglePreview() },
     { id: "switch", title: "切换 Editor / Agents 窗口", icon: "robot", group: "视图", run: () => switchMode((window.state && window.state.mode === "editor") ? "agents" : "editor") },
     { id: "evo", title: "打开进化树", icon: "tree", group: "视图", run: () => openEvolutionCodex() },
-    { id: "settings", title: "打开模型设置", icon: "robot", group: "视图", run: () => openSettings() },
+    { id: "automations", title: "自动化任务（定时跑测试 / 依赖审计）", icon: "clock", group: "交付", run: () => typeof openAutomations === "function" && openAutomations() },
+    { id: "sediment", title: "沉淀本次会话（规则 / 记忆）", icon: "save", group: "交付", run: () => typeof openSediment === "function" && openSediment() },
+    { id: "settings", title: "打开设置（模型 / 外观 / Agent）", icon: "gear", group: "视图", run: () => openSettings() },
+    { id: "mode-agent", title: "模式：Agent 执行（说做就做）", icon: "robot", group: "模式", run: () => window.setAgentMode && setAgentMode("agent") },
+    { id: "mode-plan", title: "模式：Plan 只读规划", icon: "target", group: "模式", run: () => window.setAgentMode && setAgentMode("plan") },
+    { id: "mode-ask", title: "模式：Ask 仅问答（不调工具）", icon: "user", group: "模式", run: () => window.setAgentMode && setAgentMode("ask") },
+    { id: "model", title: "选择模型", icon: "layers", group: "模式", run: () => { const c = document.getElementById("btnModelChip"); if (c) c.click(); } },
     { id: "shortcuts", title: "查看键盘快捷键", icon: "keyboard", group: "帮助", run: () => openShortcuts() },
-    { id: "logout", title: "退出登录", icon: "close", group: "账户", run: () => { localStorage.removeItem("cw-user-token"); location.reload(); } },
+    { id: "logout", title: "退出登录", icon: "close", group: "账户", run: () => doLogout() },
   ];
   const files = Object.keys(state.files || {}).sort().map((f) => ({ id: "file:" + f, title: f, icon: "files", group: "打开文件", run: () => openFile(f) }));
   return acts.concat(files);

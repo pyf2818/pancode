@@ -137,6 +137,56 @@ class ExpertStore {
     return out;
   }
 
+  /* 序列化为 parseExpertMd 认得的 md+frontmatter（写盘与导出共用） */
+  static toMd(e) {
+    const esc = (s) => String(s == null ? "" : s).replace(/\n/g, " ").trim();
+    const wl = Array.isArray(e.tool_whitelist) && e.tool_whitelist.length ? "[" + e.tool_whitelist.join(", ") + "]" : "[]";
+    return "---\n"
+      + "name: " + esc(e.name) + "\n"
+      + "description: " + esc(e.description) + "\n"
+      + "tool_whitelist: " + wl + "\n"
+      + "---\n"
+      + String(e.role || "").trim() + "\n\n"
+      + String(e.methodology || "").trim() + "\n";
+  }
+
+  static safeId(id) {
+    const s = String(id || "").trim().toLowerCase().replace(/[^\w一-龥-]+/g, "-").replace(/^-+|-+$/g, "");
+    return s.slice(0, 48);
+  }
+
+  /** 新增或覆盖一个专家包。scope=project 落工作区，scope=user 落 ~/.pancode/experts。
+      builtin 不可写（只读），改法是在 project/user 层放同名包覆盖——与 Cursor/Windsurf 同构。 */
+  save(expert, scope) {
+    const id = ExpertStore.safeId(expert.id || expert.name);
+    if (!id) return { ok: false, error: "专家名不能为空" };
+    if (!String(expert.role || "").trim()) return { ok: false, error: "角色定位（role）不能为空" };
+    const dir = scope === "user" ? this._userDir : this._projectDir;
+    if (!dir) return { ok: false, error: scope === "user" ? "用户级专家目录不可用" : "工作区不可写，无法保存项目级专家" };
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, id + ".md"), ExpertStore.toMd(Object.assign({}, expert, { id, name: expert.name || id })), "utf8");
+      return { ok: true, id, scope: scope === "user" ? "user" : "project", file: id + ".md" };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+
+  /* 删除：只删 project/user 层的落盘文件，builtin 永远删不掉 */
+  remove(id) {
+    const key = ExpertStore.safeId(id);
+    if (!key) return { ok: false, error: "id 非法" };
+    let removed = [];
+    for (const [dir, scope] of [[this._projectDir, "project"], [this._userDir, "user"]]) {
+      if (!dir) continue;
+      const p = path.join(dir, key + ".md");
+      try { if (fs.existsSync(p)) { fs.unlinkSync(p); removed.push(scope); } } catch (e) { return { ok: false, error: e.message }; }
+    }
+    if (!removed.length) {
+      if (BUILTIN_EXPERTS.some((b) => b.id === key || b.name === key)) return { ok: false, error: "内置专家不可删除，可在 project/user 层放同名包覆盖" };
+      return { ok: false, error: "专家不存在" };
+    }
+    return { ok: true, removed };
+  }
+
   /* 按优先级排序的全量池：project > user > builtin（同名/同 id 时前者胜） */
   _ordered() {
     return [

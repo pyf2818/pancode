@@ -19,7 +19,7 @@ function renderOnboard() {
   $("onboardPrev").style.visibility = _obStep === 0 ? "hidden" : "visible";
   $("onboardNext").textContent = _obStep === _obSteps.length - 1 ? "开始使用" : "下一步";
   const tip = $("obModelTip");
-  if (tip) tip.innerHTML = (state.engine && state.engine.mode === "llm") ? "✅ 已检测到 LLM 配置，可以直接对话。" : "⚠️ 当前为演示引擎，Agent 能力有限，建议配置真实 Key。";
+  if (tip) tip.innerHTML = (state.engine && state.engine.mode === "llm") ? "已检测到 LLM 配置，可以直接对话。" : "当前为演示引擎，Agent 能力有限，建议配置真实 Key。";
 }
 function showOnboarding() { _obStep = 0; renderOnboard(); $("onboardModal").style.display = "flex"; }
 function hideOnboarding() { $("onboardModal").style.display = "none"; localStorage.setItem("cw-onboarded", "1"); }

@@ -22,6 +22,37 @@
      - 每步开始/完成/失败时通过 emit 推送事件到前端
    ============================================================ */
 "use strict";
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const safeWrite = require("./safe-write");
+
+const HIST_MAX = 50;
+
+/* 编排历史：按工作区分文件落盘（跨用户 / 跨浏览器可见），取代前端 localStorage 空壳 */
+function histPath() {
+  const ROOT = require("./config").ROOT;
+  const cfg = require("./config").load();
+  const wsHash = crypto.createHash("md5")
+    .update(path.resolve(ROOT, (cfg && cfg.workspace) || "workspace")).digest("hex");
+  return path.join(ROOT, ".pancode", "orch-history", wsHash + ".json");
+}
+function histLoad() {
+  try { return JSON.parse(fs.readFileSync(histPath(), "utf8")); } catch (e) { return []; }
+}
+function histAppend(rec) {
+  const list = histLoad();
+  list.unshift(rec);
+  safeWrite.saveJson(histPath(), list.slice(0, HIST_MAX));
+  return list.slice(0, HIST_MAX);
+}
+function histList() {
+  return histLoad().map((r) => ({
+    id: r.id, title: r.title, ok: r.ok, elapsed: r.elapsed, ts: r.ts,
+    counts: r.counts, steps: r.steps.map((s) => ({ id: s.id, name: s.name, status: s.status, layer: s.layer })),
+  }));
+}
+function histGet(id) { return histLoad().find((r) => r.id === id) || null; }
 
 class Orchestrator {
   constructor(agent) {
@@ -61,6 +92,7 @@ class Orchestrator {
     const layers = this._topoLayers(steps);
     const results = {};
     const startTime = Date.now();
+    const stepMeta = [];          // 落盘用的完整步骤明细（含耗时与输出，供历史回放）
 
     this.agent.emit({
       type: "orch.start",
@@ -74,6 +106,8 @@ class Orchestrator {
 
       // 同层步骤并行执行
       const promises = layer.map(async (step) => {
+        const t0 = Date.now();
+        stepMeta.push({ id: step.id, name: step.name, layer: li, parallel, agent_type: step.agent_type || "general", status: "running", output: "", elapsed: 0 });
         this.agent.emit({
           type: "orch.step.start",
           stepId: step.id,
@@ -92,30 +126,36 @@ class Orchestrator {
           }).join("\n\n");
         }
 
+        const meta = stepMeta[stepMeta.length - 1];
         try {
           const taskText = step.task + ctx;
           const result = await this.agent.runSubAgent(taskText, {
             subagent_type: step.agent_type || "general",
             expert: step.expert, // W2：编排步骤可选专家人设
+            label: step.name,
           });
           const output = (result || "(无返回)").slice(0, 8000);
           results[step.id] = { name: step.name, status: "done", output };
+          meta.status = "done"; meta.output = output.slice(0, 4000); meta.elapsed = (Date.now() - t0) / 1000;
 
           this.agent.emit({
             type: "orch.step.done",
             stepId: step.id,
             name: step.name,
+            elapsed: +meta.elapsed.toFixed(1),
             output: output.slice(0, 2000),
           });
           return { id: step.id, ok: true, output };
         } catch (e) {
           const errMsg = e.message || String(e);
           results[step.id] = { name: step.name, status: "fail", output: errMsg };
+          meta.status = "fail"; meta.output = errMsg; meta.elapsed = (Date.now() - t0) / 1000;
 
           this.agent.emit({
             type: "orch.step.fail",
             stepId: step.id,
             name: step.name,
+            elapsed: +meta.elapsed.toFixed(1),
             error: errMsg.slice(0, 500),
           });
           return { id: step.id, ok: false, output: errMsg };
@@ -134,14 +174,26 @@ class Orchestrator {
       "，耗时 " + elapsed + "s";
 
     // 汇总各步骤结果
-    const fullReport = Object.entries(results).map(([id, r]) => {
-      return "## " + r.name + " [" + (r.status === "done" ? "✓" : "✗") + "]\n" + r.output;
+    const fullReport = stepMeta.map((r) => {
+      return "## " + r.name + " [" + (r.status === "done" ? "✓" : r.status === "fail" ? "✗" : "…") + "]\n" + r.output;
     }).join("\n\n---\n\n");
 
-    this.agent.emit({ type: "orch.done", summary, ok: failCount === 0, elapsed });
+    // 编排历史落盘（服务端，跨浏览器/跨用户可见，可点开回放）
+    let runId = "";
+    try {
+      runId = "orch-" + Date.now().toString(36);
+      histAppend({
+        id: runId, title: plan.title || "多 Agent 编排", ok: failCount === 0,
+        elapsed: +elapsed, ts: Date.now(),
+        counts: { done: okCount, fail: failCount, total: steps.length },
+        steps: stepMeta, summary,
+      });
+    } catch (e) {}
+
+    this.agent.emit({ type: "orch.done", summary, ok: failCount === 0, elapsed, runId, steps: stepMeta.map((s) => ({ id: s.id, name: s.name, status: s.status, elapsed: +s.elapsed.toFixed(1) })) });
 
     return { title: plan.title, results, summary, fullReport, elapsed };
   }
 }
 
-module.exports = { Orchestrator };
+module.exports = { Orchestrator, histList, histGet };

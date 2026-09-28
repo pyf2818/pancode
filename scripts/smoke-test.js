@@ -78,12 +78,17 @@ assert(filterTodos(todos, "done").length === 0, "done 筛选返回已完成项")
 
 (async () => {
   prepareFixture();
+  /* 账号 / 会话 / 记忆写到一次性临时数据根：以前直接沿用仓库根当数据根，
+     每跑一次冒烟就往 .pancode/users.json 里塞一个 _smoke_* 账号（已堆到 40+ 条）。
+     工作区仍指回仓库 workspace/ 演示夹具（绝对路径，避免跟着数据根走）。 */
+  const dataDir = require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "pancode-smoke-"));
   log("启动测试服务 (AGENT_FAST=1, PORT=" + PORT + ") ...");
   const server = spawn(process.execPath, ["server/index.js"], {
     cwd: root,
     env: Object.assign({}, process.env, {
       PORT: String(PORT), AGENT_FAST: "1", CURSORWEB_ENGINE: "demo",
-      CURSORWEB_WORKSPACE: "workspace",   // 强制用自带演示夹具，不受用户打开的文件夹影响
+      PANCODE_DATA_DIR: dataDir,
+      CURSORWEB_WORKSPACE: require("path").join(root, "workspace"),
     }),
   });
   server.stderr.on("data", (b) => process.stderr.write("[server] " + b));

@@ -152,7 +152,7 @@ function insertSkillToChat(skill) {
   // 关闭弹出框
   const pop = inputBox.querySelector("#ciSkillPop");
   if (pop) pop.style.display = "none";
-  toast("✅ 已选中 Skill: " + skill.name + "（发送时自动引用）");
+  toast("已引用 Skill：" + skill.name + "（发送时自动注入）");
   fetch("/api/skills/market/" + skill.id + "/use", { method: "POST" }).catch(() => {});
 }
 
@@ -187,7 +187,8 @@ function renderSkillPop() {
     ];
     let shown = 0;
     groups.forEach((g) => {
-      const items = q ? g.list.filter((s) => (s.name + " " + (s.description || "")).toLowerCase().includes(q)) : g.list;
+      // 分类彩色 chip 也参与匹配：列表里看得见的字段，搜索就该搜得到
+      const items = q ? g.list.filter((s) => (s.name + " " + (s.category || "") + " " + (s.description || "")).toLowerCase().includes(q)) : g.list;
       if (!items.length) return;
       const gt = document.createElement("div");
       gt.className = "ci-skill-group-title";
@@ -241,8 +242,8 @@ $("skillSave").onclick = async () => {
     const r = await fetch("/api/skills/market", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json());
     if (r.ok) {
       $("skillStatus").className = "set-status ok";
-      $("skillStatus").textContent = "✅ 已保存到 Skills 市场";
-      toast("✅ Skill 已创建");
+      $("skillStatus").textContent = "已保存到 Skills 市场";
+      toast("Skill 已创建");
       loadSkills();
       setTimeout(() => ($("skillModal").style.display = "none"), 800);
     } else { $("skillStatus").className = "set-status err"; $("skillStatus").textContent = r.error; }
@@ -260,7 +261,7 @@ $("btnImportSkill").onclick = () => {
       const skill = JSON.parse(text);
       const doImport = (extra) => fetch("/api/skills/market", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({}, skill, extra || {})) }).then((x) => x.json());
       const r = await doImport();
-      if (r.ok) { toast("✅ 导入成功: " + skill.name + (r.audit && r.audit.level === "P1" ? "（含 P1 风险警告，已在详情标注）" : "")); loadSkills(); }
+      if (r.ok) { toast("已导入：" + skill.name + (r.audit && r.audit.level === "P1" ? "（含 P1 风险警告，已在详情标注）" : "")); loadSkills(); }
       else if (r.audit && r.audit.findings) {
         // W1：P0 风险 → 展示审计报告，用户显式确认后 force 重发
         const rows = r.audit.findings.map((f) => "· <b style='color:var(--err)'>" + esc(f.level) + "</b> " + esc(f.desc)).join("<br>");
@@ -268,12 +269,12 @@ $("btnImportSkill").onclick = () => {
           "以下内容将被注入 Agent 上下文并可能被 AI 参考执行，请确认你信任该来源：<br><br>" + rows + "<br><br><span style='color:var(--text-dim)'>确认后将以「已知晓风险」标记导入。</span>",
           async () => {
             const r2 = await doImport({ force: true });
-            if (r2.ok) { toast("⚠️ 已确认风险并导入: " + skill.name); loadSkills(); }
-            else toast("❌ 导入失败: " + (r2.error || ""));
+            if (r2.ok) { toast("已确认风险并导入：" + skill.name); loadSkills(); }
+            else toast("导入失败：" + (r2.error || ""));
           });
       }
-      else toast("❌ 导入失败: " + r.error);
-    } catch (e) { toast("❌ JSON 格式错误"); }
+      else toast("导入失败：" + r.error);
+    } catch (e) { toast("JSON 格式错误"); }
   };
   inp.click();
 };

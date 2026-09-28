@@ -28,11 +28,15 @@ module.exports = {
     const goal = (args.goal || "").trim();
     if (!goal) {
       agent._goal = null; agent._saveGoal();
+      if (agent._goalState) agent._goalState[agent._currentConv] = undefined;
       agent.emit({ type: "goal.set", goal: null });
       return "已清除会话目标";
     }
     agent._goal = goal; agent._saveGoal();
-    agent.emit({ type: "goal.set", goal });
+    // 新目标 = 续跑预算与停滞计数归零，否则上一轮 Goal 的预算会把这次提前掐掉
+    agent._goalState = agent._goalState || {};
+    agent._goalState[agent._currentConv] = { turns: 0, stall: 0, lastSig: "" };
+    agent.emit({ type: "goal.set", goal, maxTurns: 40 });
     let extra = "";
     if (args.template) {
       const tpl = agent.workflows.find(args.template);

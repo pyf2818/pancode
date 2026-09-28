@@ -48,6 +48,9 @@ function setEnvVar(key, value) {
   }
   if (!found) lines.push(key + "=" + val);
   fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n", "utf8");
+  /* 同时更新当前进程的 process.env：loadDotEnv 只在启动时跑一次，
+     只写文件的话同一进程内再读 process.env 拿到的还是旧值（保存 profile 后 hasKey 仍为 false 就是这么来的）。 */
+  if (val) process.env[key] = val; else delete process.env[key];
 }
 
 module.exports = { loadDotEnv, setEnvVar, ENV_PATH };

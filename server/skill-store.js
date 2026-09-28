@@ -321,10 +321,13 @@ class SkillStore {
   }
 
   update(id, patch) {
-    const skill = this._marketSkills.find((s) => s.id === id) || this._localSkills.find((s) => s.id === id);
+    const skill = this._marketSkills.find((s) => s.id === id) || this._localSkills.find((s) => s.id === id)
+      || this._userSkills.find((s) => s.id === id);
     if (!skill) return null;
     Object.assign(skill, patch, { ts: Date.now() });
-    if (this._marketSkills.includes(skill)) this._saveMarket(); else this._saveLocal();
+    if (this._marketSkills.includes(skill)) this._saveMarket();
+    else if (this._localSkills.includes(skill)) this._saveLocal();
+    else this._saveUser();
     return skill;
   }
 
@@ -358,7 +361,9 @@ class SkillStore {
     maxResults = maxResults || 3;
     if (!taskText) return [];
     const text = taskText.toLowerCase();
-    const all = [...this._marketSkills, ...this._mergedUserSkills(), ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills];
+    // 面板里关掉的技能不参与自动匹配（显式 use_skill / 导出仍可用，语义 = "别主动推给我"）
+    const all = [...this._marketSkills, ...this._mergedUserSkills(), ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills]
+      .filter((s) => !s.disabled);
     const scored = all.map((s) => {
       let score = 0;
       const triggers = String(s.trigger || "").toLowerCase().split(/[,;，；\s]+/).filter(Boolean);
@@ -383,18 +388,38 @@ class SkillStore {
 
   recordUse(id) {
     const skill = this.getById(id);
-    if (skill) { skill.useCount = (skill.useCount || 0) + 1; skill.ts = Date.now(); if (this._marketSkills.includes(skill)) this._saveMarket(); else this._saveLocal(); }
+    if (!skill) return;
+    skill.useCount = (skill.useCount || 0) + 1;
+    skill.ts = Date.now();
+    if (this._marketSkills.includes(skill)) this._saveMarket();
+    else if (this._localSkills.includes(skill)) this._saveLocal();
+    else if (this._userSkills.includes(skill)) this._saveUser();
   }
 
-  /* ---------- 格式化注入 LLM 上下文 ---------- */
+  /* ---------- 格式化注入 LLM 上下文 ----------
+     渐进式披露（对齐 Claude Skills）：默认只把「目录」塞进 system——名字 + 一句话描述 + 触发词，
+     正文由 Agent 判断真的要用时再通过 use_skill 工具按需取。
+     旧行为是把 top-3 的完整正文一次性全注入，长任务里每轮都重复付这份 token。 */
   formatForContext(matchedSkills) {
     if (!matchedSkills || !matchedSkills.length) return "";
-    return matchedSkills.map((s) => {
-      let text = "### Skill: " + s.name + (s.version ? " v" + s.version : "") + "\n";
-      if (s.description) text += s.description + "\n";
-      if (s.body) text += s.body + "\n";
+    const head = matchedSkills.map((s) => {
+      let text = "- " + s.name + (s.version ? " v" + s.version : "");
+      if (s.description) text += "：" + String(s.description).replace(/\s+/g, " ").slice(0, 160);
+      if (s.trigger) text += "（触发词：" + String(s.trigger).split(/[,;，；]/).map((x) => x.trim()).filter(Boolean).slice(0, 6).join("、") + "）";
       return text;
-    }).join("\n---\n\n");
+    }).join("\n");
+    return head + "\n\n> 上面只是技能目录。决定采用其中某个时，先调用 use_skill(name) 取回完整步骤与注意事项再动手；"
+      + "不相关就不要取，也不要为了用而用。";
+  }
+
+  /* 正文（按需取回） */
+  formatBodyFor(skill) {
+    if (!skill) return "";
+    let text = "### Skill: " + skill.name + (skill.version ? " v" + skill.version : "") + "\n";
+    if (skill.description) text += skill.description + "\n";
+    if (skill.body) text += "\n" + skill.body;
+    else if (skill.steps && skill.steps.length) text += "\n步骤：\n" + skill.steps.map((s, i) => (i + 1) + ". " + (s.text || s)).join("\n");
+    return text.trim();
   }
 
   /* ---------- Agent 自动沉淀 ---------- */

@@ -28,6 +28,10 @@ async function waitBackoff() {
  * @param {number} attempt  当前重试次数（内部用）
  * @returns {Promise<{content, reasoning, toolCalls:[{id,name,arguments}], finish}>}
  */
+/* 把实际请求的地址挂到错误对象上（而不是拼进 message）：设置面板要告诉用户"到底请求了哪个地址"，
+   但 agent-llm 的错误分类是按 message 里的数字判定 429/401/404 的，地址里的端口号会干扰它。 */
+function withEndpoint(err, url) { err.endpoint = url; return err; }
+
 async function chatStream(cfg, messages, tools, cb, attempt) {
   attempt = attempt || 0;
   const MAX_RETRIES = 3;
@@ -61,19 +65,24 @@ async function chatStream(cfg, messages, tools, cb, attempt) {
   try {
     res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + cfg.apiKey,
-      },
+      headers: Object.assign(
+        { "Content-Type": "application/json" },
+        // 本地服务（Ollama / LM Studio）可以根本没有密钥：与其发 "Bearer undefined"，不如不带这个头
+        cfg.apiKey ? { "Authorization": "Bearer " + cfg.apiKey } : {}
+      ),
       body: JSON.stringify(body),
       signal: ctl.signal,
     });
   } catch (e) {
     // 网络层错误（ECONNRESET / ENOTFOUND / timeout / socket hang up）→ 抛出可重试错误
-    const nm = String((e && e.message) || e);
+    // 真正的错因挂在 e.cause 上：fetch 自己只会给一句 "fetch failed"
+    const c = (e && e.cause) || {};
+    const nm = String(c.code || c.message || (e && e.message) || e);
     const isTimeout = ctl.signal.aborted || (e && e.name === "TimeoutError") || /timeout|aborted|timed out/i.test(nm);
     if (isTimeout) throw new Error("LLM 连接超时（" + (connectMs / 1000) + "s 内未收到响应），可能网络不稳或模型服务无响应");
-    throw new Error("LLM 网络错误: " + nm);
+    // 地址挂在 err.endpoint 上、不拼进 message：agent 的错误分类是按消息里的数字判的
+    // （429→限流、401→密钥、404→模型不存在），而内网地址/端口里出现这三个数字太常见了。
+    throw withEndpoint(new Error("LLM 网络错误: " + nm), url);
   }
   clearTimeout(connTimer);   // 响应已到达 → 流式阶段交给下面的空闲超时管理
 
@@ -95,7 +104,10 @@ async function chatStream(cfg, messages, tools, cb, attempt) {
 
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
-    throw new Error("LLM 请求失败 HTTP " + res.status + ": " + txt.slice(0, 400));
+    // 只补提示语，不改 "LLM 请求失败 HTTP <code>" 这个前缀：agent-llm 的错误分类靠消息里的状态码判定
+    const hint = res.status === 404 ? "（地址或模型名不存在：检查接口地址是否少了 /v1 这类版本段、模型 ID 是否拼错）"
+      : (res.status === 401 || res.status === 403) ? "（密钥不对，或这个密钥没有该模型的权限）" : "";
+    throw withEndpoint(new Error("LLM 请求失败 HTTP " + res.status + hint + ": " + txt.slice(0, 400)), url);
   }
 
   const acc = { content: "", reasoning: "", toolCalls: [], finish: null, usage: null };

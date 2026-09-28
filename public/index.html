@@ -5,12 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>pancode — AI 编程工作台</title>
 <script>
-/* 防闪屏：CSS 加载前先定主题（auto = 跟随系统） */
+/* 防闪屏：CSS 加载前先定「明暗模式 + 配色方案」（auto = 跟随系统） */
 (function () {
   var pref = localStorage.getItem("cw-theme") || "auto";
   var sys = false;
   try { sys = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches; } catch (e) {}
-  document.documentElement.setAttribute("data-theme", pref === "auto" ? (sys ? "light" : "dark") : pref);
+  var mode = pref === "auto" ? (sys ? "light" : "dark") : (pref === "light" ? "light" : "dark");
+  var r = document.documentElement;
+  r.setAttribute("data-theme", mode);
+  /* 配色按明暗两侧分别记忆；只读不写，避免"切一次深浅就把用户选的配色抹掉"。
+     与 app.js 的 PALETTES.mode 保持同步：both = 两侧通用。 */
+  var SIDE = { graphite:"dark", midnight:"dark", amethyst:"dark", whisky:"dark", pine:"dark", slate:"dark",
+    contrast:"both", celadon:"light", parchment:"light", linen:"light", rose:"light" };
+  function palFor(m) {
+    var ok = function (v) { return v && (SIDE[v] === "both" || SIDE[v] === m); };
+    if (ok(localStorage.getItem("cw-palette-" + m))) return localStorage.getItem("cw-palette-" + m);
+    if (ok(localStorage.getItem("cw-palette"))) return localStorage.getItem("cw-palette");
+    return m === "light" ? "celadon" : "graphite";
+  }
+  r.setAttribute("data-palette", palFor(mode));
 })();
 </script>
 <link rel="stylesheet" href="styles.css">
@@ -47,12 +60,11 @@
   <div class="tb-right">
     <div class="tb-group">
       <button id="btnTheme" class="tb-icon-btn" data-i18n-title="themeToggle" title="切换浅色 / 深色主题"><i data-ico="moon"></i></button>
-      <button id="btnSettings" class="tb-icon-btn" data-i18n-title="modelSettings" title="模型设置"><i data-ico="tune"></i></button>
-      <button id="btnAgentSettings" class="tb-icon-btn" data-i18n-title="agentSettings" title="Agent 设置"><i data-ico="robot"></i></button>
+      <button id="btnSettings" class="tb-icon-btn" data-i18n-title="modelSettings" title="设置（模型 / 外观 / Agent）"><i data-ico="gear"></i></button>
+      <button id="btnAgentSettings" class="tb-icon-btn" data-i18n-title="agentSettings" title="Agent 设置"><i data-ico="tune"></i></button>
     </div>
     <div class="tb-group">
       <button id="btnWorkflow" class="tb-icon-btn" data-i18n-title="workflow" title="工作流"><i data-ico="tasklist"></i></button>
-      <button id="btnAutomations" class="tb-icon-btn" title="自动化任务（定时跑测试 / 依赖审计 / 健康报告）"><i data-ico="clock"></i></button>
       <button id="btnSediment" class="tb-icon-btn" data-i18n-title="sediment" title="沉淀"><i data-ico="save"></i></button>
       <button id="btnReset" class="tb-icon-btn" data-i18n-title="resetWorkspace" title="还原工作区"><i data-ico="reset"></i></button>
     </div>
@@ -186,9 +198,9 @@
       <span class="sb-item" id="sbCursor">行 1, 列 1</span>
       <span class="sb-item" id="sbLang">JavaScript</span>
       <span class="sb-item">UTF-8</span>
-      <span class="sb-item" id="sbEld" style="display:none" title="事件循环延迟（ELD）：主进程繁忙程度">⚡ <span id="sbEldTxt">—</span></span>
+      <span class="sb-item" id="sbEld" style="display:none" title="事件循环延迟（ELD）：主进程繁忙程度"><i data-ico="gauge"></i> <span id="sbEldTxt">—</span></span>
       <span class="sb-item" id="sbAgent"><i data-ico="sparkle"></i><span id="sbAgentTxt">AI 空闲</span></span>
-      <button class="sb-item" id="sbPatchReview" style="display:none;cursor:pointer;background:var(--warn)22;color:var(--warn);border-radius:5px;padding:2px 8px" title="点击重新打开审阅面板"><i data-ico="robot"></i> 待审阅</button>
+      <button class="sb-item" id="sbPatchReview" style="display:none;cursor:pointer;background:color-mix(in srgb, var(--warn) 13%, transparent);color:var(--warn);border-radius:5px;padding:2px 8px" title="点击重新打开审阅面板"><i data-ico="robot"></i> 待审阅</button>
     </div>
   </div>
 </div>
@@ -247,6 +259,40 @@
   <div id="agRightResizer" class="resizer resizer-v" title="拖动调整右侧面板宽度（双击收起/展开）"></div>
 
   <aside id="agRight">
+    <section class="ag-panel ag-env" id="agEnv">
+      <div class="ag-env-head">
+        <span class="ag-env-title"><i data-ico="gauge"></i>环境信息</span>
+        <button class="ag-env-collapse" id="agEnvToggle" title="折叠/展开"><i data-ico="chevD"></i></button>
+      </div>
+      <div class="ag-env-body" id="agEnvBody">
+        <div class="ag-env-row ag-env-diff">
+          <span class="ag-env-k">本次改动</span>
+          <span class="ag-env-v"><b class="add" id="envAdd">+0</b><b class="del" id="envDel">−0</b><span id="envFiles">0 个文件</span></span>
+        </div>
+        <div class="ag-env-row">
+          <span class="ag-env-k">上下文</span>
+          <span class="ag-env-v"><span class="ag-env-bar"><i id="envCtxFill"></i></span><em id="envCtxTxt">—</em></span>
+        </div>
+        <div class="ag-env-row ag-risk-row" id="envRiskRow" style="display:none">
+          <span class="ag-env-k">改动风险</span>
+          <span class="ag-env-v"><span class="risk-pill" id="envRiskPill">—</span><em id="envRiskTxt"></em></span>
+        </div>
+        <div class="ag-risk-focus" id="envRiskFocus"></div>
+        <div class="ag-env-row">
+          <span class="ag-env-k">仓库</span>
+          <span class="ag-env-v"><i data-ico="branch"></i><span id="envBranch">…</span><span class="ag-env-tag" id="envVcs">本地</span></span>
+        </div>
+        <div class="ag-env-row">
+          <span class="ag-env-k">引擎</span>
+          <span class="ag-env-v"><i data-ico="sparkle"></i><span id="envEngine">—</span></span>
+        </div>
+        <div class="ag-env-acts">
+          <button id="envCommit" class="ag-env-btn"><i data-ico="branch"></i>提交或推送</button>
+          <button id="envSediment" class="ag-env-btn ghost" title="把本次会话的有效决策沉淀为规则 / 记忆"><i data-ico="save"></i>沉淀</button>
+        </div>
+        <div class="ag-env-updated" id="envUpdated">更新于 —</div>
+      </div>
+    </section>
     <section class="ag-panel">
       <div class="ag-panel-title"><span class="cp-title"><i data-ico="terminal"></i>实时终端</span><span class="ag-panel-hint">真实执行</span></div>
       <div id="terminalSlotAgents" class="terminal-slot"></div>
@@ -278,63 +324,6 @@
   </aside>
 </div>
 
-<!-- ======================= 模型设置弹窗 ======================= -->
-<div id="settingsModal" style="display:none">
-  <div class="set-box">
-    <div class="set-head"><span><i data-ico="tune"></i> 模型设置 — OpenAI 兼容 API</span><button id="setClose"><i data-ico="close"></i></button></div>
-    <div class="set-body">
-      <div class="set-tip">填入任意 OpenAI 兼容服务（OpenAI / DeepSeek / Moonshot / 通义 / Ollama / vLLM…），保存后 Agent 立即切换为<b>真实 LLM 引擎</b>；留空则使用内置演示引擎。</div>
-      <div id="modelPresets" class="model-presets">
-        <div class="set-subtitle">模型配置（点击切换 / 保存当前为预设）</div>
-        <div id="modelPresetList" class="model-preset-list"></div>
-      </div>
-      <div class="set-section">
-        <div class="set-section-title"><i data-ico="robot"></i> LLM 主配置</div>
-        <label>Base URL<input id="setBaseURL" type="text" placeholder="https://api.deepseek.com/v1" spellcheck="false"></label>
-        <label>API Key
-          <div class="set-key-field">
-            <input id="setApiKey" type="password" placeholder="sk-…" spellcheck="false">
-            <button id="setToggleApiKey" class="set-eye-btn" title="显示/隐藏"><i data-ico="eye"></i></button>
-          </div>
-        </label>
-        <label>模型名
-          <div style="display:flex;gap:8px">
-            <input id="setModel" type="text" placeholder="deepseek-chat" spellcheck="false" style="flex:1">
-            <button id="setFetchModels" class="btn-sub" style="white-space:nowrap">拉取模型</button>
-          </div>
-        </label>
-        <label>单任务最大工具调用轮数
-          <div style="display:flex;align-items:center;gap:8px">
-            <input id="setMaxRounds" type="number" min="5" max="500" step="5" placeholder="100" style="flex:1">
-            <span style="font-size:11px;color:var(--text-dim)">5-500，越大越能跑长任务</span>
-          </div>
-        </label>
-      </div>
-      <div class="set-section">
-        <div class="set-section-title"><i data-ico="search"></i> Embedding 配置（代码向量索引）</div>
-        <div class="set-tip">配置后代码索引将从 BM25 词法兜底升级为语义向量检索。留空则使用 BM25。</div>
-        <label>Embedding 端点<input id="setEmbEndpoint" type="text" placeholder="https://api.openai.com/v1" spellcheck="false"></label>
-        <label>Embedding API Key
-          <div class="set-key-field">
-            <input id="setEmbKey" type="password" placeholder="sk-…" spellcheck="false">
-            <button id="setToggleEmbKey" class="set-eye-btn" title="显示/隐藏"><i data-ico="eye"></i></button>
-          </div>
-        </label>
-        <label>Embedding 模型
-          <div style="display:flex;gap:8px">
-            <input id="setEmbModel" type="text" placeholder="text-embedding-3-small" spellcheck="false" style="flex:1">
-            <input id="setEmbDim" type="number" min="1" max="8192" step="64" placeholder="1536" style="width:90px" title="向量维度">
-          </div>
-        </label>
-      </div>
-      <div class="set-status" id="setStatus"></div>
-      <div class="set-actions">
-        <button id="setTest" class="btn-sub">测试连接</button>
-        <button id="setSave" class="btn-main">保存并切换引擎</button>
-      </div>
-    </div>
-  </div>
-</div>
 
 <!-- ======================= 后台进程面板 ======================= -->
 <div id="procsModal" style="display:none">
@@ -384,88 +373,6 @@
   </div>
 </div>
 
-<!-- ======================= Agent 设置弹窗 ======================= -->
-<div id="agentModal" style="display:none">
-  <div class="set-box agm-box">
-    <div class="set-head"><span><i data-ico="robot"></i> Agent 设置 — 权限 / 人格 / 规则 / 上下文 / 记忆</span><button id="agmClose"><i data-ico="close"></i></button></div>
-    <div class="set-body">
-      <div class="agm-grid">
-        <div class="agm-col">
-          <div class="agm-sec-title">权限模式</div>
-          <label>模式
-            <select id="agmMode">
-              <option value="ask">逐项确认 — 所有写入 / 命令都需批准（默认）</option>
-              <option value="semi">半自动 — 命中允许清单自动放行，其余仍确认</option>
-              <option value="auto">全自动 — 全部放行（拒绝清单与沙箱仍生效）</option>
-            </select>
-          </label>
-          <label>允许清单（每行一条，支持子串或 /正则/，半自动模式生效）
-            <textarea id="agmAllow" rows="3" spellcheck="false" placeholder="npm test&#10;/^git (status|diff)/"></textarea>
-          </label>
-          <label>拒绝清单（每行一条，任何模式下命中即硬拦截）
-            <textarea id="agmDeny" rows="3" spellcheck="false" placeholder="rm -rf&#10;.env"></textarea>
-          </label>
-        </div>
-        <div class="agm-col">
-          <div class="agm-sec-title">人格 / 灵魂设定</div>
-          <label>预设
-            <select id="agmPersona">
-              <option value="default">默认 — 通用编程助手</option>
-              <option value="fullstack">全栈工程师</option>
-              <option value="frontend">前端专家</option>
-              <option value="backend">后端专家</option>
-              <option value="custom">自定义（编写系统提示词）</option>
-            </select>
-          </label>
-          <label id="agmPromptRow" style="display:none">自定义系统提示词
-            <textarea id="agmPrompt" rows="4" spellcheck="false" placeholder="你是一位……（将追加到系统提示词后）"></textarea>
-          </label>
-          <div class="agm-sec-title" style="margin-top:6px">上下文 / 记忆 / 规则</div>
-          <label class="agm-check">Agent 行为模式
-            <select id="agmAgentMode" title="Agent 执行 / Plan 只读规划 / Ask 仅问答">
-              <option value="agent">Agent（说做就做）</option>
-              <option value="plan">Plan（只读规划，禁止写入与执行）</option>
-              <option value="ask">Ask（仅问答，不调用任何工具）</option>
-            </select>
-          </label>
-          <label class="agm-check"><input type="checkbox" id="agmRules">启用项目规则（.pancode/rules/*.md 强制注入）</label>
-          <label class="agm-check"><input type="checkbox" id="agmMemory">启用自动记忆（记住你的纠正与偏好）</label>
-          <label class="agm-check"><input type="checkbox" id="agmCompact">上下文超预算 85% 时自动摘要压缩</label>
-          <label class="agm-check"><input type="checkbox" id="agmLsp">启用 LSP 诊断（实时语言服务器错误提示）</label>
-          <label>上下文预算（tokens）<input id="agmBudget" type="number" min="8000" step="1000" placeholder="120000"></label>
-        </div>
-      </div>
-      <div class="agm-mcp">
-        <div class="agm-sec-title">MCP 外部工具服务器</div>
-        <div class="agm-mcp-tip">MCP（Model Context Protocol）让你接入本地/第三方的工具服务器（如文件系统、数据库、API 网关）。每个 server 以<b>你当前的系统权限</b>运行，请仅添加可信来源。配置后，server 暴露的工具会自动作为 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 提供给 Agent。</div>
-        <div class="agm-mcp-list" id="mcpServerList"></div>
-        <div class="agm-mcp-form" id="mcpForm" style="display:none">
-          <div class="agm-path-grid">
-            <label>名称<input id="mcpName" type="text" placeholder="如 filesystem" spellcheck="false"></label>
-            <label>命令<input id="mcpCommand" type="text" placeholder="如 npx 或绝对路径" spellcheck="false"></label>
-          </div>
-          <label>参数（空格分隔，可选）<input id="mcpArgs" type="text" placeholder="如 -y @modelcontextprotocol/server-filesystem /workspace" spellcheck="false"></label>
-          <label>环境变量（每行 KEY=VALUE，可选）<textarea id="mcpEnv" rows="2" spellcheck="false" placeholder="API_KEY=xxx"></textarea></label>
-          <label class="agm-check"><input type="checkbox" id="mcpEnabled" checked>启用（取消勾选则不启动该 server）</label>
-          <div class="set-actions">
-            <span class="agm-hint" id="mcpFormHint"></span>
-            <button id="mcpFormCancel" class="btn-ghost">取消</button>
-            <button id="mcpFormSave" class="btn-main">添加</button>
-          </div>
-        </div>
-        <div class="agm-mcp-actions">
-          <button id="mcpAdd" class="btn-ghost">+ 添加 MCP 服务器</button>
-          <button id="mcpSave" class="btn-main">保存 MCP 配置</button>
-        </div>
-      </div>
-      <div class="set-status" id="agmStatus"></div>
-      <div class="set-actions">
-        <span class="agm-hint">保存后立即广播到所有窗口，对下一条消息生效</span>
-        <button id="agmSave" class="btn-main">保存设置</button>
-      </div>
-    </div>
-  </div>
-</div>
 
 <!-- ======================= 工作流模板弹出层 ======================= -->
 <div id="wfPop" class="wf-pop" style="display:none">
@@ -474,33 +381,6 @@
   <div class="wf-pop-tip">点击模板会自动填入输入框，补充 <b>&lt;…&gt;</b> 占位后发送</div>
 </div>
 
-<!-- ======================= 会话沉淀弹窗 ======================= -->
-<div id="sedimentModal" style="display:none">
-  <div class="set-box sed-box">
-    <div class="set-head"><span><i data-ico="save"></i> 会话沉淀 — 把有效决策 / 约定固化为长期资产</span><button id="sedClose"><i data-ico="close"></i></button></div>
-    <div class="set-body">
-      <div class="sed-tip">一次好的「沉淀」会让未来的每次对话都更懂这个项目。选择沉淀目标：<b>项目规则</b>会被强制注入每次对话（像纪律），<b>项目记忆</b>作为参考背景（像经验）。</div>
-      <label>标题（可选）
-        <input id="sedTitle" type="text" placeholder="例如：登录必须用 JWT、禁止在控制器里写 SQL" spellcheck="false">
-      </label>
-      <label>内容（沉淀什么决策 / 约定 / 教训）
-        <textarea id="sedContent" rows="5" spellcheck="false" placeholder="例如：用户要求所有接口统一返回 {code,data,msg} 结构；分页用 page/size 参数。"></textarea>
-      </label>
-      <div class="sed-target">
-        <label class="sed-radio"><input type="radio" name="sedTarget" value="rule" checked> <span><b>项目规则</b><i>强制注入 · 像纪律</i></span></label>
-        <label class="sed-radio"><input type="radio" name="sedTarget" value="memory"> <span><b>项目记忆</b><i>参考背景 · 像经验</i></span></label>
-      </div>
-      <details class="sed-existing">
-        <summary>查看当前已沉淀内容（规则 + 记忆）</summary>
-        <pre id="sedPreview" class="sed-preview">（加载中…）</pre>
-      </details>
-      <div class="set-status" id="sedStatus"></div>
-      <div class="set-actions">
-        <button id="sedSave" class="btn-main">沉淀并保存</button>
-      </div>
-    </div>
-  </div>
-</div>
 
 <!-- ======================= 右键菜单 ======================= -->
 <div id="ctxMenu" style="display:none"></div>
@@ -567,82 +447,13 @@
       <button id="authTogglePass" class="auth-eye" title="显示/隐藏密码"><i data-ico="eye"></i></button>
     </div>
     <div class="auth-extra">
-      <label class="auth-remember"><input id="authRemember" type="checkbox"> 记住我</label>
+      <label class="auth-remember"><input id="authRemember" type="checkbox" checked> 记住我（本机保持登录）</label>
     </div>
     <div id="authStatus" class="auth-status"></div>
     <button id="authSubmit" class="auth-submit">登录</button>
     <div class="auth-switch">
       <span id="authSwitchLabel">还没有账号？</span>
       <button id="authSwitch" class="auth-switch-btn">注册新账号</button>
-    </div>
-  </div>
-</div>
-
-<!-- ======================= 全局设置弹窗 ======================= -->
-<div id="globalSettingsModal" style="display:none">
-  <div class="set-box" style="width:520px">
-    <div class="set-head"><span><i data-ico="gear"></i> 全局设置</span><button id="gsClose"><i data-ico="close"></i></button></div>
-    <div class="set-body">
-      <!-- 外观 -->
-      <div class="set-section">
-        <div class="set-section-title"><i data-ico="sun"></i> 外观</div>
-        <div class="gs-row">
-          <div class="gs-row-label">主题</div>
-          <div class="gs-row-control">
-            <div class="gs-segment" id="gsThemeSeg">
-              <button data-val="auto">跟随系统</button>
-              <button data-val="dark">深色</button>
-              <button data-val="light">浅色</button>
-            </div>
-          </div>
-        </div>
-        <div class="gs-row">
-          <div class="gs-row-label">编辑器字体大小</div>
-          <div class="gs-row-control">
-            <input id="gsFontSize" type="range" min="11" max="22" step="0.5" value="13.5" class="gs-slider">
-            <span id="gsFontSizeVal" class="gs-slider-val">13.5px</span>
-          </div>
-        </div>
-        <div class="gs-row">
-          <div class="gs-row-label">界面字体大小</div>
-          <div class="gs-row-control">
-            <input id="gsUiFontSize" type="range" min="11" max="18" step="0.5" value="13" class="gs-slider">
-            <span id="gsUiFontSizeVal" class="gs-slider-val">13px</span>
-          </div>
-        </div>
-      </div>
-      <!-- 语言 -->
-      <div class="set-section">
-        <div class="set-section-title"><i data-ico="md"></i> 语言</div>
-        <div class="gs-row">
-          <div class="gs-row-label">界面语言</div>
-          <div class="gs-row-control">
-            <div class="gs-segment" id="gsLangSeg">
-              <button data-val="zh" class="active">中文</button>
-              <button data-val="en">English</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <!-- 项目管理 -->
-      <div class="set-section">
-        <div class="set-section-title"><i data-ico="folder"></i> 项目管理</div>
-        <div class="gs-row">
-          <div class="gs-row-label">当前工作区</div>
-          <div class="gs-row-control">
-            <span id="gsWorkspace" class="gs-workspace">加载中…</span>
-            <button id="gsBrowseFolder" class="btn-sub">切换</button>
-          </div>
-        </div>
-        <div class="gs-recent-label">最近打开</div>
-        <div id="gsRecentList" class="gs-recent-list"></div>
-      </div>
-      <!-- 高级设置入口 -->
-      <div class="set-section">
-        <div class="set-section-title"><i data-ico="tune"></i> 高级设置</div>
-        <div class="gs-link-row" id="gsOpenModelSettings"><i data-ico="robot"></i> 模型设置（LLM / Embedding）<i data-ico="chevR" class="gs-link-arrow"></i></div>
-        <div class="gs-link-row" id="gsOpenAgentSettings"><i data-ico="gear"></i> Agent 设置（权限 / 人格 / MCP）<i data-ico="chevR" class="gs-link-arrow"></i></div>
-      </div>
     </div>
   </div>
 </div>
@@ -654,9 +465,9 @@
     <div class="set-body">
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
         <button id="btnAutoNew" class="set-btn" style="background:var(--accent);color:#fff">＋ 新建任务</button>
-        <button class="set-btn auto-tpl" data-tpl="0">🕘 定时跑测试</button>
-        <button class="set-btn auto-tpl" data-tpl="1">🔐 夜间依赖审计</button>
-        <button class="set-btn auto-tpl" data-tpl="2">📈 每周代码健康</button>
+        <button class="set-btn auto-tpl" data-tpl="0"><i data-ico="clock"></i> 定时跑测试</button>
+        <button class="set-btn auto-tpl" data-tpl="1"><i data-ico="shield"></i> 夜间依赖审计</button>
+        <button class="set-btn auto-tpl" data-tpl="2"><i data-ico="pulse"></i> 每周代码健康</button>
       </div>
       <div id="autoForm" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
         <div class="set-row"><label>任务名称 *</label><input id="autoName" type="text" placeholder="如：定时跑测试"></div>
@@ -811,7 +622,8 @@
       <div class="cm-result" id="cmResult"></div>
       <div class="cm-actions">
         <button id="cmCancel" class="set-btn" style="background:var(--bg4)">取消</button>
-        <button id="cmSubmit" class="btn-main">提交</button>
+        <button id="cmPush" class="set-btn" title="提交完成后把当前分支推到远端">提交并推送</button>
+        <button id="cmSubmit" class="btn-main">仅提交</button>
       </div>
     </div>
   </div>
@@ -853,5 +665,7 @@
 
   <script src="app.js"></script>
   <script src="js/global-settings.js"></script>
+  <script src="js/workbench.js"></script>
+  <script src="js/assets-center.js"></script>
 </body>
 </html>

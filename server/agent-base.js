@@ -87,16 +87,31 @@ class AgentBase {
     });
   }
 
-  /* 全量改动列表（基于 Git/快照基线） → 推给前端 */
+  /* 全量改动列表（基于 Git/快照基线） → 推给前端，并附每个文件的改动风险分 */
   async pushChanges(card) {
-    const list = [];
+    const risk = require("./risk");
+    const pre = [];
     for (const ch of await this.git.changes()) {
       let cur = "", base = await this.git.baseline(ch.path);
       if (ch.status !== "D") { try { cur = this.files.read(ch.path); } catch (e) { continue; } }
       const st = diffStat(base === null ? "" : base, cur);
-      list.push({ path: ch.path, status: ch.status, add: st.add, del: st.del });
+      pre.push({ path: ch.path, status: ch.status, add: st.add, del: st.del, base: base === null ? "" : base, cur });
     }
-    this.emit({ type: "changes", list, card: !!card, convId: this._currentConv });
+    const hasTestTouch = pre.some((p) => /\.(test|spec)\.[jt]sx?$|(^|\/)(tests?|__tests__|spec)\//i.test(p.path));
+    const list = [], risks = [];
+    for (const p of pre) {
+      const r = risk.assess({
+        path: p.path, base: p.base, cur: p.cur, add: p.add, del: p.del, status: p.status,
+        changedFiles: pre.length, hasTestTouch,
+      });
+      risks.push(r);
+      list.push({ path: p.path, status: p.status, add: p.add, del: p.del, risk: r.level, riskScore: r.score, riskReasons: r.reasons });
+    }
+    const riskSummary = risk.summarize(risks);
+    this._lastRiskSummary = riskSummary;
+    this.convRisk = this.convRisk || {};
+    this.convRisk[this._currentConv] = riskSummary;
+    this.emit({ type: "changes", list, card: !!card, risk: riskSummary, convId: this._currentConv });
     return list;
   }
 

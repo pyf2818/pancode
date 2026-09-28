@@ -1,6 +1,6 @@
 {
   "name": "pancode",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "基于 Monaco Editor (VS Code 开源内核) 的 Web AI 编程工作台 — 可写编辑器 + Git 基线 + 真实 LLM Agent 工具调用循环（OpenAI 兼容），无 Key 时演示引擎保底",
   "main": "electron/main.js",
   "scripts": {
@@ -11,7 +11,7 @@
     "dist": "electron-builder --win nsis",
     "smoke": "node scripts/smoke-test.js",
     "test:fileops": "node scripts/fileops-test.js",
-    "test:verify": "node scripts/_verify_render.js && node scripts/_verify_repo_map.js && node scripts/_verify_tools.js && node scripts/_verify_agentflow.js && node scripts/_verify_choice.js",
+    "test:verify": "node scripts/_verify_render.js && node scripts/_verify_repo_map.js && node scripts/_verify_tools.js && node scripts/_verify_agentflow.js && node scripts/_verify_choice.js && node scripts/_verify_assets.js && node scripts/_verify_workbench.js && node scripts/_verify_longtask.js && node scripts/_verify_auth.js && node scripts/_verify_layout.js",
     "test:integration": "node scripts/integration-runner.js",
     "test:lsp": "node scripts/test-lsp.js",
     "test:code-index": "node scripts/test-code-index.js",

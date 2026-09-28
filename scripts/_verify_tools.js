@@ -12,7 +12,7 @@ const EXPECT_TOOLS = [
   "list_files", "read_file", "write_file", "apply_edit", "delete_file",
   "search_code", "run_command", "repo_map", "search_symbol",
   "search_memory", "get_diagnostics", "undo",
-  "create_skill", "create_plan", "update_plan",
+  "create_skill", "use_skill", "create_plan", "update_plan",
   "list_templates", "instantiate_template", "save_template", "remove_template",
   "set_goal", "goal_status", "save_session_memory", "agent",
   /* 进程管理 */

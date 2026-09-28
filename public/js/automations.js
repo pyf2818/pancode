@@ -18,8 +18,8 @@ function autoStatusBadge(s) {
   return '<span class="mcp-badge ' + m[0] + '">' + m[1] + "</span>";
 }
 function autoSchedDesc(a) {
-  if (a.scheduleType === "once") return "⏰ 一次性 · " + (a.scheduledAt ? new Date(a.scheduledAt).toLocaleString() : "—");
-  return "🔁 周期 · <code style='font-family:var(--mono);background:var(--bg4);padding:1px 6px;border-radius:4px'>" + escHtml(a.cron || "") + "</code>";
+  if (a.scheduleType === "once") return ico("clock") + " 一次性 · " + (a.scheduledAt ? new Date(a.scheduledAt).toLocaleString() : "—");
+  return ico("reset") + " 周期 · <code style='font-family:var(--mono);background:var(--bg4);padding:1px 6px;border-radius:4px'>" + escHtml(a.cron || "") + "</code>";
 }
 function autoFmtTs(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
 function autoLastBadge(s) {
@@ -57,10 +57,10 @@ async function loadAutomations() {
       + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
       + '<b style="font-size:13px">' + escHtml(a.name) + "</b>" + autoStatusBadge(a.status) + autoLastBadge(a.lastStatus)
       + '<span style="flex:1"></span>'
-      + '<button class="auto-act" data-act="run" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">▶ 立即运行</button>'
-      + '<button class="auto-act" data-act="' + (running ? "pause" : "resume") + '" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">' + (running ? "⏸ 暂停" : "▶ 恢复") + "</button>"
-      + '<button class="auto-act" data-act="hist" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">🕘 历史</button>'
-      + '<button class="auto-act" data-act="del" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">🗑</button>'
+      + '<button class="auto-act" data-act="run" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">' + ico("play") + " 立即运行</button>"
+      + '<button class="auto-act" data-act="' + (running ? "pause" : "resume") + '" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">' + (running ? ico("stopSq") + " 暂停" : ico("play") + " 恢复") + "</button>"
+      + '<button class="auto-act" data-act="hist" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">' + ico("history") + " 历史</button>"
+      + '<button class="auto-act" data-act="del" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px" title="删除任务">' + ico("trash") + "</button>"
       + "</div>"
       + '<div style="font-size:12px;color:var(--text-dim);margin-top:6px">' + autoSchedDesc(a) + "</div>"
       + '<div style="font-size:11px;color:var(--text-dim);margin-top:4px">上次: ' + autoFmtTs(a.lastRunAt) + " · 下次: " + autoFmtTs(a.nextRunAt) + "</div>"
@@ -83,7 +83,7 @@ async function autoToggleHistory(id) {
     autoRunsCache[id] = runs;
     box.innerHTML = runs.length
       ? runs.map((rn) => '<div style="border-top:1px dashed var(--border);padding:6px 0;font-size:11px">'
-        + (rn.ok ? '<span style="color:var(--ok,#46a758)">✔</span>' : '<span style="color:var(--err,#e5484d)">✘</span>')
+        + (rn.ok ? '<span style="color:var(--ok,#46a758)">' + ico("check") + "</span>" : '<span style="color:var(--err,#e5484d)">' + ico("close") + "</span>")
         + " <b>" + new Date(rn.startedAt).toLocaleString() + "</b> · " + ((rn.finishedAt || rn.startedAt) - rn.startedAt >= 0 ? (((rn.finishedAt || rn.startedAt) - rn.startedAt) / 1000).toFixed(1) + "s" : "")
         + (rn.error ? ' <span style="color:var(--err,#e5484d)">' + escHtml(rn.error).slice(0, 200) + "</span>" : "")
         + '<div style="color:var(--text-dim);white-space:pre-wrap;max-height:100px;overflow:auto;margin-top:3px;font-family:var(--mono)">' + escHtml((rn.output || "").slice(0, 1500)) + "</div></div>").join("")
@@ -117,7 +117,8 @@ function autoFillTemplate(i) {
 }
 
 /* ---------- 事件绑定 ---------- */
-$("btnAutomations").onclick = openAutomations;
+/* 顶部按钮已移除（自动化任务改由命令面板 / 全局设置进入），此处容错绑定 */
+$("btnAutomations") && ($("btnAutomations").onclick = openAutomations);
 $("automationsClose").onclick = () => ($("automationsModal").style.display = "none");
 $("btnAutoNew").onclick = () => autoToggleForm();
 $("autoType").addEventListener("change", autoSyncType);
@@ -158,7 +159,7 @@ $("btnAutoSave").onclick = async () => {
   try {
     const r = await fetch("/api/automations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json());
     if (r.ok) {
-      toast("✅ 任务已创建，到点自动执行");
+      toast("任务已创建，到点自动执行");
       $("autoName").value = ""; $("autoPrompt").value = ""; $("autoCron").value = ""; $("autoAt").value = "";
       autoToggleForm(false);
       loadAutomations();

@@ -100,7 +100,7 @@ function renderPatchDiff(path) {
   const preview = previewModified(f);
   if (patchDiffEditor) patchDiffEditor.dispose();
   patchDiffEditor = monaco.editor.createDiffEditor($("patchHost"), {
-    theme: getTheme() === "light" ? "pancode-light" : "pancode-dark", readOnly: true, automaticLayout: true, fontSize: 13,
+    theme: "pancode", readOnly: true, automaticLayout: true, fontSize: 13,
     renderSideBySide: true, minimap: { enabled: false },
     ignoreTrimWhitespace: false, renderIndicators: true,
   });

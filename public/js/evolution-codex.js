@@ -83,318 +83,419 @@ function renderCodex() {
   renderCodexSide();
 }
 
-function renderCodexTree() {
-  const root = $("evoCodexTree");
-  if (!root || !evoData) return;
-  root.innerHTML = buildCodexBubble(evoData.tree, evoData.progression);
-  initBubblePhysics(root);
+/* ============================================================
+   成长树 v3 —— 程序化拟真分形树（纯 SVG + CSS 动画，零依赖）
+   数据源：evoData = GET /api/evolution/tree 的返回
+     evoData.tree.soul                       {name,vibe,values,boundaries,principles,proposals,pendingCount}
+     evoData.tree.memory.{memory,experience,lesson}  {label,icon,items:[{id,type,topic,content,ts,accessCount,valueScore,source}]}
+     evoData.tree.skills                     [{label,icon,items:[{id,name,desc,ts,source}]}]
+     evoData.progression                     {xp,stage:{id,name},stageProgress,xpToNext,attributes,path,achievements,unlockNodes:[{id,label,req,met}]}
+     evoData.counts / evoData.timeline
+   ============================================================ */
+const EVO_H = 620;                   // 坐标系高度（面板内容宽 404）
+const EVO_VIEW = "0 92 400 526";     // viewBox：裁掉树冠上方的空白天空，让树撑满面板
+const EVO_GROUND = 466;              // 地平线（树干基部）
+const EVO_TRUNK_TOP = 310;           // 主干顶端 = 内层两主枝分叉点
+const EVO_LEN = [156, 84, 56, 37, 23];   // 各级枝长（0=主干）
+const EVO_WID = [14, 8.6, 5.2, 3.1, 1.8]; // 各级枝宽：主干 14px → 末梢 ~1.8px
+const EVO_KIDS = [0, 3, 2, 2];       // 每级子枝数 → 满级末梢 3*2*2 = 12 个叶位
+const EVO_DELAY = [0, 0.18, 0.38, 0.56, 0.72]; // 逐级生长延迟（整棵 ≤1.6s）
+const EVO_MAX_LEAF = 12;             // 每类最多渲染条目
+let codexTreeGrown = false;          // 成长动画只播一次
+
+/* 固定 seed 伪随机（mulberry32）：同一份数据每次渲染形状完全一致，不闪烁 */
+function evoRng(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), 1 | t);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-function buildCodexBubble(t, prog) {
-  const C = {
-    soul:   { f: "#9b3fb0", s: "#6a2a86", glow: "#b18cff" },
-    memory: { f: "#0a6ebd", s: "#084c7a", glow: "#3ee0ff" },
-    skills: { f: "#1a8c6e", s: "#0f5a45", glow: "#2dd4a7" },
-    exp:    { f: "#b58a00", s: "#8a6a00", glow: "#fbbf24" },
-    lesson: { f: "#d94343", s: "#a32d2d", glow: "#fb7185" },
-  };
-  const W = 440, H = 600;
+const evoN = (v) => (Math.round(v * 10) / 10);
 
-  const nodes = [];
-  const edges = [];
+/* 沿方向角折线采样：ang 弧度，0 = 正上方；curve = 全枝累积弯曲 */
+function evoSample(rnd, x, y, ang, len, curve, n) {
+  const pts = [[x, y]];
+  let a = ang, px = x, py = y;
+  const step = len / n;
+  for (let i = 1; i <= n; i++) {
+    a += curve / n + (rnd() - 0.5) * 0.055;
+    px += Math.sin(a) * step;
+    py -= Math.cos(a) * step;
+    pts.push([px, py]);
+  }
+  return pts;
+}
 
-  // 根节点（固定）
-  nodes.push({ id: "soul", x: W / 2, y: 55, r: 26, c: C.soul, label: t.soul.name || "Agent", kind: "soul", fixed: true, lv: 0 });
+function evoPolyline(pts, i0, i1) {
+  let d = "M" + evoN(pts[i0][0]) + " " + evoN(pts[i0][1]);
+  for (let i = i0 + 1; i <= i1; i++) d += "L" + evoN(pts[i][0]) + " " + evoN(pts[i][1]);
+  return d;
+}
 
-  // 分类节点
-  const cats = [
-    { key: "memory", x: 90,  y: 200, label: "记忆", items: t.memory.memory.items, c: C.memory },
-    { key: "skills", x: 350, y: 200, label: "技能", items: t.skills.reduce((a, g) => a.concat(g.items), []), c: C.skills },
-    { key: "exp",    x: 90,  y: 410, label: "经验", items: t.memory.experience.items, c: C.exp },
-    { key: "lesson", x: 350, y: 410, label: "教训", items: t.memory.lesson.items, c: C.lesson },
-  ];
+/* 按弧长比例取折线上一点（用于把主枝挂在主干的不同高度） */
+function evoPointAt(pts, frac) {
+  const last = pts.length - 1;
+  const f = Math.max(0, Math.min(1, frac)) * last;
+  const i = Math.min(last - 1, Math.floor(f));
+  const t = f - i;
+  return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t];
+}
 
-  cats.forEach((cat) => {
-    const seen = new Set();
-    const unique = cat.items.filter((it) => { const k = it.id || it.topic || it.name || it.type; if (seen.has(k)) return false; seen.add(k); return true; });
-    const lv = Math.min(9, 1 + Math.floor(unique.length / 3));
-    const r = 18 + Math.min(lv, 5);
-    const catId = "cat-" + cat.key;
-    nodes.push({ id: catId, x: cat.x, y: cat.y, r: r, c: cat.c, label: cat.label + " " + unique.length, kind: "cat", catKey: cat.key, lv: lv, fixed: false, parent: "soul" });
-    edges.push({ from: "soul", to: catId });
+/* 递归分枝：枝宽随层级递减，每级带轻微随机弯曲。
+   枝长系数 cat.k 与最大层级 cat.maxDepth 由该分类条目数决定 —— 沉淀越多长得越高越密。 */
+function evoGrow(ctx, rnd, cat, x, y, ang, len, w, depth) {
+  const curve = (rnd() - 0.5) * (0.6 - depth * 0.07);
+  const pts = evoSample(rnd, x, y, ang, len, curve, 8);
+  ctx.segs.push({ pts: pts, w: w, depth: depth, cat: cat.key });
+  const ex = pts[8][0], ey = pts[8][1], ea = ang + curve;
+  if (depth === 1) cat.elbow = { x: ex, y: ey, ang: ea };
+  if (depth >= cat.maxDepth) { cat.tips.push({ x: ex, y: ey, ang: ea }); return; }
+  const n = EVO_KIDS[depth];
+  const spread = n === 3 ? [-0.46, -0.05, 0.4] : [-0.28, 0.28];
+  for (let i = 0; i < n; i++) {
+    let ka = ea * 0.74 + spread[i] + (rnd() - 0.5) * 0.16;
+    ka = Math.max(-1.16, Math.min(1.16, ka));
+    evoGrow(ctx, rnd, cat, ex, ey, ka, EVO_LEN[depth + 1] * cat.k * (0.9 + rnd() * 0.2), EVO_WID[depth + 1] * cat.wk, depth + 1);
+  }
+}
 
-    const top = unique.slice(0, 5);
-    top.forEach((it, i) => {
-      const angle = (i / top.length) * Math.PI * 2 - Math.PI / 2;
-      const dist = r + 35;
-      const lx = cat.x + Math.cos(angle) * dist;
-      const ly = cat.y + Math.sin(angle) * dist;
-      const leafId = "leaf-" + cat.key + "-" + i;
-      const nm = (cat.key === "skills" ? it.name : (it.topic || it.type || ""));
-      const label = (nm || "").slice(0, 10);
-      const kind = cat.key === "skills" ? "skill" : "mem";
-      nodes.push({ id: leafId, x: lx, y: ly, r: 7, c: cat.c, label: label, kind: kind, leafId: it.id, fixed: false, parent: catId, isLeaf: true });
-      edges.push({ from: catId, to: leafId });
-    });
+/* 叶（记忆 / 经验 / 教训）：大小随 valueScore，饱满度随 accessCount */
+function evoLeaf(tip, it, cat, rnd, idx, anim) {
+  const score = Math.max(1, Math.min(5, Number(it.valueScore) || 2));
+  const L = 9.5 + score * 2.3;
+  const acc = Math.max(0, Math.min(1, (Number(it.accessCount) || 0) / 5));
+  const op = (0.58 + acc * 0.42).toFixed(2);
+  const rot = (Math.atan2(-Math.cos(tip.ang), Math.sin(tip.ang)) * 180) / Math.PI + (rnd() - 0.5) * 26 - 8;
+  const d = "M0 0Q" + evoN(L * 0.5) + " " + evoN(-L * 0.37) + " " + evoN(L) + " 0Q" + evoN(L * 0.5) + " " + evoN(L * 0.37) + " 0 0Z";
+  const vein = "M" + evoN(L * 0.08) + " 0L" + evoN(L * 0.92) + " 0";
+  const delay = anim ? (0.92 + idx * 0.006) : 0;
+  return '<g class="evo-leaf" data-cat="' + cat.key + '" data-i="' + idx + '" transform="translate(' + evoN(tip.x) + ',' + evoN(tip.y) + ') rotate(' + evoN(rot) + ')">' +
+    '<g' + (anim ? ' class="evo-pop" style="animation-delay:' + delay.toFixed(3) + 's"' : "") + '>' +
+      '<path class="evo-leaf-body" d="' + d + '" style="fill:' + cat.color + ";fill-opacity:" + op + ";stroke:" + cat.color + '"/>' +
+      '<path class="evo-leaf-vein" d="' + vein + '"/>' +
+    "</g></g>";
+}
+
+/* 果（技能）：圆形带高光 */
+function evoFruit(tip, it, cat, rnd, idx, anim) {
+  const r = 4.3 + rnd() * 1.5 + (it.source === "builtin" ? 0 : 0.9);
+  const dx = Math.sin(tip.ang) * (r * 0.7), dy = -Math.cos(tip.ang) * (r * 0.7);
+  const delay = anim ? (0.92 + idx * 0.006) : 0;
+  return '<g class="evo-fruit" data-cat="' + cat.key + '" data-i="' + idx + '" transform="translate(' + evoN(tip.x + dx) + ',' + evoN(tip.y + dy) + ')">' +
+    "<g" + (anim ? ' class="evo-pop" style="animation-delay:' + delay.toFixed(3) + 's"' : "") + ">" +
+      '<path class="evo-fruit-stem" d="M0 ' + evoN(-r) + "L0 " + evoN(-r - 3.4) + '"/>' +
+      '<circle class="evo-fruit-body" r="' + evoN(r) + '" fill="url(#evoFruitG)" style="stroke:' + cat.color + '"/>' +
+      '<circle class="evo-fruit-hi" cx="' + evoN(-r * 0.32) + '" cy="' + evoN(-r * 0.34) + '" r="' + evoN(r * 0.28) + '"/>' +
+    "</g></g>";
+}
+
+/* 超出 12 条的聚合簇：枝肘处一小簇 + 「+N」 */
+function evoPlusBunch(cat, extra) {
+  const e = cat.elbow;
+  if (!e) return "";
+  const left = cat.ang < 0;
+  const base = (Math.atan2(-Math.cos(e.ang), Math.sin(e.ang)) * 180) / Math.PI;
+  let s = '<g class="evo-plus" data-cat="' + cat.key + '" transform="translate(' + evoN(e.x) + "," + evoN(e.y) + ')">';
+  [-46, 6, 58].forEach((o) => {
+    const L = 9.5;
+    s += '<g transform="rotate(' + evoN(base + o) + ')"><path class="evo-leaf-body" style="fill:' + cat.color + ";fill-opacity:.72;stroke:" + cat.color +
+      '" d="M0 0Q' + evoN(L * 0.5) + " " + evoN(-L * 0.37) + " " + evoN(L) + " 0Q" + evoN(L * 0.5) + " " + evoN(L * 0.37) + ' 0 0Z"/></g>';
   });
-
-  // 进阶称号节点
-  const un = (prog && prog.unlockNodes) || [];
-  un.forEach((u, i) => {
-    const ux = W / 2 - (un.length - 1) * 65 / 2 + i * 65;
-    const uy = 560;
-    nodes.push({ id: "unlock-" + u.id, x: ux, y: uy, r: 16, c: u.met ? { f: "#1a8c6e", s: "#0f5a45", glow: "#2dd4a7" } : { f: "#6a7078", s: "#4a5058", glow: "#8a9098" }, label: u.label, kind: "unlock", unlockId: u.id, met: u.met, fixed: false, isUnlock: true });
-  });
-
-  // 构建 HTML
-  let s = '<div class="evo-bubble-canvas" style="width:100%;height:' + H + 'px;position:relative;overflow:hidden">';
-  // 背景网格
-  s += '<svg class="evo-bubble-bg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">';
-  s += '<defs><pattern id="hexgrid-b" width="30" height="26" patternUnits="userSpaceOnUse"><path d="M15 0L30 7.5L30 18.5L15 26L0 18.5L0 7.5Z" fill="none" stroke="var(--border)" stroke-width="0.5" opacity="0.25"/></pattern>';
-  s += '<radialGradient id="bg-glow"><stop offset="0%" stop-color="var(--accent-glow)" stop-opacity="0.08"/><stop offset="100%" stop-color="transparent" stop-opacity="0"/></radialGradient></defs>';
-  s += '<rect width="' + W + '" height="' + H + '" fill="url(#hexgrid-b)"/>';
-  s += '<rect width="' + W + '" height="' + H + '" fill="url(#bg-glow)"/>';
-  s += '</svg>';
-
-  // 连线 SVG 层
-  s += '<svg class="evo-bubble-edges" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">';
-  edges.forEach((e) => {
-    s += '<path id="edge-' + e.from + '-' + e.to + '" class="evo-bubble-edge" stroke="' + (nodes.find(n => n.id === e.to) || {}).c?.s + '" stroke-width="1.5" fill="none" opacity="0.4"/>';
-  });
-  s += '</svg>';
-
-  // 节点数据（JSON 嵌入）
-  s += '<script type="application/json" id="evo-bubble-data">' + esc(JSON.stringify({ nodes: nodes.map(n => ({ id: n.id, x: n.x, y: n.y, r: n.r, fixed: n.fixed, parent: n.parent })), edges: edges, W: W, H: H })) + '</script>';
-
-  // 节点球 div
-  nodes.forEach((n) => {
-    const cls = ["evo-bubble"];
-    if (n.fixed) cls.push("evo-bubble-root");
-    if (n.isLeaf) cls.push("evo-bubble-leaf");
-    if (n.isUnlock) cls.push("evo-bubble-unlock");
-    if (n.isUnlock && n.met) cls.push("met");
-    const bg = 'background:radial-gradient(circle at 35% 30%, ' + n.c.glow + ', ' + n.c.f + ' 60%, ' + n.c.s + ')';
-    const shadow = 'box-shadow:0 0 ' + (n.r * 0.8) + 'px ' + n.c.glow + '88, inset 0 1px 0 #fff3';
-    s += '<div class="' + cls.join(" ") + '" data-id="' + esc(n.id) + '" data-kind="' + esc(n.kind) + '" data-fixed="' + (n.fixed ? "1" : "0") + '"';
-    if (n.kind === "cat") s += ' data-cat="' + esc(n.catKey) + '"';
-    if (n.kind === "unlock") s += ' data-unlock-id="' + esc(n.unlockId) + '"';
-    if (n.kind === "skill" || n.kind === "mem") s += ' data-leaf-id="' + esc(n.leafId || "") + '"';
-    s += ' style="left:' + (n.x - n.r) + 'px;top:' + (n.y - n.r) + 'px;width:' + (n.r * 2) + 'px;height:' + (n.r * 2) + 'px;' + bg + ';' + shadow + '" title="' + esc(n.label) + '">';
-    if (n.kind === "soul") {
-      s += '<span class="evo-bubble-icon">' + ico("soul") + '</span>';
-    } else if (n.kind === "cat") {
-      s += '<span class="evo-bubble-lv">L' + n.lv + '</span>';
-    } else if (n.isUnlock) {
-      s += '<span class="evo-bubble-icon">' + ico(n.met ? "check" : "lock") + '</span>';
-    }
-    s += '<span class="evo-bubble-label">' + esc(n.label) + '</span>';
-    s += '</div>';
-  });
-
-  s += '<div class="evo-bubble-hint">拖动节点可自由排列 · 根节点固定</div>';
-  s += '</div>';
+  s += '<text class="evo-plus-txt" x="' + (left ? -5 : 5) + '" y="3.5" text-anchor="' + (left ? "end" : "start") + '">+' + extra + "</text></g>";
   return s;
 }
 
-function initBubblePhysics(container) {
-  const dataEl = container.querySelector("#evo-bubble-data");
-  if (!dataEl) return;
-  let data;
-  try { data = JSON.parse(dataEl.textContent); } catch (e) { return; }
-  const W = data.W, H = data.H;
-  const canvas = container.querySelector(".evo-bubble-canvas");
-  const edgeSvg = container.querySelector(".evo-bubble-edges");
-  if (!canvas || !edgeSvg) return;
-
-  // 获取实际渲染尺寸比例
-  const rect = canvas.getBoundingClientRect();
-  const scale = rect.width / W;
-
-  // 节点状态
-  const nodes = {};
-  data.nodes.forEach((n) => { nodes[n.id] = { x: n.x, y: n.y, vx: 0, vy: 0, r: n.r, fixed: n.fixed, parent: n.parent }; });
-
-  const nodeEls = {};
-  container.querySelectorAll(".evo-bubble").forEach((el) => { nodeEls[el.dataset.id] = el; });
-
-  // 更新连线
-  function updateEdges() {
-    data.edges.forEach((e) => {
-      const a = nodes[e.from], b = nodes[e.to];
-      if (!a || !b) return;
-      const path = edgeSvg.querySelector("#edge-" + e.from + "-" + e.to);
-      if (!path) return;
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      const dy = b.y - a.y;
-      const cp1x = a.x, cp1y = a.y + dy * 0.3;
-      const cp2x = b.x, cp2y = b.y - dy * 0.3;
-      path.setAttribute("d", "M" + a.x + " " + a.y + " C" + cp1x + " " + cp1y + " " + cp2x + " " + cp2y + " " + b.x + " " + b.y);
-    });
+/* 年轮 = 阶段：树干基部的横截面，环数 = progression.stage.id，尺寸随主干粗细 */
+function evoRings(prog, wk) {
+  const st = (prog && prog.stage) || {};
+  const stage = Math.max(1, Number(st.id) || 1);
+  const n = Math.min(8, stage);
+  const RX = 28 * (wk || 1), RY = 11.5 * (wk || 1), cy = EVO_GROUND + 4;
+  let s = '<g class="evo-rings" data-act="soul" transform="translate(200,' + cy + ')">';
+  s += '<ellipse class="evo-ring-face" rx="' + RX + '" ry="' + RY + '"/>';
+  for (let i = n; i >= 1; i--) {
+    const k = i / n;
+    s += '<ellipse class="evo-ring' + (i === n ? " out" : "") + '" rx="' + evoN(RX * k - 1.6) + '" ry="' + evoN(RY * k - 0.7) + '"/>';
   }
-
-  // 更新节点位置
-  function updateNodes() {
-    for (const id in nodes) {
-      const n = nodes[id], el = nodeEls[id];
-      if (!el) continue;
-      el.style.left = (n.x - n.r) + "px";
-      el.style.top = (n.y - n.r) + "px";
-    }
-  }
-
-  // 物理模拟
-  const REPULSION = 6000;
-  const SPRING = 0.015;
-  const DAMPING = 0.82;
-  const MAX_V = 8;
-  let animId = null;
-  let dragging = null;
-
-  function step() {
-    const ids = Object.keys(nodes);
-    for (const id of ids) {
-      const n = nodes[id];
-      if (n.fixed || (dragging && dragging.id === id)) { n.vx = 0; n.vy = 0; continue; }
-      let fx = 0, fy = 0;
-      // 斥力
-      for (const oid of ids) {
-        if (oid === id) continue;
-        const o = nodes[oid];
-        let dx = n.x - o.x, dy = n.y - o.y;
-        let dist2 = dx * dx + dy * dy + 1;
-        let dist = Math.sqrt(dist2);
-        if (dist < n.r + o.r + 4) { dist = n.r + o.r + 4; dist2 = dist * dist; }
-        const f = REPULSION / dist2;
-        fx += (dx / dist) * f;
-        fy += (dy / dist) * f;
-      }
-      // 弹簧力（连向 parent）
-      if (n.parent && nodes[n.parent]) {
-        const p = nodes[n.parent];
-        const dx = p.x - n.x, dy = p.y - n.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
-        const rest = 80;
-        const f = SPRING * (dist - rest);
-        fx += (dx / dist) * f * dist;
-        fy += (dy / dist) * f * dist;
-      }
-      // 边界
-      const margin = n.r + 4;
-      if (n.x < margin) fx += (margin - n.x) * 0.3;
-      if (n.x > W - margin) fx -= (n.x - (W - margin)) * 0.3;
-      if (n.y < margin) fy += (margin - n.y) * 0.3;
-      if (n.y > H - margin) fy -= (n.y - (H - margin)) * 0.3;
-
-      n.vx = (n.vx + fx * 0.001) * DAMPING;
-      n.vy = (n.vy + fy * 0.001) * DAMPING;
-      if (n.vx > MAX_V) n.vx = MAX_V; if (n.vx < -MAX_V) n.vx = -MAX_V;
-      if (n.vy > MAX_V) n.vy = MAX_V; if (n.vy < -MAX_V) n.vy = -MAX_V;
-      n.x += n.vx;
-      n.y += n.vy;
-    }
-    updateEdges();
-    updateNodes();
-    animId = requestAnimationFrame(step);
-  }
-
-  // 拖拽（用移动距离区分拖拽和点击，不阻止事件传播）
-  const DRAG_THRESHOLD = 4;
-  container.querySelectorAll(".evo-bubble").forEach((el) => {
-    if (el.dataset.fixed === "1") return;
-    el.addEventListener("mousedown", (e) => {
-      const id = el.dataset.id;
-      const n = nodes[id];
-      if (!n) return;
-      const startX = e.clientX, startY = e.clientY;
-      const origX = n.x, origY = n.y;
-      let moved = false;
-      function onMove(ev) {
-        const dx = ev.clientX - startX, dy = ev.clientY - startY;
-        if (!moved && (dx * dx + dy * dy) > DRAG_THRESHOLD * DRAG_THRESHOLD) {
-          moved = true;
-          dragging = { id: id };
-          el.classList.add("dragging");
-        }
-        if (moved) {
-          e.preventDefault();
-          n.x = origX + dx / scale;
-          n.y = origY + dy / scale;
-          n.x = Math.max(n.r, Math.min(W - n.r, n.x));
-          n.y = Math.max(n.r, Math.min(H - n.r, n.y));
-          n.vx = 0; n.vy = 0;
-          updateEdges();
-          updateNodes();
-        }
-      }
-      function onUp() {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        el.classList.remove("dragging");
-        dragging = null;
-        if (moved) { el._justDragged = true; setTimeout(() => { el._justDragged = false; }, 50); }
-      }
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
-    // 触摸支持
-    el.addEventListener("touchstart", (e) => {
-      if (el.dataset.fixed === "1") return;
-      const touch = e.touches[0];
-      const id = el.dataset.id;
-      const n = nodes[id];
-      if (!n) return;
-      const startX = touch.clientX, startY = touch.clientY;
-      const origX = n.x, origY = n.y;
-      let moved = false;
-      function onMove(ev) {
-        const t = ev.touches[0];
-        const dx = t.clientX - startX, dy = t.clientY - startY;
-        if (!moved && (dx * dx + dy * dy) > DRAG_THRESHOLD * DRAG_THRESHOLD) {
-          moved = true;
-          dragging = { id: id };
-          el.classList.add("dragging");
-        }
-        if (moved) {
-          ev.preventDefault();
-          n.x = origX + dx / scale;
-          n.y = origY + dy / scale;
-          n.x = Math.max(n.r, Math.min(W - n.r, n.x));
-          n.y = Math.max(n.r, Math.min(H - n.r, n.y));
-          n.vx = 0; n.vy = 0;
-          updateEdges();
-          updateNodes();
-        }
-      }
-      function onEnd() {
-        document.removeEventListener("touchmove", onMove);
-        document.removeEventListener("touchend", onEnd);
-        el.classList.remove("dragging");
-        dragging = null;
-      }
-      document.addEventListener("touchmove", onMove, { passive: false });
-      document.addEventListener("touchend", onEnd);
-    }, { passive: false });
-  });
-
-  // 点击事件（分类/叶子/解锁/灵魂）
-  container.querySelectorAll(".evo-bubble").forEach((el) => {
-    el.addEventListener("click", (e) => {
-      if (el._justDragged || el.classList.contains("dragging")) return;
-      const kind = el.dataset.kind;
-      if (kind === "soul") { openSoulEditor(); return; }
-      if (kind === "cat") { openCategoryDetail(el.dataset.cat); return; }
-      if (kind === "unlock") { openUnlockDetail(el.dataset.unlockId); return; }
-      if (kind === "skill" || kind === "mem") { openNodeDetail(kind, el.dataset.leafId); return; }
-    });
-  });
-
-  updateEdges();
-  animId = requestAnimationFrame(step);
-
-  // 清理旧动画（切换 tab 时）
-  if (container._evoAnimId) cancelAnimationFrame(container._evoAnimId);
-  container._evoAnimId = animId;
+  s += '<circle class="evo-ring-core" r="1.7"/></g>';
+  s += '<text class="evo-ring-txt" x="' + (200 + RX + 9) + '" y="' + (cy + 4) + '">阶段 ' + stage + " · " + esc(st.name || "幼苗") + "</text>";
+  return s;
 }
+
+/* 解锁称号 = 树下种子：met 发芽，未 met 灰暗休眠 */
+function evoSeeds(nodes) {
+  const list = nodes || [];
+  if (!list.length) return "";
+  const gap = Math.min(112, 330 / list.length);
+  const x0 = 200 - ((list.length - 1) * gap) / 2;
+  const y = 556;
+  let s = '<text class="evo-seed-cap" x="200" y="524" text-anchor="middle">进阶称号</text>';
+  list.forEach((u, i) => {
+    s += '<g class="evo-seed' + (u.met ? " met" : "") + '" data-u="' + esc(u.id) + '" transform="translate(' + evoN(x0 + i * gap) + "," + y + ')">';
+    s += '<ellipse class="evo-seed-mound" rx="30" ry="7"/>';
+    if (u.met) {
+      s += '<path class="evo-seed-sprout" d="M0 1C0 -7 -1 -12 -1 -17"/>' +
+        '<path class="evo-seed-coti" d="M-1 -12Q-9 -17 -11 -10Q-5 -8 -1 -12Z"/>' +
+        '<path class="evo-seed-coti" d="M-1 -15Q7 -21 10 -13Q3 -11 -1 -15Z"/>';
+    } else {
+      s += '<ellipse class="evo-seed-shell" rx="6.4" ry="4.2" transform="rotate(-18)"/>' +
+        '<path class="evo-seed-zzz" d="M-2 -8h4l-4 5h4"/>';
+    }
+    s += '<text class="evo-seed-txt" y="26" text-anchor="middle">' + esc(u.label) + "</text></g>";
+  });
+  return s;
+}
+
+/* 装配整棵树 */
+function buildCodexTree(cats, prog) {
+  const rnd = evoRng(20260903);
+  const anim = !codexTreeGrown;
+  const ctx = { segs: [] };
+  const total = cats.reduce((a, c) => a + c.items.length, 0);
+
+  // 主干：基部 → 顶端，带轻微 S 形摆动；粗细随进化阶段增长
+  const stageId = (prog && prog.stage && Number(prog.stage.id)) || 1;
+  const trunkAng = -0.05 + (rnd() - 0.5) * 0.03;
+  const trunk = evoSample(rnd, 200, EVO_GROUND, trunkAng, total ? EVO_LEN[0] : EVO_LEN[0] * 0.58, -trunkAng * 1.5, 8);
+  const trunkW = EVO_WID[0] * (total ? 0.84 + 0.055 * Math.min(7, stageId) : 0.52);
+  const ringK = Math.max(0.55, Math.min(1.25, trunkW / EVO_WID[0]));
+  ctx.segs.push({ pts: trunk, w: trunkW, depth: 0, cat: "trunk" });
+  const top = trunk[8];
+
+  cats.forEach((c) => {
+    c.tips = [];
+    c.elbow = null;
+    c.hubPt = c.hub >= 1 ? top : evoPointAt(trunk, c.hub);
+    const n = c.items.length;
+    const g = Math.min(1, n / EVO_MAX_LEAF);
+    c.k = 0.56 + 0.44 * g;              // 条目越多，该分类的枝越长
+    c.wk = 0.76 + 0.24 * g;             // 越少的枝越细
+    c.maxDepth = n <= 2 ? 2 : n <= 6 ? 3 : 4;  // 条目少时不抽末梢，避免出现光秃长枝
+    if (total) evoGrow(ctx, rnd, c, c.hubPt[0], c.hubPt[1], c.ang, EVO_LEN[1] * c.k, EVO_WID[1] * c.wk, 1);
+  });
+  // 空数据：只留主干 + 两根小侧枝的小树苗
+  if (!total) {
+    [-0.5, 0.42].forEach((a) => {
+      const pts = evoSample(rnd, top[0], top[1], a, 24, (rnd() - 0.5) * 0.3, 6);
+      ctx.segs.push({ pts: pts, w: 2.6, depth: 1, cat: "trunk" });
+    });
+  }
+
+  // defs：树皮渐变（深木 → 浅绿，全部取主题变量，自动适配深浅色）
+  let s = '<svg id="evoTreeSvg" class="evo-tree-svg' + (anim ? " anim" : "") + '" viewBox="' + (total ? EVO_VIEW : "62 296 276 324") +
+    '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Agent 成长树">';
+  s += "<defs>" +
+    '<linearGradient id="evoBark" gradientUnits="userSpaceOnUse" x1="200" y1="' + (EVO_GROUND + 6) + '" x2="200" y2="' + (EVO_TRUNK_TOP - 150) + '">' +
+      '<stop offset="0" style="stop-color:var(--evo-bark-2)"/>' +
+      '<stop offset=".34" style="stop-color:var(--evo-bark)"/>' +
+      '<stop offset=".72" style="stop-color:var(--evo-bark-hi)"/>' +
+      '<stop offset="1" style="stop-color:var(--accent-hi)"/>' +
+    "</linearGradient>" +
+    '<radialGradient id="evoFruitG" cx=".34" cy=".3" r=".82">' +
+      '<stop offset="0" style="stop-color:var(--evo-fruit-hi)"/>' +
+      '<stop offset=".62" style="stop-color:var(--green)"/>' +
+      '<stop offset="1" style="stop-color:var(--evo-fruit-lo)"/>' +
+    "</radialGradient>" +
+    "</defs>";
+
+  // 地面 / 土壤 / 草丛
+  s += '<g class="evo-soil">' +
+    '<path class="evo-earth" d="M14 ' + EVO_GROUND + "H386L374 " + EVO_H + 'H26Z"/>' +
+    '<line class="evo-ground-line" x1="24" y1="' + EVO_GROUND + '" x2="376" y2="' + EVO_GROUND + '"/>';
+  for (let i = 0; i < 19; i++) {
+    const gx = 26 + i * 19.6 + (rnd() - 0.5) * 16;
+    if (Math.abs(gx - 200) < 44 || rnd() < 0.25) continue;
+    const gh = 3 + rnd() * 4.5;
+    s += '<path class="evo-grass" d="M' + evoN(gx) + " " + EVO_GROUND + "q" + evoN((rnd() - 0.5) * 2.4) + " " + evoN(-gh * 0.6) +
+      " " + evoN((rnd() - 0.5) * 3.4) + " " + evoN(-gh) + '" style="opacity:' + (0.14 + rnd() * 0.34).toFixed(2) + '"/>';
+  }
+  s += "</g>";
+
+  // 根系（从主干两侧扎进土里，基部被年轮截面压住；树苗期不外扩）
+  const rx0 = evoN(200 - 28 * ringK + 2), rx1 = evoN(200 + 28 * ringK - 2);
+  const ry0 = evoN(EVO_GROUND - 5 - 11 * ringK);
+  s += '<g class="evo-roots">' +
+    '<path class="evo-root" d="M195 ' + ry0 + "C189 " + (EVO_GROUND - 2) + " 185 " + (EVO_GROUND + 1) + " " + rx0 + " " + (EVO_GROUND + 6) + '"/>' +
+    '<path class="evo-root" d="M205 ' + ry0 + "C211 " + (EVO_GROUND - 2) + " 215 " + (EVO_GROUND + 1) + " " + rx1 + " " + (EVO_GROUND + 6) + '"/>' +
+    '<path class="evo-root" d="M200 ' + (EVO_GROUND - 10) + "C200 " + (EVO_GROUND - 2) + " 200 " + (EVO_GROUND + 3) + ' 200 ' + (EVO_GROUND + 10) + '"/></g>';
+
+  // 枝干（taper：粗枝拆成 2~3 段递减描边宽度）
+  ctx.segs.forEach((g) => {
+    const n = g.pts.length - 1;
+    const parts = g.depth <= 1 ? 3 : g.depth === 2 ? 2 : 1;
+    for (let k = 0; k < parts; k++) {
+      const i0 = Math.max(0, Math.round((k * n) / parts) - (k ? 2 : 0));
+      const i1 = Math.round(((k + 1) * n) / parts);
+      const wid = (g.w * (1 - 0.1 * k)).toFixed(2);
+      const dl = (EVO_DELAY[g.depth] + k * 0.05).toFixed(2);
+      s += '<path class="evo-branch" data-cat="' + g.cat + '" stroke="url(#evoBark)" stroke-width="' + wid +
+        '" pathLength="100" d="' + evoPolyline(g.pts, i0, i1) + '"' + (anim ? ' style="animation-delay:' + dl + 's"' : "") + "/>";
+    }
+  });
+
+  // 主枝起点色环（分类归属，点击查看该分类全量）+ 末端条目
+  let leafIdx = 0;
+  cats.forEach((c) => {
+    const hub = c.hubPt;
+    if (total) {
+      s += '<g class="evo-hub" data-cat="' + c.key + '" transform="translate(' + evoN(hub[0]) + "," + evoN(hub[1]) + ')">' +
+        '<circle r="7" fill="transparent" pointer-events="all"/>' +
+        '<circle class="evo-hub-dot" r="2.3" style="fill:' + c.color + '"/></g>';
+    }
+    if (!c.items.length) return;
+    const shown = c.tips.length ? evoPick(c.tips, Math.min(c.items.length, EVO_MAX_LEAF)) : [];
+    shown.forEach((tip, i) => {
+      const it = c.items[i];
+      if (!it) return;
+      c.byIdx = c.byIdx || {};
+      c.byIdx[leafIdx] = it.id;
+      s += c.shapeKey === "skill"
+        ? evoFruit(tip, it, c, rnd, leafIdx, anim)
+        : evoLeaf(tip, it, c, rnd, leafIdx, anim);
+      leafIdx++;
+    });
+    if (c.items.length > shown.length && shown.length) {
+      s += evoPlusBunch(c, c.items.length - shown.length);
+    }
+  });
+
+  s += evoRings(prog, ringK);
+  s += evoSeeds((prog && prog.unlockNodes) || []);
+  s += "</svg>";
+  return s;
+}
+
+/* 从末梢列表里均匀挑 n 个叶位（条目少时不会全挤在一处） */
+function evoPick(tips, n) {
+  if (n >= tips.length) return tips.slice();
+  const out = [], step = tips.length / n;
+  for (let i = 0; i < n; i++) out.push(tips[Math.floor(i * step + step / 2)]);
+  return out;
+}
+
+function renderCodexTree() {
+  const root = $("evoCodexTree");
+  if (!root || !evoData) return;
+  const t = evoData.tree || {};
+  const mem = t.memory || {};
+  const skillItems = [];
+  (t.skills || []).forEach((g) => (g.items || []).forEach((s) => skillItems.push(s)));
+  const uniq = (arr) => {
+    const seen = new Set();
+    return (arr || []).filter((it) => {
+      const k = it && (it.id || it.topic || it.name);
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+
+  const cats = [
+    { key: "memory", shapeKey: "mem",   label: "记忆", ic: "memory",  color: "var(--blue)", ang: -0.87, hub: 0.62, items: uniq((mem.memory || {}).items) },
+    { key: "skills", shapeKey: "skill", label: "技能", ic: "toolbox", color: "var(--green)", ang: -0.3, hub: 0.955, items: uniq(skillItems) },
+    { key: "exp",    shapeKey: "mem",   label: "经验", ic: "bulb",    color: "var(--warn)", ang: 0.3, hub: 1, items: uniq((mem.experience || {}).items) },
+    { key: "lesson", shapeKey: "mem",   label: "教训", ic: "warn",    color: "var(--err)", ang: 0.87, hub: 0.68, items: uniq((mem.lesson || {}).items) },
+  ];
+
+  const prog = evoData.progression || {};
+  root.innerHTML =
+    '<div class="evo-legend" id="evoLegend">' +
+      cats.map((c) =>
+        '<button class="evo-lg" data-cat="' + c.key + '" title="查看全部 ' + c.label + '">' +
+          '<i class="evo-lg-dot" style="background:' + c.color + '"></i>' + ico(c.ic) +
+          c.label + "<b>" + c.items.length + "</b></button>").join("") +
+    "</div>" +
+    buildCodexTree(cats, prog) +
+    '<div class="evo-tree-tip" id="evoTreeTip" style="display:none"></div>' +
+    (((mem.memory || {}).items || []).length + ((mem.experience || {}).items || []).length + ((mem.lesson || {}).items || []).length + skillItems.length
+      ? ""
+      : '<div class="evo-tree-hint">' + ico("leaf") + "还没有沉淀，Agent 会在完成任务后长出第一片叶子</div>");
+
+  initCodexTree(root, cats);
+  codexTreeGrown = true;
+}
+
+/* 交互：hover tooltip + 同枝高亮，click 复用既有条目详情 */
+function initCodexTree(root, cats) {
+  const svg = $("evoTreeSvg");
+  const tip = $("evoTreeTip");
+  if (!svg || !tip) return;
+  const catByKey = {};
+  cats.forEach((c) => (catByKey[c.key] = c));
+  const entryOf = (c, id) => c.items.find((x) => x.id === id) || null;
+
+  function focus(catKey) {
+    svg.querySelectorAll(".evo-branch.hot").forEach((p) => p.classList.remove("hot"));
+    svg.classList.toggle("focusing", !!catKey);
+    if (!catKey) return;
+    svg.querySelectorAll('.evo-branch[data-cat="' + catKey + '"]').forEach((p) => p.classList.add("hot"));
+  }
+
+  function showTip(el, clientX, clientY) {
+    const i = +el.dataset.i;
+    const c = catByKey[el.dataset.cat];
+    if (!c) return;
+    const it = entryOf(c, c.byIdx && c.byIdx[i]);
+    if (!it) return;
+    const title = c.shapeKey === "skill" ? (it.name || "未命名技能") : (it.topic || it.type || "未命名条目");
+    const body = (c.shapeKey === "skill" ? it.desc : it.content) || "";
+    const meta = c.shapeKey === "skill"
+      ? "来源 " + (it.source === "builtin" ? "内置" : it.source === "manual" ? "手动" : "任务沉淀")
+      : "价值 " + (Number(it.valueScore) || 0) + " / 5 · 访问 " + (Number(it.accessCount) || 0) + " 次";
+    tip.innerHTML = '<div class="evo-tip-t">' + ico(c.shapeKey === "skill" ? "toolbox" : "leaf") + esc(title) + "</div>" +
+      '<div class="evo-tip-b">' + esc(String(body).slice(0, 60)) + (body.length > 60 ? "…" : "") + "</div>" +
+      '<div class="evo-tip-m">' + esc(meta) + "</div>";
+    const r = root.getBoundingClientRect();
+    const tw = 226;
+    let x = clientX - r.left + 12;
+    if (x + tw > r.width) x = clientX - r.left - tw - 10;
+    tip.style.display = "";
+    tip.style.left = Math.max(4, x) + "px";
+    tip.style.top = Math.max(4, clientY - r.top + 6) + "px";
+    focus(el.dataset.cat);
+  }
+  function hideTip() { tip.style.display = "none"; focus(null); }
+
+  svg.addEventListener("mousemove", (e) => {
+    const el = e.target.closest ? e.target.closest(".evo-leaf,.evo-fruit") : null;
+    if (el) showTip(el, e.clientX, e.clientY);
+    else hideTip();
+  });
+  svg.addEventListener("mouseleave", hideTip);
+  svg.addEventListener("click", (e) => {
+    const seed = e.target.closest ? e.target.closest("[data-u]") : null;
+    if (seed) { hideTip(); openUnlockDetail(seed.dataset.u); return; }
+    if (e.target.closest && e.target.closest('[data-act="soul"]')) { hideTip(); openSoulEditor(); return; }
+    const el = e.target.closest ? e.target.closest(".evo-leaf,.evo-fruit") : null;
+    if (el) {
+      const c = catByKey[el.dataset.cat];
+      const id = c && c.byIdx && c.byIdx[+el.dataset.i];
+      if (id) { hideTip(); openNodeDetail(c.shapeKey, id); }
+      return;
+    }
+    const hub = e.target.closest ? e.target.closest(".evo-hub") : null;
+    if (hub) { hideTip(); openCategoryDetail(hub.dataset.cat); return; }
+    const plus = e.target.closest ? e.target.closest(".evo-plus") : null;
+    if (plus) { hideTip(); openCategoryDetail(plus.dataset.cat); return; }
+    const br = e.target.closest ? e.target.closest(".evo-branch") : null;
+    if (br && br.dataset.cat !== "trunk") { hideTip(); openCategoryDetail(br.dataset.cat); }
+  });
+
+  const legend = $("evoLegend");
+  if (legend) {
+    legend.querySelectorAll(".evo-lg").forEach((b) => {
+      b.onmouseenter = () => focus(b.dataset.cat);
+      b.onmouseleave = () => focus(null);
+      b.onclick = () => openCategoryDetail(b.dataset.cat);
+    });
+  }
+}
+
 
 function renderCodexSide() {
   const root = $("evoCodexSide");
