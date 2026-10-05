@@ -20,7 +20,8 @@ function diffStat(oldStr, newStr) {
 class AgentBase {
   constructor(ctx) {
     this.emit = ctx.emit;        // 广播
-    this.files = ctx.files;      // FileStore
+    this.files = ctx.files;      // FileStore（当前工作区）
+    this.roots = ctx.roots || null;  // 多根解析：路径属于哪个已授权根（老 ctx 没有就是 null，退回单根行为）
     this.git = ctx.git;          // GitLayer
     this.term = ctx.term;        // TerminalLayer
     this.running = false;

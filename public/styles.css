@@ -10,6 +10,8 @@
   --z-overlay:440;     /* 图鉴内详情/编辑弹窗（高于遮罩与图鉴本身） */
   --z-toast:500;       /* 全局提示 */
   --z-cmdk:460;        /* 命令面板 */
+  --z-picker:470;      /* 从设置台里唤起的目录选择器（必须高于 --z-wb:410，否则整块被压在下面点不到） */
+  --z-float:480;       /* 顶部栏下拉 / 文件面板 / 内联编辑框：盖过模态与命令面板，只低于提示与加载遮罩 */
   --z-boot:520;        /* 全局加载遮罩（最高层） */
 }
 /* ============================================================
@@ -66,6 +68,12 @@
   --term-info:color-mix(in srgb, var(--blue), #ffffff 26%);
   --border-strong:color-mix(in srgb, var(--border), var(--text) 22%);
   --accent-glow:color-mix(in srgb, var(--accent-hi) 15%, transparent);
+  --accent-grad:linear-gradient(90deg, var(--accent), var(--accent-hi));
+  /* 浮层面：下拉/命令面板/内联编辑框都是「盖在页面之上」的独立方块，
+     必须是不透明的、比页面亮一档的 surfaces；之前这三处引用了从未定义的
+     --bg-elev，CSS 会静默丢掉整条 background 声明 → 面板直接变透明玻璃。 */
+  --bg-elev:color-mix(in srgb, var(--bg3), var(--text) 4%);
+  --bg-bar:var(--bg4);          /* 浮层面自己的标题条，比 --bg-elev 再强一档 */
   --brand-glow:color-mix(in srgb, var(--blue) 15%, transparent);
   --brand-grad:linear-gradient(135deg, var(--accent-hi), var(--blue) 55%, var(--purple));
   /* 主题无关的常量 */
@@ -237,9 +245,29 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 /* ============ 标题栏 ============ */
 #titlebar{height:var(--tb-h);background:var(--bg3);display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:0 12px;border-bottom:1px solid var(--border);user-select:none}
 .tb-left{display:flex;align-items:center;gap:10px}
-.traffic{display:flex;gap:7px}
-.traffic span{width:12px;height:12px;border-radius:50%}
+/* 红绿灯：默认隐藏。浏览器里跑的同一套页面没有原生窗口可控制，
+   摆三个假按钮只会诱导人去点。桌面端（preload 递到 window.pancodeWin）才点亮。 */
+.traffic{display:none;gap:7px;flex-shrink:0}
+.traffic span{width:12px;height:12px;border-radius:50%;position:relative}
 .t-red{background:#ff5f57}.t-yellow{background:#febc2e}.t-green{background:#28c840}
+body.pc-desktop .traffic{display:flex}
+body.pc-desktop .traffic span{cursor:pointer}
+/* 悬停露出符号（mac 的手感：× − +），不悬停时仍是干净的三个点 */
+.traffic span::before{content:'';position:absolute;inset:0;display:grid;place-items:center;
+  font-size:9px;line-height:1;color:#000000a6;opacity:0;font-family:var(--ui);font-weight:700}
+.traffic span:hover::before{opacity:1}
+.t-red:hover::before{content:'×'}
+.t-yellow:hover::before{content:'\2212'}
+.t-green:hover::before{content:'+'}
+body.pc-maximized .t-green:hover::before{content:'\29C9'}
+/* 无边框桌面窗口：整条标题栏可拖，但可交互的件必须显式退出拖拽区，
+   否则按钮会被系统当成拖动手势，点了没反应（这是无边框改造最常见的翻车点）。 */
+body.pc-desktop #titlebar{-webkit-app-region:drag}
+body.pc-desktop #titlebar button,
+body.pc-desktop #titlebar select,
+body.pc-desktop #titlebar input,
+body.pc-desktop #titlebar a,
+body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .tb-logo{font-size:13px;display:flex;align-items:center;gap:6px}
 .tb-logo-mark .brand-glyph{width:18px;height:17px;display:block}
 .tb-word{display:inline-flex;font-weight:700;font-size:13px;letter-spacing:.3px}
@@ -874,9 +902,21 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 #agCenter{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border);position:relative;z-index:0}
 .ag-chat-head{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,var(--bg2),color-mix(in srgb,var(--bg2) 86%,var(--bg)));flex-shrink:0}
 .ag-head-left{display:flex;align-items:center;gap:11px}
-.ag-avatar{width:38px;height:38px;border-radius:11px;background:var(--brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 4px 14px var(--brand-glow),inset 0 1px 0 #ffffff44;position:relative}
-.ag-avatar::after{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(160deg,#ffffff33,transparent 55%);pointer-events:none}
-.ag-avatar .ag-glyph{width:22px;height:21px;display:block;filter:drop-shadow(0 1px 2px #00000040)}
+/* 轨道标记：不带底色方块，纯描边 + currentColor，跟着配色走（旧的渐变底 + 白 P
+   在浅色档会整块发白，且与标题栏品牌图形重复）。空闲时轨道是静止的半透明线，
+   Agent 真在跑任务时轨道转起来、核心与信号点交替呼吸——状态一眼可辨，不靠文字。 */
+.ag-avatar{width:34px;height:34px;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--accent-hi);position:relative}
+.ag-avatar .ag-glyph{width:34px;height:34px;display:block;overflow:visible}
+.ag-avatar .ag-orbit,.ag-avatar .ag-core,.ag-avatar .ag-node{transform-box:fill-box;transform-origin:center}
+.ag-avatar .ag-orbit{opacity:.42;transition:opacity var(--dur-normal) var(--ease)}
+.ag-avatar .ag-core{fill:currentColor}
+.ag-avatar .ag-node{fill:var(--blue);opacity:.75}
+.ag-avatar.busy .ag-orbit{opacity:.85;animation:agentRotate 7s linear infinite}
+.ag-avatar.busy .ag-core{animation:agentGlow 1.8s ease-in-out infinite}
+.ag-avatar.busy .ag-node{animation:agentGlow 1.8s ease-in-out .9s infinite}
+@media (prefers-reduced-motion:reduce){
+  .ag-avatar.busy .ag-orbit,.ag-avatar.busy .ag-core,.ag-avatar.busy .ag-node{animation:none}
+}
 .ag-head-name{font-size:14px;font-weight:700;color:var(--text)}
 .ag-head-sub{font-size:11.5px;color:var(--text-dim);display:flex;align-items:center;gap:6px}
 .ag-live-dot{width:7px;height:7px;border-radius:50%;background:#6a6a6a;display:inline-block}
@@ -1051,12 +1091,15 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
    用户看到的就是"点提交或推送没有任何效果"。 */
 #settingsModal,#folderModal,#agentModal,#authModal,#skillModal,#procsModal,#globalSettingsModal,
 #commitModal,#automationsModal,#shortcutsModal{position:fixed;inset:0;background:#000000aa;z-index:var(--z-modal);display:flex;align-items:center;justify-content:center}
+/* 目录选择器会被设置台（--z-wb:410）唤起来（「添加授权目录」「切换工作区」都走它）：
+   待在 --z-modal 那一层就等于"点了没反应"——整块被全屏设置台压住，鼠标全落到底下。 */
+#folderModal{z-index:var(--z-picker)}
 .tb-open{display:flex;align-items:center;gap:5px;padding:3px 9px;border-radius:6px;border:1px solid transparent;color:var(--text-dim);font-size:12px;max-width:280px;cursor:pointer}
 .tb-open:hover{background:var(--bg4);border-color:var(--border);color:var(--text)}
 .tb-open .tb-project{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* 工作区下拉快速切换 */
-.ws-dropdown{position:fixed;z-index:99999;background:var(--bg-elev);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 16px var(--accent-glow);min-width:300px;max-width:500px;padding:4px;overflow:hidden}
+.ws-dropdown{position:fixed;z-index:var(--z-float);background:var(--bg-elev);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 16px var(--accent-glow);min-width:300px;max-width:500px;padding:4px;overflow:hidden}
 .ws-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--text);transition:.12s}
 .ws-item:hover{background:var(--bg4)}
 .ws-item.active{color:var(--accent-hi);font-weight:600}
@@ -1414,7 +1457,7 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
   0%,100%{box-shadow:0 4px 14px var(--brand-glow),0 0 10px -4px var(--accent-hi),inset 0 1px 0 #ffffff44}
   50%{box-shadow:0 4px 22px var(--brand-glow),0 0 24px -2px var(--accent-hi),inset 0 1px 0 #ffffff44}
 }
-.ag-avatar,.ag-brand-ico{animation:bioBreath 3.8s ease-in-out infinite}
+.ag-brand-ico{animation:bioBreath 3.8s ease-in-out infinite}
 
 /* Agent 状态：运行中 = 荧光脉动 */
 @keyframes bioDot{0%,100%{box-shadow:0 0 4px 1px var(--ok)}50%{box-shadow:0 0 12px 3px var(--ok)}}
@@ -1499,12 +1542,12 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .pm-actions button{font-size:11px;padding:3px 9px;border-radius:5px;border:1px solid var(--border);background:var(--bg);color:var(--text);display:inline-flex;align-items:center;gap:4px;cursor:pointer;transition:all var(--dur-fast) var(--ease)}
 .pm-actions button .ico{width:12px;height:12px}
 .pm-actions button:hover{background:var(--bg4)}
-.pm-btn-stop:hover{border-color:var(--error);color:var(--error)}
+.pm-btn-stop:hover{border-color:var(--err);color:var(--err)}
 .pm-cmd{padding:6px 12px;background:var(--bg2);border-top:1px solid var(--border)}
 .pm-cmd code{font-size:11.5px;font-family:var(--mono);color:var(--text-dim);word-break:break-all}
 .pm-log{max-height:280px;overflow-y:auto;border-top:1px solid var(--border);background:var(--bg)}
 .pm-log-loading,.pm-log-err{padding:10px 14px;font-size:11.5px;color:var(--text-dim)}
-.pm-log-err{color:var(--error)}
+.pm-log-err{color:var(--err)}
 .pm-log-pre{margin:0;padding:10px 14px;font-size:11.5px;font-family:var(--mono);line-height:1.55;color:var(--text);white-space:pre-wrap;word-break:break-all}
 
 /* 状态栏进程指示器 */
@@ -1515,16 +1558,16 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .sb-procs-alive .ico{filter:drop-shadow(0 0 4px var(--accent-glow))}
 
 /* Cmd+K 内联编辑弹窗 */
-#inlineEditBox{position:fixed;z-index:99999;width:480px;max-width:90vw;background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 16px var(--accent-glow);overflow:hidden;font-size:13px}
+#inlineEditBox{position:fixed;z-index:var(--z-float);width:480px;max-width:90vw;background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 16px var(--accent-glow);overflow:hidden;font-size:13px}
 #inlineEditBox .ie-header{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg-bar);border-bottom:1px solid var(--border)}
 #inlineEditBox .ie-title{color:var(--accent);font-weight:600;font-size:12px}
 #inlineEditBox .ie-close{cursor:pointer;color:var(--text-dim);font-size:16px;line-height:1;padding:2px 6px;border-radius:4px}
-#inlineEditBox .ie-close:hover{background:var(--bg-hover);color:var(--text)}
+#inlineEditBox .ie-close:hover{background:var(--hover);color:var(--text)}
 #inlineEditBox .ie-input{width:100%;box-sizing:border-box;padding:10px 12px;border:none;border-bottom:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;outline:none}
 #inlineEditBox .ie-input:focus{box-shadow:inset 0 -2px 0 var(--accent)}
 #inlineEditBox .ie-actions{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border)}
 #inlineEditBox .ie-btn{flex:1;padding:6px 0;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);cursor:pointer;font-size:12px;transition:all .15s}
-#inlineEditBox .ie-btn:hover:not(:disabled){background:var(--bg-hover);border-color:var(--accent)}
+#inlineEditBox .ie-btn:hover:not(:disabled){background:var(--hover);border-color:var(--accent)}
 #inlineEditBox .ie-btn:disabled{opacity:.4;cursor:not-allowed}
 #inlineEditBox .ie-accept:not(:disabled){background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
 #inlineEditBox .ie-accept:not(:disabled):hover{box-shadow:0 0 12px var(--accent-glow)}
@@ -1541,16 +1584,7 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .fold-old-body{display:none;width:100%}
 .fold-old.expanded .fold-old-body{display:block}
 
-/* Ctrl+Shift+P 命令面板 */
-#cmdPalette{position:fixed;top:15%;left:50%;transform:translateX(-50%);z-index:99999;width:500px;max-width:90vw;background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 16px var(--accent-glow);overflow:hidden}
-#cmdPalette .cmd-input{width:100%;box-sizing:border-box;padding:12px 14px;border:none;border-bottom:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;outline:none}
-#cmdPalette .cmd-input:focus{box-shadow:inset 0 -2px 0 var(--accent)}
-#cmdPalette .cmd-list{max-height:360px;overflow-y:auto}
-#cmdPalette .cmd-item{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;cursor:pointer;font-size:13px;transition:background .1s}
-#cmdPalette .cmd-item:hover,#cmdPalette .cmd-item.active{background:var(--bg-hover)}
-#cmdPalette .cmd-item.active{border-left:3px solid var(--accent);padding-left:11px}
-#cmdPalette .cmd-label{color:var(--text)}
-#cmdPalette .cmd-hint{color:var(--text-dim);font-size:11px;font-family:"Cascadia Code",Consolas,monospace}
+/* Ctrl+P 文件跳转面板（命令面板见 .cmdk-*，由 js/cmdk.js 渲染） */
 
 /* 会话搜索框 */
 .conv-search{width:100%;box-sizing:border-box;padding:6px 10px;margin:4px 0 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;outline:none}
@@ -1558,12 +1592,12 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .conv-search::placeholder{color:var(--text-dim)}
 
 /* Ctrl+P 文件快速跳转面板（复用命令面板样式） */
-#filePalette{position:fixed;top:15%;left:50%;transform:translateX(-50%);z-index:99999;width:500px;max-width:90vw;background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 16px var(--accent-glow);overflow:hidden}
+#filePalette{position:fixed;top:15%;left:50%;transform:translateX(-50%);z-index:var(--z-float);width:500px;max-width:90vw;background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 16px var(--accent-glow);overflow:hidden}
 #filePalette .cmd-input{width:100%;box-sizing:border-box;padding:12px 14px;border:none;border-bottom:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;outline:none}
 #filePalette .cmd-input:focus{box-shadow:inset 0 -2px 0 var(--accent)}
 #filePalette .cmd-list{max-height:360px;overflow-y:auto}
 #filePalette .cmd-item{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;cursor:pointer;font-size:13px;transition:background .1s}
-#filePalette .cmd-item:hover,#filePalette .cmd-item.active{background:var(--bg-hover)}
+#filePalette .cmd-item:hover,#filePalette .cmd-item.active{background:var(--hover)}
 #filePalette .cmd-item.active{border-left:3px solid var(--accent);padding-left:11px}
 #filePalette .cmd-label{color:var(--text)}
 
@@ -1622,12 +1656,12 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 /* 交互式选项列表弹窗 */
 /* 交互式选项列表弹窗（ask_user_choice）：body 默认隐藏，.choice 强制显示 */
 .tool-card.choice{padding-left:24px}
-.tool-card.choice .tool-body{display:block;white-space:normal;font-family:var(--sans);max-height:none;overflow:visible}
+.tool-card.choice .tool-body{display:block;white-space:normal;font-family:var(--ui);max-height:none;overflow:visible}
 .choice-body{padding:4px 0}
 .choice-question{font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.5}
 .choice-list{display:flex;flex-direction:column;gap:6px}
 .choice-opt{display:flex;flex-direction:column;gap:3px;padding:10px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:all .15s;text-align:left}
-.choice-opt:hover{border-color:var(--accent-hi);background:var(--bg-hover);box-shadow:0 0 0 1px var(--accent-glow)}
+.choice-opt:hover{border-color:var(--accent-hi);background:var(--hover);box-shadow:0 0 0 1px var(--accent-glow)}
 .choice-opt.selected{border-color:var(--accent-hi);background:var(--accent-glow);box-shadow:0 0 12px -4px var(--accent-hi)}
 .choice-opt:disabled{cursor:default;opacity:.5}
 .choice-opt.selected:disabled{opacity:1}
@@ -1652,7 +1686,7 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .auth-close:hover{background:var(--bg4);color:var(--text)}
 .auth-close .ico{width:15px;height:15px}
 .auth-brand{display:flex;align-items:center;gap:12px;margin-bottom:24px;position:relative;z-index:1}
-.auth-logo{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent-hi));display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#fff;font-family:var(--sans);box-shadow:0 4px 16px var(--accent-glow),inset 0 1px 0 #fff4;flex-shrink:0}
+.auth-logo{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent-hi));display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#fff;font-family:var(--ui);box-shadow:0 4px 16px var(--accent-glow),inset 0 1px 0 #fff4;flex-shrink:0}
 .auth-brand-text{display:flex;flex-direction:column;gap:1px}
 .auth-brand-name{font-size:18px;font-weight:700;color:var(--text);letter-spacing:.5px}
 .auth-brand-sub{font-size:11.5px;color:var(--text-dim)}
@@ -1660,7 +1694,7 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .auth-sub{font-size:12.5px;color:var(--text-dim);margin-bottom:22px;position:relative;z-index:1}
 .auth-field{position:relative;margin-bottom:14px;z-index:1}
 .auth-field-ico{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:var(--text-dim);pointer-events:none;z-index:1}
-.auth-field input{display:block;width:100%;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:11px 12px 11px 38px;font-size:13px;color:var(--text);font-family:var(--sans);transition:all .18s}
+.auth-field input{display:block;width:100%;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:11px 12px 11px 38px;font-size:13px;color:var(--text);font-family:var(--ui);transition:all .18s}
 .auth-field input:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent),0 0 16px -4px var(--accent-glow)}
 .auth-field input::placeholder{color:var(--text-dim);opacity:.7}
 .auth-eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--text-dim);border-radius:6px;cursor:pointer;transition:color .15s;z-index:2}
@@ -1672,13 +1706,13 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .auth-status{min-height:18px;font-size:12px;margin-bottom:12px;position:relative;z-index:1}
 .auth-status.ok{color:#34d399}
 .auth-status.err{color:#fb7185}
-.auth-submit{display:block;width:100%;padding:12px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-hi));color:#fff;font-size:14px;font-weight:600;font-family:var(--sans);cursor:pointer;transition:all .18s;box-shadow:0 4px 16px var(--accent-glow);position:relative;z-index:1}
+.auth-submit{display:block;width:100%;padding:12px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-hi));color:#fff;font-size:14px;font-weight:600;font-family:var(--ui);cursor:pointer;transition:all .18s;box-shadow:0 4px 16px var(--accent-glow);position:relative;z-index:1}
 .auth-submit:hover{transform:translateY(-1px);box-shadow:0 6px 22px var(--accent-glow)}
 .auth-submit:active{transform:translateY(0)}
 .auth-submit:disabled{opacity:.6;cursor:not-allowed;transform:none}
 .auth-submit.loading{background:var(--bg4);box-shadow:none}
 .auth-switch{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:16px;font-size:12.5px;color:var(--text-dim);position:relative;z-index:1}
-.auth-switch-btn{border:none;background:transparent;color:var(--accent-hi);font-size:12.5px;font-weight:600;cursor:pointer;padding:0;font-family:var(--sans)}
+.auth-switch-btn{border:none;background:transparent;color:var(--accent-hi);font-size:12.5px;font-weight:600;cursor:pointer;padding:0;font-family:var(--ui)}
 .auth-switch-btn:hover{text-decoration:underline}
 /* light 主题适配 */
 /* 明暗挂在 documentElement 的 data-theme 上，旧写法 body.light 永不命中 → 浅色下登录卡一直用深色渐变 */
@@ -1691,7 +1725,7 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .gs-row-label{font-size:12.5px;color:var(--text);flex-shrink:0}
 .gs-row-control{display:flex;align-items:center;gap:10px}
 .gs-segment{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg)}
-.gs-segment button{border:none;background:transparent;color:var(--text-dim);font-size:12px;padding:6px 14px;cursor:pointer;transition:all .15s;font-family:var(--sans)}
+.gs-segment button{border:none;background:transparent;color:var(--text-dim);font-size:12px;padding:6px 14px;cursor:pointer;transition:all .15s;font-family:var(--ui)}
 .gs-segment button:hover{color:var(--text)}
 .gs-segment button.active{background:var(--accent);color:#fff}
 .gs-slider{-webkit-appearance:none;appearance:none;width:140px;height:4px;border-radius:2px;background:var(--bg4);outline:none;cursor:pointer}
@@ -1702,12 +1736,12 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .gs-recent-label{font-size:11px;color:var(--text-dim);margin:10px 0 6px}
 .gs-recent-list{display:flex;flex-direction:column;gap:4px;max-height:120px;overflow-y:auto}
 .gs-recent-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg);cursor:pointer;transition:all .15s}
-.gs-recent-item:hover{border-color:var(--accent);background:var(--bg-hover)}
+.gs-recent-item:hover{border-color:var(--accent);background:var(--hover)}
 .gs-recent-ico{width:14px;height:14px;color:var(--text-dim);flex-shrink:0}
 .gs-recent-path{font-size:11.5px;color:var(--text);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gs-recent-empty{font-size:11.5px;color:var(--text-dim);padding:8px 0;text-align:center}
 .gs-link-row{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer;transition:all .15s;font-size:12.5px;color:var(--text)}
-.gs-link-row:hover{border-color:var(--accent);background:var(--bg-hover)}
+.gs-link-row:hover{border-color:var(--accent);background:var(--hover)}
 .gs-link-row .ico{width:15px;height:15px;color:var(--text-dim)}
 .gs-link-arrow{margin-left:auto!important;color:var(--text-dim)}
 .gs-link-row:hover .gs-link-arrow{color:var(--accent)}
@@ -1801,6 +1835,32 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 /* ---------- 输入栏 ---------- */
 #chatInputBox{border:1px solid var(--border);border-radius:14px;background:var(--bg2);padding:10px 12px 8px;transition:border-color var(--dur-fast),box-shadow var(--dur-fast)}
 #chatInputBox.focused{border-color:var(--border-strong);box-shadow:0 0 0 3px var(--accent-glow)}
+/* 能量边框：一圈沿边框缓慢流动的光。空闲时几乎看不见，聚焦提速变亮，Agent 真在跑任务时
+   转成明显的双色环——让"它还在干活"有一个不占版面、不靠文字提示的视觉证据
+   （关窗后台续跑时回到窗口，第一眼就该看出来是在跑还是停了）。
+   conic-gradient 挖空中心，只有 1px 边框那一圈参与；--pc-spin 必须走 @property 注册，
+   否则自定义属性不参与插值，整条 animation 会静默失效（边框永远不动，还不报错）。 */
+@property --pc-spin{syntax:"<angle>";inherits:false;initial-value:0deg}
+#chatInputBox{position:relative}
+#chatInputBox::after{content:'';position:absolute;inset:-1px;border-radius:15px;padding:1px;pointer-events:none;opacity:0;
+  transition:opacity var(--dur-normal) var(--ease);
+  background:conic-gradient(from var(--pc-spin),
+    transparent 0 42%,
+    color-mix(in srgb, var(--accent-hi) 75%, transparent) 62%,
+    var(--blue) 76%,
+    color-mix(in srgb, var(--purple) 70%, transparent) 84%,
+    transparent 92%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;
+  animation:pcSpin 9s linear infinite}
+@keyframes pcSpin{to{--pc-spin:360deg}}
+#chatInputBox.focused::after,#chatInputBox:focus-within::after{opacity:.55;animation-duration:5.5s}
+#chatInputBox.busy{border-color:color-mix(in srgb, var(--accent) 55%, var(--border))}
+#chatInputBox.busy::after{opacity:.95;animation-duration:2.6s}
+@media (prefers-reduced-motion:reduce){
+  #chatInputBox::after{animation:none;opacity:.2}
+  #chatInputBox.focused::after,#chatInputBox.busy::after{opacity:.45}
+}
 #chatInputBox #chatInput{width:100%;border:none;background:transparent;color:var(--text);font-family:var(--ui);font-size:13px;line-height:1.55;resize:none;min-height:72px;max-height:244px;padding:2px 2px 6px;outline:none}
 #chatInputBox #chatInput::placeholder{color:var(--text-dim);opacity:.8}
 #chatInputBox .ci-bottom{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px}
@@ -2271,6 +2331,14 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .wb-list-item code{font-family:var(--mono);font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;max-width:46%}
 .wb-list-sub{font-size:10.5px;color:var(--text-dim);flex:1;min-width:80px}
 .wb-list-actions{display:flex;gap:4px;margin-left:auto;flex-wrap:wrap}
+/* 授权目录行：名字与路径上下两行，读写开关与撤销靠右（沿用 .wb-switch/.wb-icon-btn，不另造控件）。
+   min-width:0 不是可选项：flex 子项默认 min-width:auto 会按内容撑开，长路径就顶破容器（布局探针实测溢出）。 */
+.wb-root-name{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
+.wb-root-label{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wb-root-path{max-width:none;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wb-root-switch{margin-left:auto;flex-shrink:0}
+.wb-icon-btn:disabled{opacity:.35;cursor:default}
+.wb-icon-btn:disabled:hover{background:transparent;color:var(--text-dim)}
 .wb-chips-wrap{display:flex;flex-direction:column;gap:6px;width:100%;max-width:560px}
 .wb-chips{display:flex;gap:5px;flex-wrap:wrap}
 .wb-chip{display:inline-flex;align-items:center;gap:4px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:2px 4px 2px 7px}

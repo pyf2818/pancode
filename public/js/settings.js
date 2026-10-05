@@ -125,15 +125,39 @@ function collectConvTurns() {
   return out.slice(-40);
 }
 
-/* ---------------- 打开文件夹（任意本地目录 → 工作区） ---------------- */
-const fm = { dir: "" };
+/* ---------------- 打开文件夹（任意本地目录 → 工作区 / 交给调用方） ---------------- */
+const fm = { dir: "", onPick: null };
 
+/* 同一份目录浏览器要有两种动词：默认是"把它换成工作区"，
+   但「授权目录」只是想挑一个目录交给调用方，绝不是换工作区。
+   文案必须跟着变——否则用户点下「打开此文件夹」会以为自己的工作区被切走了。 */
+const FM_TITLE_DEFAULT = "打开文件夹 — 任意本地目录都可以成为工作区";
+function fmOpenPicker(opts) {
+  opts = opts || {};
+  fm.onPick = typeof opts.onPick === "function" ? opts.onPick : null;
+  const head = document.querySelector("#folderModal .set-head > span");
+  if (head) head.innerHTML = ico("folder") + " " + esc(opts.title || FM_TITLE_DEFAULT);
+  const btn = $("fmOpen");
+  if (btn) btn.textContent = opts.btnText || "打开此文件夹";
+  $("folderModal").style.display = "flex";
+  $("fmStatus").className = "set-status";
+  $("fmStatus").textContent = "";
+  fmRenderRecent();
+  fmBrowse(fm.dir || "");
+}
+
+/* 浏览器的两份响应可能乱序回来（连点两次"转到"），而回来那一刻用户往往已经在输入框里打下一段路径了。
+   旧写法无条件把响应写进 #fmPath：等于**把人家正在打的字抹掉**，主按钮还被退回"未选目录"而禁用。 */
+let fmSeq = 0;
 async function fmBrowse(dir) {
+  const seq = ++fmSeq;
   const r = await fetch("/api/fs/browse?dir=" + encodeURIComponent(dir || "")).then((x) => x.json());
+  if (seq !== fmSeq) return;                       // 更晚的那次已经有结果了，这份过期
   fm.dir = r.dir || "";
   fm.parent = r.parent;
   fm.home = r.home;
-  $("fmPath").value = fm.dir;
+  const inp = $("fmPath");
+  if (document.activeElement !== inp || !String(inp.value).trim()) inp.value = fm.dir;
   $("fmCurrent").textContent = fm.dir ? "当前选择: " + fm.dir : "请选择一个文件夹";
   $("fmOpen").disabled = !fm.dir;
   const list = $("fmList");
@@ -174,6 +198,17 @@ async function fmRenderRecent() {
 
 async function fmOpenFolder() {
   const st = $("fmStatus");
+  if (fm.onPick) {
+    const dir = fm.dir;
+    if (!dir) return;
+    try {
+      const keepOpen = await fm.onPick(dir);
+      if (keepOpen !== false) $("folderModal").style.display = "none";
+    } catch (e) {
+      st.className = "set-status err"; st.textContent = "选择失败: " + e.message;
+    }
+    return;
+  }
   st.className = "set-status"; st.textContent = "正在切换工作区…";
   try {
     const r = await fetch("/api/workspace", {
@@ -217,13 +252,7 @@ $("btnOpenFolder").onclick = async (e) => {
   menu.querySelectorAll(".ws-item").forEach((item) => {
     item.onclick = async () => {
       menu.remove();
-      if (item.classList.contains("ws-more")) {
-        $("folderModal").style.display = "flex";
-        $("fmStatus").textContent = "";
-        if (typeof fmRenderRecent === "function") fmRenderRecent();
-        if (typeof fmBrowse === "function") fmBrowse(fm.dir || "");
-        return;
-      }
+      if (item.classList.contains("ws-more")) { fmOpenPicker(); return; }
       const dir = item.dataset.dir;
       if (!dir || dir === cur) return;
       try {
@@ -238,7 +267,7 @@ $("btnOpenFolder").onclick = async (e) => {
     document.addEventListener("click", close);
   }, 0);
 };
-$("fmClose").onclick = () => ($("folderModal").style.display = "none");
+$("fmClose").onclick = () => { $("folderModal").style.display = "none"; fm.onPick = null; };
 // 文件夹弹窗只点 X 关闭
 $("fmUp").onclick = () => fmBrowse(fm.parent === "" ? "" : (fm.parent || ""));
 $("fmHome").onclick = () => fmBrowse(fm.home || "");

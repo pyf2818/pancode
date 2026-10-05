@@ -455,7 +455,7 @@ async function memReload() {
   const st = r.stats || {};
   MEM._stats.innerHTML = "";
   MEM._stats.appendChild(wbStats([["库内", r.total], ["将注入", st.injected], ["衰减中", st.atRisk], ["已归档", st.archived], ["长期保留", st.sticky], ["平均强度", st.avgStrength]]));
-  MEM._stats.appendChild(wbNote("注入 = 未归档 + 有效强度 ≥ 1 + 按强度取前 10。强度 < 2.5 会先被归档（可恢复），< 0.5 会被裁剪。手写高价值条目请勾选「长期保留」。", "dim"));
+  MEM._stats.appendChild(wbNote("进上下文 = 未归档 + 有效强度 ≥ 1.5，再分两条道：偏好与归纳产物「常驻」，每轮无条件在场；经验/决策/报错「按相关性」，只有本轮问的话与它有词元交集才注入。同主题每轮最多 2 条，凑数式注入已取消。强度 < 2.5 会先归档（可恢复），< 0.5 会被裁剪。", "dim"));
   const acts = wbEl("div", "wb-inline-actions");
   acts.appendChild(wbBtn("立即整理（裁剪低强度）", "", async () => {
     const x = await wbPost("/api/memory/prune", { scope: MEM.scope });
@@ -498,7 +498,7 @@ function paintMems() {
       badges: [
         e.archived ? { text: "已归档" } : null,
         e.sticky ? { text: "长期", cls: "wb-badge-blue" } : null,
-        e.injected ? { text: "注入中", cls: "wb-badge-ok" } : null,
+        e.injected ? { text: e.lane === "resident" ? "常驻" : "按相关性", cls: "wb-badge-ok" } : null,
         e.risk === "drop" ? { text: "将被裁剪", cls: "wb-badge-err" } : e.risk === "archive" ? { text: "将被归档", cls: "wb-badge-warn" } : null,
         e.source === "sediment" ? { text: "沉淀" } : e.source === "manual" ? { text: "手写" } : null,
       ].filter(Boolean),
@@ -786,7 +786,7 @@ function ruleForm(detail, x) {
   }
   detail.appendChild(wbHead(x.title, x.file + " · " + x.kindLabel));
   if (!x.active) detail.appendChild(wbNote("当前不生效：" + x.activeWhy, x.enabled ? "warn" : "dim"));
-  if (!x.editable) detail.appendChild(wbNote("这类规则（AGENTS.md / CLAUDE.md / Cursor 规则 / 应用级遗留）不由本面板改写：它们属于其他工具或数据根。要看是否生效，用页面底部的「生效预览」。", "dim"));
+  if (!x.editable) detail.appendChild(wbNote("这类规则（AGENTS.md / CLAUDE.md / Cursor 规则 / 用户全局 ~/.pancode/AGENTS.md / 应用级遗留）不由本面板改写：它们属于其他工具或数据根。正文仍可在这里读到，是否生效以页面底部的「生效预览」为准。", "dim"));
   fetch("/api/rules/content?file=" + encodeURIComponent(x.file)).then((r) => r.json()).then((r) => {
     if (!r.ok) { detail.appendChild(wbNote(r.error || "读取失败", "err")); return; }
     const f = {
@@ -838,7 +838,11 @@ function ruleForm(detail, x) {
 function renderRulePreview(host) {
   if (!host) return;
   host.innerHTML = "";
-  host.appendChild(wbHead("生效预览", "这就是模型本轮真正读到的规则块——直接调 Agent 的装配函数，不是模拟。"));
+  host.appendChild(wbHead("生效预览", "当前工作区这一层的规则装配结果——直接调 Agent 的装配函数，不是模拟。"));
+  /* 多根授权之后这句话必须说全：本预览是用裸 {files}（只有当前根）调装配函数的，
+     而某条会话真去读过别的授权目录之后，模型看到的规则会比这里多。面板没说谎，但不完整。 */
+  host.appendChild(wbNote("这里只装「当前工作区」的规则。会话里真的读过其他授权目录之后，那个目录自己的 AGENTS.md / .pancode/rules 也会从下一条消息起一起注入，模型看到的会比本预览多。" +
+    "Agent 能进哪几扇门、哪些是只读，在「权限与安全 · 授权目录」里看。"));
   const row = wbRow("模拟任务", "填一个文件路径，看按需规则会不会命中");
   const inp = wbEl("input", "wb-input wb-input-wide");
   inp.placeholder = "如 server/index.js（留空 = 只看始终生效的规则）";

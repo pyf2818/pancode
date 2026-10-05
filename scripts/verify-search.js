@@ -1,18 +1,22 @@
 /* pancode 语义代码检索真实渲染验证（Playwright headless Chromium）
-   1) 同进程拉起服务端，工作区指向仓库根（索引覆盖真实源码，BM25 模式）
+   1) 同进程拉起服务端（沙箱数据根 + 沙箱工作区 = server/ 的一份拷贝，索引才有真实源码可命中）
    2) 注册+登录测试账号，自动跳过登录弹窗
    3) 打开搜索侧栏 → 切「语义」模式 → 点「构建索引」→ 等待「已构建」
    4) 输入自然语言查询 → 等待 .sem-result 出现 → 截图核对
    产物：scripts/_verify_out/search_build.png、scripts/_verify_out/search.png
 */
 "use strict";
+/* 沙箱数据根 + 沙箱工作区。原先直接吃真实数据根：每次跑都往 .pancode/users.json 塞一个 verify_<时间戳>
+   账号、把索引分片落进真实 .pancode/code-index。工作区改成"把 server/ 拷进沙箱"——
+   BM25 要命中的还是那些真实源码（lsp-bridge / proxy 那类词），拷贝目录既保住命中又不让引擎碰工作树。 */
+const SANDBOX = require("./_sandbox").create({ tag: "search" });
+
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
 
 process.env.PORT = process.env.PORT || "8823";
-// 测试工作区用较小的 server/ 目录：索引覆盖真实源码（lsp-bridge 等），且不含 node_modules，避免巨型 hello 快照拖垮事件循环
-process.env.CURSORWEB_WORKSPACE = process.env.CURSORWEB_WORKSPACE || path.resolve(__dirname, "..", "server");
+fs.cpSync(path.resolve(__dirname, "..", "server"), SANDBOX.wsDir, { recursive: true });
 require("../server/index.js");   // 启动服务端（同进程）
 
 const PORT = process.env.PORT;

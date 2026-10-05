@@ -24,7 +24,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
+const wsKey = require("./ws-key");
 const safeWrite = require("./safe-write");
 
 const HIST_MAX = 50;
@@ -33,9 +33,8 @@ const HIST_MAX = 50;
 function histPath() {
   const ROOT = require("./config").ROOT;
   const cfg = require("./config").load();
-  const wsHash = crypto.createHash("md5")
-    .update(path.resolve(ROOT, (cfg && cfg.workspace) || "workspace")).digest("hex");
-  return path.join(ROOT, ".pancode", "orch-history", wsHash + ".json");
+  return wsKey.forWorkspace(path.resolve(ROOT, (cfg && cfg.workspace) || "workspace"), ROOT)
+    .file(path.join(ROOT, ".pancode", "orch-history"));
 }
 function histLoad() {
   try { return JSON.parse(fs.readFileSync(histPath(), "utf8")); } catch (e) { return []; }
@@ -196,4 +195,4 @@ class Orchestrator {
   }
 }
 
-module.exports = { Orchestrator, histList, histGet };
+module.exports = { Orchestrator, histList, histGet, histPath };

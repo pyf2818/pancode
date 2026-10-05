@@ -24,7 +24,10 @@ function openCommit() {
       box.innerHTML = '<div class="cm-empty">未检测到 Git 仓库</div>';
       $("cmSubmit").disabled = true; setPush(false, "不是 Git 仓库"); return;
     }
-    branch.textContent = "分支：" + d.branch + (d.remote ? " · 远端：" + d.remote : " · 无远端");
+    branch.textContent = "分支：" + d.branch + (d.remote ? " · 远端：" + d.remote : " · 无远端") +
+      /* 打开的是仓库的子目录（monorepo 里只开 web/app）时，这里列的、提交的都只是这个子树，
+         不说清楚就会让人以为"提交怎么漏了别的文件"。 */
+      (d.sub ? " · 只含 " + d.sub + " 子目录" : "");
     setPush(!!d.remote, d.remote ? "提交后推送到 " + d.remote + "/" + d.branch : "这个仓库还没有远端（git remote 为空），只能本地提交");
     if (!d.changes || !d.changes.length) {
       box.innerHTML = '<div class="cm-empty">没有未提交的改动</div>';

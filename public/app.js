@@ -2676,18 +2676,22 @@ function refreshCtx() {
   wrap.classList.toggle("warn", pct >= 85);
   const pctEl = wrap.querySelector("#ctxPct");
   if (pctEl) {
-    pctEl.textContent = pct >= 100 ? "100" : String(pct);
+    pctEl.textContent = pct + "%";
     pctEl.classList.toggle("mid", pct >= 60 && pct < 85);
     pctEl.classList.toggle("warn", pct >= 85);
   }
   // 环形进度：r=7.6 → 周长 2πr ≈ 47.752
   const fg = wrap.querySelector(".ctx-fg");
   if (fg) fg.style.strokeDashoffset = String(47.752 * (1 - pct / 100));
+  // Agent Trace 面板里的「水位」格：与环形进度同一个分子/分母，避免两处各算一套
+  if (typeof $ === "function") { const tc = $("traceCtx"); if (tc) tc.textContent = pct + "%"; }
   // 服务端 used = 最近一次 LLM 请求的真实 prompt_tokens（est 标记 = 尚无实测、退回估算）
-  const srcLabel = fromServer ? (ctxServer.est ? "（服务端估算·暂无实测）" : "（服务端实测·真实 prompt tokens）") : "（本地估算）";
+  const srcLabel = fromServer ? (ctxServer.est ? "服务端估算" : "服务端实测") : "本地估算";
   if (typeof renderEnvPanel === "function") { _envCtx = { used, budget }; renderEnvPanel(); }
-  wrap.title = "上下文 " + used.toLocaleString() + " / " + budget.toLocaleString() + " tokens " + srcLabel
-    + (pct >= 80 ? " · 已达自动压缩水位线，也可输入 /compact 立即压缩" : " · 悬停查看用量，输入 /compact 可手动压缩");
+  // 只报百分比：具体 token 数对使用者没有决策价值，且分母口径随模型窗口变，
+  // 摆在界面上只会让人拿它当"消费金额"来读（悬停同样不给数值，只给水位的语义）。
+  wrap.title = "上下文水位 " + pct + "%（" + srcLabel + "）"
+    + (pct >= 80 ? " · 已达自动压缩水位线，也可输入 /compact 立即压缩" : " · 输入 /compact 可手动压缩");
 }
 /* 服务端 context.usage 事件 → 存储实测值并刷新（est=true 表示服务端暂无 LLM 实测、用的估算） */
 function updateCtxBar(used, budget, est) {
@@ -2787,7 +2791,7 @@ function renderEnvPanel() {
   if (ctxServer && ctxServer.budget) _envCtx = { used: ctxServer.used, budget: ctxServer.budget };
   const pct = _envCtx.budget ? Math.min(100, Math.round((_envCtx.used / _envCtx.budget) * 100)) : 0;
   const fill = $("envCtxFill"); if (fill) { fill.style.width = pct + "%"; fill.className = pct >= 85 ? "warn" : pct >= 60 ? "mid" : ""; }
-  set("envCtxTxt", _envCtx.budget ? pct + "% · " + Math.round(_envCtx.used / 1000) + "k/" + Math.round(_envCtx.budget / 1000) + "k" : "—");
+  set("envCtxTxt", _envCtx.budget ? pct + "%" : "—");
   set("envUpdated", "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
   // 改动风险热力：把"该重点看哪几处"从一堆 +/- 数字里拎出来
   const rs = state.riskSummary;
@@ -2843,20 +2847,26 @@ function renderRecallCard(ev) {
 /* 上下文压缩可视化：以前只在终端刷一行字，用户在主界面完全看不见"AI 把什么忘了"。
    这里在聊天流里插一张可展开的压缩卡，展开能看到结构化摘要（目标/决策/改动/验证/未决）。 */
 function renderCompactCard(ev) {
-  const k = (n) => (n >= 1024 ? (n / 1024).toFixed(0) + "k" : String(n || 0));
+  // 只给水位的相对量：压缩前/后各占水位线的百分之几、这次腾出多少。
+  // 绝对 token 数既不直观（分母随模型窗口变），又会被误读成消费数字。
+  const pc = (n) => (ev.budget ? Math.min(100, Math.max(0, Math.round((n / ev.budget) * 100))) : null);
+  const beforePct = pc(ev.before), afterPct = pc(ev.after);
+  const stat = beforePct == null || afterPct == null
+    ? '<span class="cc-stat"><b>—</b></span>'
+    : '<span class="cc-stat"><b>' + beforePct + '%</b><i>→</i><b class="cc-after">' + afterPct + '%</b></span>';
+  const freed = beforePct == null || afterPct == null ? null : Math.max(0, beforePct - afterPct);
   const el = document.createElement("div");
   el.className = "compact-card";
-  const pct = ev.budget ? Math.round(((ev.before || 0) / ev.budget) * 100) : 0;
   el.innerHTML =
     '<div class="cc-head">' +
       '<span class="cc-ico">' + ico("compress") + '</span>' +
       '<span class="cc-title">' + (ev.forced ? "已手动压缩上下文" : "上下文接近水位线，已自动压缩") + '</span>' +
-      '<span class="cc-stat"><b>' + k(ev.before) + '</b><i>→</i><b class="cc-after">' + k(ev.after) + '</b></span>' +
-      '<span class="cc-badge">' + pct + '% 水位触发</span>' +
+      stat +
+      '<span class="cc-badge">' + (freed == null ? "已压缩" : "腾出 " + freed + "% 空间") + '</span>' +
       '<button class="cc-toggle">' + ico("chevR") + '查看保留了什么</button>' +
     '</div>' +
     '<div class="cc-body">' +
-      '<div class="cc-meta">丢弃 <b>' + (ev.dropped || 0) + '</b> 条早期消息 · 保留 <b>' + (ev.keptCritical || 0) + '</b> 条关键（你的原话 / 报错 / 改动结果） + <b>' + (ev.keptRecent || 0) + '</b> 条最近对话</div>' +
+      '<div class="cc-meta">丢弃最早的几轮对话 · 保留你的原话 / 报错 / 改动结果，以及最近几轮的完整上下文</div>' +
       '<pre class="cc-summary">' + esc(ev.summary || "（无摘要文本）") + '</pre>' +
     '</div>';
   el.querySelector(".cc-toggle").onclick = () => el.classList.toggle("open");
@@ -2902,6 +2912,11 @@ function setRunning(running, label, evConvId) {
   const live = document.querySelector(".ag-live-dot");
   if (live) live.classList.toggle("running", running);
   const liveTxt = $("agLiveTxt"); if (liveTxt) liveTxt.textContent = txt;
+  /* 会话头轨道标记 + 输入框能量边框一起进/出"忙"态：关窗后台续跑再回来时，
+     不用读文字就知道 Agent 此刻是在跑还是已经停了。 */
+  const avatar = document.querySelector(".ag-avatar");
+  if (avatar) avatar.classList.toggle("busy", !!running);
+  inputBox.classList.toggle("busy", !!running);
   const btn = inputBox.querySelector("#btnSend");
   if (btn) {
     if (running) {
@@ -3076,7 +3091,9 @@ async function replayOrchRun(runId, title) {
 (function () {
   const closeBtn = $("orchClose");
   if (closeBtn) closeBtn.onclick = () => { $("orchOverlay").style.display = "none"; };
-  renderOrchHistory();
+  /* 编排历史的首次拉取挪到 startApp()（鉴权就绪之后）：
+     在这里直接 fetch 时 AUTH.token 还是空串，服务端 401 NO_AUTH →
+     下面那个全局 401 处理会把用户存好的登录态抹掉，等于每次刷新都要重新登录。 */
 })();
 
 /* ---------------- 本地鉴权 ---------------- */
@@ -3136,12 +3153,17 @@ function resendLast() {
 (function patchFetch() {
   const orig = window.fetch.bind(window);
   window.fetch = async (url, opts) => {
+    /* 这次请求到底带没带 token：没带就别把 401 当成"登录过期"。
+       启动期那些早于 checkAuth() 的 fetch 一定会 401（AUTH.token 还是空串），
+       若照旧走下面的清 token 分支，等于用户每次刷新都被登出。 */
+    let hadToken = false;
     if (AUTH.token && typeof url === "string" && url.startsWith("/api/")) {
       opts = opts || {};
       opts.headers = Object.assign({}, opts.headers, { Authorization: "Bearer " + AUTH.token });
+      hadToken = true;
     }
     const r = await orig(url, opts);
-    if (r.status === 401) {
+    if (r.status === 401 && hadToken) {
       let body = {};
       try { body = await r.clone().json(); } catch (e) {}
       if (body && body.code === "NO_AUTH" && !_authRedirected) {
@@ -3891,54 +3913,6 @@ function aiCurrentFile(text) {
   if (!state.activeFile) { toast("请先打开一个文件"); return; }
   aiFileAction(state.activeFile, text);
 }
-function openCommandPalette() {
-  const existing = $("cmdPalette");
-  if (existing) { existing.remove(); return; }
-  const commands = [
-    { label: "新建文件", hint: "", fn: () => promptNewFile("") },
-    { label: "新建文件夹", hint: "", fn: () => { const p = prompt("新建文件夹（相对路径）：", "newdir"); if (p) send({ type: "file.mkdir", path: p }); } },
-    { label: "保存文件", hint: "Ctrl+S", fn: saveActiveFile },
-    { label: "关闭当前标签", hint: "Ctrl+W", fn: () => { if (state.activeFile) closeTab(state.activeFile); } },
-    { label: "文件跳转", hint: "Ctrl+P", fn: openFilePalette },
-    { label: "新建对话", hint: "", fn: () => startNewConv(true) },
-    { label: "切换至编辑器窗口", hint: "Ctrl+.", fn: () => switchMode("editor") },
-    { label: "切换至 Agents 窗口", hint: "Ctrl+.", fn: () => switchMode("agents") },
-    { label: "AI 解释当前文件", hint: "/explain", fn: () => aiCurrentFile("请阅读并解释当前打开的文件，说明其功能、关键逻辑和设计思路。") },
-    { label: "AI 修复错误", hint: "/fix", fn: () => aiCurrentFile("请检查当前打开的文件中的错误和问题，并修复它们。先运行测试确认问题，修复后再验证。") },
-    { label: "AI 生成测试", hint: "/test", fn: () => aiCurrentFile("请为当前打开的文件生成单元测试，覆盖主要功能和边界情况。") },
-    { label: "AI 重构代码", hint: "/refactor", fn: () => aiCurrentFile("请重构当前打开的文件，改善代码结构、可读性和可维护性，但不改变功能。") },
-    { label: "AI 审查代码", hint: "/review", fn: () => aiCurrentFile("请对当前打开的文件进行代码审查，指出潜在问题和改进建议。") },
-    { label: "切换主题", hint: "深色/浅色", fn: () => applyTheme(getTheme() === "light" ? "dark" : "light") },
-    { label: "打开设置", hint: "", fn: () => $("btnSettings").click() },
-    { label: "键盘快捷键", hint: "", fn: openShortcuts },
-  ];
-  const pal = document.createElement("div");
-  pal.id = "cmdPalette";
-  pal.innerHTML = '<input class="cmd-input" placeholder="输入命令名称…" /><div class="cmd-list"></div>';
-  document.body.appendChild(pal);
-  const input = pal.querySelector(".cmd-input");
-  const list = pal.querySelector(".cmd-list");
-  let idx = 0, filtered = commands;
-  const updateActive = () => list.querySelectorAll(".cmd-item").forEach((el, i) => el.classList.toggle("active", i === idx));
-  const render = () => {
-    filtered = commands.filter((c) => c.label.toLowerCase().includes(input.value.toLowerCase()));
-    idx = 0;
-    list.innerHTML = filtered.map((c, i) => '<div class="cmd-item' + (i === 0 ? " active" : "") + '" data-i="' + i + '"><span class="cmd-label">' + esc(c.label) + '</span>' + (c.hint ? '<span class="cmd-hint">' + esc(c.hint) + '</span>' : '') + '</div>').join("");
-    list.querySelectorAll(".cmd-item").forEach((el) => el.onclick = () => pick(parseInt(el.dataset.i, 10)));
-  };
-  const pick = (i) => { const c = filtered[i]; if (!c) return; pal.remove(); c.fn(); };
-  input.addEventListener("input", render);
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { pal.remove(); }
-    else if (e.key === "ArrowDown") { e.preventDefault(); idx = Math.min(idx + 1, filtered.length - 1); updateActive(); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); idx = Math.max(idx - 1, 0); updateActive(); }
-    else if (e.key === "Enter") { e.preventDefault(); pick(idx); }
-  });
-  render();
-  input.focus();
-  setTimeout(() => { document.addEventListener("click", function close(e) { if (!pal.contains(e.target)) { pal.remove(); document.removeEventListener("click", close); } }); }, 100);
-}
-
 function openFilePalette() {
   const existing = $("filePalette");
   if (existing) { existing.remove(); return; }
@@ -3979,7 +3953,11 @@ document.addEventListener("keydown", (e) => {
     $("commitModal").style.display = "none"; return;
   }
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveActiveFile(); }
-  else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "P" || e.key === "p")) { e.preventDefault(); openCommandPalette(); }
+  /* Ctrl+Shift+P 只归命令面板（js/cmdk.js 里绑的同一条键）。
+     这里原先还开了一份旧的面板（#cmdPalette）：同一次按键叠出两个面板，
+     后插入 body 的那份盖在前面那份上面，鼠标点下面那份永远被"拦截 pointer events"。
+     旧面板独有的命令（新建文件夹 / 关闭标签 / 新建对话 / 五条 AI 命令）已并入 cmdk。 */
+  else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "P" || e.key === "p")) { e.preventDefault(); }
   else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); openFilePalette(); }
   else if ((e.ctrlKey || e.metaKey) && (e.key === "w" || e.key === "W")) { e.preventDefault(); if (state.activeFile) closeTab(state.activeFile); }
   else if ((e.ctrlKey || e.metaKey) && (e.key === "." || e.code === "Period")) {
@@ -4282,6 +4260,7 @@ bindInput();
 async function startApp() {
   if (ws) { try { ws.close(); } catch (e) {} }
   loadSkills(); loadPlan(convId); connect();
+  renderOrchHistory();   // 登录态已就绪（AUTH.token 已由 bootstrap/checkAuth 填好），此时才拉编排历史
 }
 
 /* ===== B5 全局加载遮罩 · 品牌开场 ===== */

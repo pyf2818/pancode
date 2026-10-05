@@ -36,8 +36,9 @@ const check = (n, c) => { console.log((c ? "PASS" : "FAIL") + " - " + n); if (!c
   // 读回确认持久化
   r = await gt();
   const rulesHit = Array.isArray(r.rules) && r.rules.some((x) => x && x.content && x.content.includes("统一返回 {code,data,msg}"));
-  const memHit = typeof r.memory === "string" && r.memory.includes("禁止在控制器里写 SQL");
-  check("规则已写入 user-rules.md 并可读回", rulesHit);
+  // /api/sediment 的 memory 早就是结构化条目数组（{id,type,topic,content,ts}），不再是拼接字符串
+  const memHit = Array.isArray(r.memory) && r.memory.some((e) => e && String(e.content || "").includes("禁止在控制器里写 SQL"));
+  check("规则已写入 .pancode/rules 并可读回", rulesHit);
   check("记忆已写入并可读回", memHit);
 
   // 空内容应被拒绝

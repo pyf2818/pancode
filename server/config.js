@@ -7,13 +7,24 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
+const wsKey = require("./ws-key");
 const { setEnvVar } = require("./dotenv");
 const { saveJson } = require("./safe-write");
 
 // 数据根：打包态(__dirname 落在只读 app.asar)必须指向可写目录，由桌面端 main.js 注入 PANCODE_DATA_DIR(=userData)
 const ROOT = process.env.PANCODE_DATA_DIR || path.join(__dirname, "..");
 const CONFIG_PATH = path.join(ROOT, "pancode.config.json");
+
+/* 探针护栏：带"我在跑测试"的标记（AGENT_FAST / CURSORWEB_ENGINE=demo，产品路径一个都不设，实测）
+   却没换数据根 → 直接拒启。
+   理由不是洁癖：这种组合会往真实的 .pancode 里写探针账号、按 TTL 删真实对话、落测试用的索引分片，
+   而且全程一声不吭。宁可启动即失败，也不让"探针绿了、开发者的数据没了"这种事再发生一次。 */
+if (!process.env.PANCODE_DATA_DIR && (process.env.AGENT_FAST === "1" || process.env.CURSORWEB_ENGINE === "demo")) {
+  throw new Error(
+    "探针护栏：这是探针启动（AGENT_FAST/CURSORWEB_ENGINE=demo）但没设 PANCODE_DATA_DIR——它会把账号、会话、索引写进真实数据根 " +
+    ROOT + "。请 require('./scripts/_sandbox').create({ tag: \"…\" })，或显式指定一个临时 PANCODE_DATA_DIR。"
+  );
+}
 
 const DEFAULTS = {
   port: 8766,
@@ -26,6 +37,10 @@ const DEFAULTS = {
     temperature: 0.2,
     maxToolRounds: 100,   // 单次任务最多工具调用轮数
     contextWindow: 128000, // 模型真实上下文窗口（tokens）：上下文进度条分母 + 自动压缩依据，按所用模型调整
+    // 输出预留（tokens）：窗口是 input+output 共享的，自动压缩只能让出输入侧，
+    // 所以阈值要先从窗口里扣掉"本轮模型最多还要写多少"。不发给上游，纯本地预算量。
+    // 留空 = 按窗口 10% 自动取。
+    maxOutputTokens: 0,
   },
   // 多份模型配置（网关地址 + 模型名）。密钥不进这里，见 profileKeyVar。
   llmProfiles: [],
@@ -363,31 +378,27 @@ function publicInfo(cfg) {
   };
 }
 
-/* 项目记忆文件路径（与 Agent 内部 _memoryPath 算法一致：md5(工作区绝对路径)） */
+/* 项目级分片路径：全部走 ws-key 的唯一键（md5(规范化绝对路径)），
+   老键由 ws-key 在缺席时改名迁移、冲突时原样保留并上报。 */
+function wsShard(cfg) {
+  return wsKey.forWorkspace(path.resolve(ROOT, (cfg && cfg.workspace) || "workspace"), ROOT);
+}
 function memoryPath(cfg) {
-  const wsAbs = path.resolve(ROOT, (cfg && cfg.workspace) || "workspace");
-  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
-  return path.join(ROOT, ".pancode", "memory", key + ".json");
+  return wsShard(cfg).file(path.join(ROOT, ".pancode", "memory"));
 }
 /* 项目规则目录（loadRules 从此读取 *.md 强制注入到系统提示词） */
 function rulesDir() { return path.join(ROOT, ".pancode", "rules"); }
 /* 项目 Skill 文件路径 */
 function skillPath(cfg) {
-  const wsAbs = path.resolve(ROOT, (cfg && cfg.workspace) || "workspace");
-  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
-  return path.join(ROOT, ".pancode", "skills", key + ".json");
+  return wsShard(cfg).file(path.join(ROOT, ".pancode", "skills"));
 }
 /* 项目灵魂(Soul)文件路径 — 与记忆/技能同算法、同工作区哈希 */
 function soulPath(cfg) {
-  const wsAbs = path.resolve(ROOT, (cfg && cfg.workspace) || "workspace");
-  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
-  return path.join(ROOT, ".pancode", "soul", key + ".json");
+  return wsShard(cfg).file(path.join(ROOT, ".pancode", "soul"));
 }
 /* 项目进度(进化路线)文件路径 — 与记忆/技能/灵魂同算法、同工作区哈希 */
 function progressionPath(cfg) {
-  const wsAbs = path.resolve(ROOT, (cfg && cfg.workspace) || "workspace");
-  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
-  return path.join(ROOT, ".pancode", "progression", key + ".json");
+  return wsShard(cfg).file(path.join(ROOT, ".pancode", "progression"));
 }
 
 module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveMcpServers, saveEmbedding, agentSettings, embeddingInfo, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH,

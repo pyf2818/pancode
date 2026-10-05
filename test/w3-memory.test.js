@@ -151,49 +151,64 @@ describe("memory-tools.save_session_memory — scope=user", () => {
   it("无 userMemory 兜底回项目级（独立构造 agent 不炸）", () => {
     const local = new MemoryStore(path.join(memDir, "cur8888.json"));
     const agent = { memory: local, emit: () => {}, tool: () => ({ body() {}, done() {} }) };
-    return memoryTools.save_session_memory(agent, { scope: "user", lessons: ["兜底回项目级"] }).then((summary) => {
+    return memoryTools.save_session_memory(agent, { scope: "user", lessons: ["这条应当落在项目记忆库里"] }).then((summary) => {
       expect(summary).not.toContain("用户级");
       expect(local.list({})).toHaveLength(1);
     });
   });
 });
 
-describe("buildSystemAugment — 用户级记忆注入", () => {
-  it("userMemory 有内容时注入【用户级记忆】块且位于项目记忆之前", () => {
+describe("buildSystemAugment — 记忆分道注入（#31）", () => {
+  function augAgent(userJson, projJson) {
     const agent = Object.create(LlmAgent.prototype);
     agent.cfg = { memory: { enabled: true }, rules: { enabled: false }, repoMap: false };
-    agent.userMemory = new MemoryStore(path.join(memDir, "user.json"));
-    agent.userMemory.add("preference", "命名约定", "变量名用中文");
-    agent.memory = new MemoryStore(path.join(memDir, "proj.json"));
-    agent.memory.add("lesson", "经验", "本项目用 vitest");
+    agent.userMemory = userJson ? new MemoryStore(path.join(memDir, userJson)) : null;
+    agent.memory = new MemoryStore(path.join(memDir, projJson));
     agent.plan = { formatForContext: () => "" };
     agent.skills = { match: () => [], formatForContext: () => "", recordUse: () => {} };
     agent.soul = { get: () => ({}) };
     agent.progression = { get: () => ({ path: "" }) };
     agent._evolutionBias = () => null;
     agent._currentConv = "t";
-    const out = agent.buildSystemAugment("");
-    expect(out).toContain("【用户级记忆");
-    expect(out).toContain("变量名用中文");
-    expect(out).toContain("【项目记忆（参考）】");
-    expect(out.indexOf("【用户级记忆")).toBeLessThan(out.indexOf("【项目记忆（参考）】"));
+    return agent;
+  }
+
+  it("用户级在前；项目 lesson 只在本轮词元命中时才进上下文", () => {
+    const agent = augAgent("user.json", "proj.json");
+    agent.userMemory.add("preference", "命名约定", "变量名用中文");
+    agent.memory.add("lesson", "测试约定", "本项目用 vitest 跑单测");
+    const hit = agent.buildSystemAugment("帮我把 vitest 的用例补全");
+    expect(hit).toContain("【用户级记忆");
+    expect(hit).toContain("变量名用中文");
+    expect(hit).toContain("【与本轮相关的项目记忆");
+    expect(hit.indexOf("【用户级记忆")).toBeLessThan(hit.indexOf("【与本轮相关的项目记忆"));
+
+    /* 本轮问的跟这条毫无交集 → 一个字都不注入。
+       旧口径是"按强度凑满 10 条"，于是任何高强度条目都会跟着进来，
+       用户看到的"读进来的长期记忆没啥意义"就是这么来的。 */
+    const miss = agent.buildSystemAugment("把首页按钮的圆角改成 8px");
+    expect(miss).not.toContain("【与本轮相关的项目记忆");
+    expect(miss).not.toContain("vitest");
+    // 偏好是无条件在场的：本轮问得不相关也照样跟着，这是它和 lesson 的分工
+    expect(miss).toContain("变量名用中文");
   });
 
-  it("userMemory 为空/未注入时不产生用户级块（向后兼容）", () => {
-    const agent = Object.create(LlmAgent.prototype);
-    agent.cfg = { memory: { enabled: true }, rules: { enabled: false }, repoMap: false };
-    agent.userMemory = null;
-    agent.memory = new MemoryStore(path.join(memDir, "proj2.json"));
+  it("稳定道只收偏好/归纳产物/sticky，普通的 lesson 不会因为强度高就常驻", () => {
+    const agent = augAgent(null, "proj3.json");
+    agent.memory.add("lesson", "测试约定", "本项目用 vitest 跑单测", { valueScore: 5 });
+    agent.memory.add("decision", "打包方案", "electron-builder 改名被锁时降级为 copyFile", { source: "consolidate", valueScore: 5 });
+    const out = agent.buildSystemAugment("今天天气不错");
+    expect(out).toContain("【项目记忆（长期约定，参考）】");
+    expect(out).toContain("打包方案");
+    expect(out).not.toContain("vitest");
+  });
+
+  it("userMemory 未注入时不产生用户级块；一条都不该在场时项目块整块消失", () => {
+    const agent = augAgent(null, "proj2.json");
     agent.memory.add("lesson", "经验", "本项目用 vitest");
-    agent.plan = { formatForContext: () => "" };
-    agent.skills = { match: () => [], formatForContext: () => "", recordUse: () => {} };
-    agent.soul = { get: () => ({}) };
-    agent.progression = { get: () => ({ path: "" }) };
-    agent._evolutionBias = () => null;
-    agent._currentConv = "t";
     const out = agent.buildSystemAugment("");
-    console.log("DBG-2 OUT:", JSON.stringify(out), "| memSize:", agent.memory.size, "| cfg:", JSON.stringify(agent.cfg));
     expect(out).not.toContain("【用户级记忆");
-    expect(out).toContain("【项目记忆（参考）】");
+    expect(out).not.toContain("【项目记忆（长期约定");
+    expect(out).not.toContain("【与本轮相关的项目记忆");
   });
 });

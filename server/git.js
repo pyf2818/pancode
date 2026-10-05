@@ -6,11 +6,34 @@
           并发上限由信号量控制，避免大仓库/高频调用压垮机器。
    ============================================================ */
 "use strict";
+const fs = require("fs");
 const path = require("path");
 const { execFileSync, execFile } = require("child_process");
 const { promisify } = require("util");
 
 const execFileP = promisify(execFile);
+
+/* 同一个目录可以有很多种写法：Windows 的 8.3 短名（C:\Users\ANLAN0~1\…）、大小写、
+   分隔符、git 自己输出的正斜杠。`path.resolve` 只处理分隔符与相对段，不比短名也不折大小写，
+   于是"目录明明就是那个仓库"却被判成两个地方 → GitLayer 整体不启用，
+   diff 基线、改动面板、提交全部静默退化成快照模式（实测踩过：临时目录就是短名）。 */
+function sameDir(a, b) {
+  if (!a || !b) return false;
+  const norm = (p) => {
+    let s = String(p);
+    try { s = fs.realpathSync.native(path.resolve(s)); } catch (e) { /* 掉盘/非 Windows：退回词法归一 */ }
+    return s.replace(/[\\/]+$/, "").toLowerCase();
+  };
+  return norm(a) === norm(b);
+}
+
+/* 一票否决：仓库根就是用户主目录。
+   "家目录里躺着一个误建的 .git" 不是假想（实测这台机器就有，而且一次提交都没有）。
+   认了它，主目录下的每个普通文件夹都会被判成"仓库子目录"，
+   于是 git_commit 会把文件提交进家目录仓库 —— 打开一个非项目文件夹绝不该有这种后果。 */
+function isHomeRepo(top, home) {
+  try { return sameDir(top, home || require("os").homedir()); } catch (e) { return false; }
+}
 
 /* W12：git 子进程并发上限——避免同时拉起过多 git 进程拖垮机器 */
 const MAX_GIT = 6;
@@ -38,14 +61,44 @@ async function _git(dir, args, opts) {
   } finally { _gitRelease(); }
 }
 
+/* 一票否决之二：祖先仓库把本工作区整个 ignore 掉了。
+   这时 `git status` 永远列不出这里的任何改动（实测：pancode 自己的 .gitignore 写着 workspace/，
+   于是 smoke/fileops 两个夹具的"改动文件数"直接变成 0），而快照模式本来什么都对。
+   认了这种仓库 = 把改动面板、diff 基线、提交全部换成静默空集 —— 宁可退回快照。 */
+function isIgnoredHere(dir) {
+  try {
+    execFileSync("git", ["check-ignore", "-q", "."], { cwd: dir, encoding: "utf8", timeout: 8000, windowsHide: true });
+    return true;                                   // 退出码 0 = 被忽略
+  } catch (e) {
+    return !!(e && e.status === 1) ? false : true; // 1 = 没被忽略；其它（128 等）保守当作"被忽略"，别赌
+  }
+}
+
 class GitLayer {
   constructor(wsDir, fileStore) {
     this.dir = wsDir;
     this.fileStore = fileStore;
     this.available = false;  // git 命令 + 是否为仓库
     this.branch = "";
+    this.prefix = "";        // 工作区相对仓库根的位置（"web/app/"，正斜杠带尾斜杠）；仓库根本身 = ""
     this.snapshot = {};      // 降级方案：启动时快照
     this._init();
+  }
+
+  /* 工作区里的相对路径 → 仓库根视角的路径。
+     ⚠ 只有 revspec 形式（`git show HEAD:<path>`）用的是这个坐标系。
+     `-- <pathspec>` 那类（diff / add / checkout）**是相对当前工作目录**的，
+     而我们所有子进程都以 this.dir 为 cwd —— 那里必须原样传工作区相对路径，
+     加了前缀反而变成 web/app/web/app/main.js 这种不存在的路径（实测：diff 直接空、add 报 pathspec 不匹配）。 */
+  _toRepo(rel) {
+    const s = String(rel == null ? "" : rel).replace(/\\/g, "/").replace(/^\/+/, "");
+    return this.prefix && !s.startsWith(this.prefix) ? this.prefix + s : s;
+  }
+
+  /* git 输出的仓库根路径 → 工作区相对路径（前端、FileStore、改动面板说的都是这个坐标系） */
+  _fromRepo(p) {
+    const s = String(p || "").replace(/\\/g, "/");
+    return this.prefix && s.startsWith(this.prefix) ? s.slice(this.prefix.length) : s;
   }
 
   /* 启动期一次性探测（同步可接受：仅在 boot 跑一次，且快） */
@@ -59,13 +112,32 @@ class GitLayer {
           cwd: this.dir, encoding: "utf8", timeout: 8000, windowsHide: true,
         }).trim()
         : "";
-      if (inside === "true" && path.resolve(top) === path.resolve(this.dir)) {
-        this.available = true;
-        try {
-          this.branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-            cwd: this.dir, encoding: "utf8", timeout: 8000, windowsHide: true,
-          }).trim();
-        } catch (e) { this.branch = "main"; }
+      /* 工作区是仓库的子目录（monorepo 里只打开 web/app）以前等于 git 能力整体缺席：
+         判据只认"工作区==仓库根"。现在认"工作区落在某个仓库里"，代价是所有路径都要换算
+         （git 输出的永远是仓库根相对路径，而 FileStore / 改动面板 / 提交接口说的是工作区相对路径）。
+         实测过的两条换算依据：
+           - `status --porcelain -uall -- .` 从子目录跑：只列本子目录，但路径仍是仓库根相对的；
+             `--relative` 在 porcelain 模式下直接输出空，不能用。
+           - `add -A -- .` / `checkout -- .` / `clean -fd` 从子目录跑都天然只作用于本子目录。 */
+      if (inside === "true" && top && !isHomeRepo(top)) {
+        const isRoot = sameDir(top, this.dir);
+        let prefix = "";
+        if (!isRoot) {
+          try {
+            prefix = execFileSync("git", ["rev-parse", "--show-prefix"], {
+              cwd: this.dir, encoding: "utf8", timeout: 8000, windowsHide: true,
+            }).trim().replace(/\\/g, "/");
+          } catch (e) { prefix = ""; }
+        }
+        if ((isRoot || (prefix && prefix !== "/")) && (isRoot || !isIgnoredHere(this.dir))) {
+          this.available = true;
+          this.prefix = isRoot ? "" : prefix;
+          try {
+            this.branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+              cwd: this.dir, encoding: "utf8", timeout: 8000, windowsHide: true,
+            }).trim();
+          } catch (e) { this.branch = "main"; }
+        }
       }
     } catch (e) { this.available = false; }
     // 无论是否有 git，都保留一份快照兜底（git 仓库中未跟踪文件也需要基线）
@@ -74,11 +146,11 @@ class GitLayer {
     }
   }
 
-  /* 取某文件的 diff 基线内容；null 表示新增文件（无基线） */
+  /* 取某文件的 diff 基线内容；null 表示新增文件（无基线）。入参是**工作区相对路径**。 */
   async baseline(rel) {
     if (this.available) {
       try {
-        return await _git(this.dir, ["show", "HEAD:" + rel], { maxBuffer: 64 * 1024 * 1024 });
+        return await _git(this.dir, ["show", "HEAD:" + this._toRepo(rel)], { maxBuffer: 64 * 1024 * 1024 });
       } catch (e) {
         // HEAD 中不存在（新文件）→ 尝试快照，再没有就是全新文件
         return this.snapshot[rel] !== undefined ? this.snapshot[rel] : null;
@@ -87,12 +159,57 @@ class GitLayer {
     return this.snapshot[rel] !== undefined ? this.snapshot[rel] : null;
   }
 
-  /* 变更列表：[{path, status}]  status: M 修改 / A 新增 / D 删除 */
+  /* 启动快照里的内容（不发子进程）。undefined = 启动时这个文件不存在。
+     给批量快照用：未跟踪/被忽略的文件走的就是这条路，没必要先起一发必定失败的 `git show`。 */
+  snapshotOf(rel) {
+    return this.snapshot[rel];
+  }
+
+  /* 一次性拿到 HEAD 里已有的文件集合（工作区相对路径）。
+     ⚠ 坐标系与 changes() 相反：`ls-files -- .` 输出的是**相对 cwd** 的路径
+     （实测子目录里得到 b.txt / deep/c.txt），而 `status --porcelain` 输出的是仓库根相对路径。
+     所以这里绝不能再套 _fromRepo，剥前缀会剥出错误路径。 */
+  async trackedSet() {
+    if (!this.available) return null;
+    let txt = "";
+    try { txt = await _git(this.dir, ["ls-files", "-c", "--", "."]); } catch (e) { return null; }
+    const set = new Set();
+    for (const line of txt.split("\n")) {
+      const p = line.trim().replace(/"/g, "");
+      if (p) set.add(p.replace(/\\/g, "/"));
+    }
+    return set;
+  }
+
+  /* 批量快照的取基线策略（首屏 22s 空白的根治点）：
+     以前 snapshotFiles 对**每个文件** await 一次 baseline(rel)，也就是一发
+     `git show HEAD:<path>` 子进程。实测 126ms/次 × 127 个文件 = 22.3s 才有第一屏。
+     而其中真正需要读 HEAD 的只有"改过的少数几个"：
+       · 已跟踪且 status 没报 → 工作区内容就等于基线，直接用 content，不发进程；
+       · 已跟踪且报 M/D      → 才真需要 `git show`（通常个位数）；
+       · 未跟踪 / 被忽略      → 旧代码也是先起一发必定失败的 git show 再回落到启动快照，
+                                这里直接读快照，结果逐字相同，少 N 次失败子进程。
+     没有 git 时返回 null，调用方整体走快照口径（与旧行为一致）。 */
+  async baselinePlanner() {
+    const tracked = await this.trackedSet();
+    if (!tracked) return null;
+    const changed = new Set((await this.changes()).map((c) => c.path));
+    const self = this;
+    return async function pick(rel, content) {
+      if (!tracked.has(rel)) return self.snapshotOf(rel) === undefined ? null : self.snapshotOf(rel);
+      if (!changed.has(rel)) return content;
+      return await self.baseline(rel);
+    };
+  }
+
+  /* 变更列表：[{path, status}]  status: M 修改 / A 新增 / D 删除
+     path 一律是**工作区相对路径**（子目录工作区要把仓库根前缀剥掉），
+     并且只列工作区之内的改动——仓库里别处的改动不归这个面板管。 */
   async changes() {
     const out = [];
     if (this.available) {
       let txt = "";
-      try { txt = await _git(this.dir, ["status", "--porcelain", "-uall"]); } catch (e) { return out; }
+      try { txt = await _git(this.dir, ["status", "--porcelain", "-uall", "--", "."]); } catch (e) { return out; }
       for (const line of txt.split("\n")) {
         if (!line.trim()) continue;
         const xy = line.slice(0, 2);
@@ -101,7 +218,7 @@ class GitLayer {
         let status = "M";
         if (xy.includes("D")) status = "D";
         else if (xy.includes("?") || xy.includes("A")) status = "A";
-        out.push({ path: p.replace(/\\/g, "/"), status });
+        out.push({ path: this._fromRepo(p).replace(/\\/g, "/"), status });
       }
       return out;
     }
@@ -142,9 +259,15 @@ class GitLayer {
     return true;
   }
 
-  /* 同步方法：仅返回已知状态（不触发任何子进程，零阻塞） */
+  /* 同步方法：仅返回已知状态（不触发任何子进程，零阻塞）。
+     sub = 工作区在仓库里的位置（"web/app/"）；非空说明打开的是子目录，
+     界面要说清楚"这里的改动只代表这个子目录，仓库别处看不见"。 */
   info() {
-    return { git: this.available, branch: this.available ? this.branch : "无 Git（快照模式）" };
+    return {
+      git: this.available,
+      branch: this.available ? this.branch : "无 Git（快照模式）",
+      sub: this.available ? this.prefix : "",
+    };
   }
 
   /* 提交改动：git add + git commit -m <message>
@@ -165,8 +288,10 @@ class GitLayer {
       targets = clean;
     }
     try {
+      /* pathspec 是"相对当前工作目录"的，而 cwd 就是工作区 → 直接传工作区相对路径。
+         `add -A -- .` 因此天然只吃本工作区之内的改动（实测），不会把仓库别处别人暂存的东西卷进来。 */
       if (targets) await _git(this.dir, ["add", "--", ...targets]);
-      else await _git(this.dir, ["add", "-A"]);
+      else await _git(this.dir, ["add", "-A", "--", "."]);
       let out = "";
       try { out = (await _git(this.dir, ["commit", "-m", msg])).trim(); }
       catch (e) {
@@ -234,17 +359,19 @@ class GitLayer {
     }
   }
 
-  /* 改动概览（--stat）；path 提供时输出该文件的完整 diff 文本 */
-  async diff(path) {
+  /* 改动概览（--stat）；rel 提供时输出该文件的完整 diff 文本。
+     参数以前叫 `path`，把模块级的那个 `path` 遮掉了：`path.isAbsolute(rel)` 直接抛
+     "path.isAbsolute is not a function"，再被 catch 吞成一句看不懂的"git 错误"——改名修掉。 */
+  async diff(rel) {
     if (!this.available) return { ok: false, error: "当前工作区不是 Git 仓库（快照模式下可用 git_status 的快照差异）" };
     try {
-      if (path) {
-        const rel = String(path).replace(/\\/g, "/").replace(/^\/+/, "");
-        if (/^\.\./.test(rel) || path.isAbsolute(rel)) return { ok: false, error: "非法路径" };
-        const txt = (await _git(this.dir, ["diff", "HEAD", "--", rel])).trim();
+      if (rel) {
+        const r = String(rel).replace(/\\/g, "/").replace(/^\/+/, "");
+        if (/^\.\./.test(r) || path.isAbsolute(r)) return { ok: false, error: "非法路径" };
+        const txt = (await _git(this.dir, ["diff", "HEAD", "--", r])).trim();
         return { ok: true, diff: txt || "(该文件相对 HEAD 无文本差异)" };
       }
-      const stat = (await _git(this.dir, ["diff", "HEAD", "--stat"])).trim();
+      const stat = (await _git(this.dir, ["diff", "HEAD", "--stat", "--", "."])).trim();
       return { ok: true, stat: stat || "(相对 HEAD 无已跟踪改动；新文件请看 git_status)" };
     } catch (e) {
       return { ok: false, error: (e.stderr || e.message || "").toString().slice(0, 300) };
@@ -282,4 +409,4 @@ class GitLayer {
   }
 }
 
-module.exports = { GitLayer };
+module.exports = { GitLayer, sameDir, isHomeRepo, isIgnoredHere };

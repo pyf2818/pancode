@@ -22,8 +22,29 @@ npm run test:integration # 集成测试
 npm run test:patch       # 补丁功能测试
 npm run test:lsp         # LSP 诊断测试
 npm run test:code-index  # 代码索引测试
-npm test                 # 运行全部测试套件
+npm test                 # 运行全部测试套件（首尾带 .pancode 数据根指纹，见下）
 ```
+
+### 写探针的硬规矩（新增 scripts/*.js 时必读）
+
+1. 探针第一行 `require("./_sandbox").create({ tag: "…" })`，且必须排在任何 `require("../server/…")` 之前——
+   `config` / `dotenv` / `code-index` 在模块加载时就把数据根固化了，晚设等于没设
+   （`_sandbox` 会直接抛错，不跟你客气）。
+2. 带 `AGENT_FAST=1` 或 `CURSORWEB_ENGINE=demo` 却没设 `PANCODE_DATA_DIR` 的服务端**拒启**
+   （`server/config.js` 里的「探针护栏」）。产品路径一个标记都不设，所以这条只咬探针。
+3. 为什么值得这么麻烦：真实数据根被探针写花过——`users.json` 里攒了 107 个探针账号、
+   会话 TTL 清理真删过开发者的对话、`.pancode/code-index` 落过 21 个测试分片。
+   `test/probe-sandbox.test.js` 守第 1/2 条，`scripts/_verify_dataroot.js` 在链尾实测"这一串探针有没有动真实盘"。
+4. 用 Playwright 验界面时，断言只能读**计算后的真实状态**，三条实测踩过的坑：
+   - `transition` 中的属性（opacity / width / color）同步读 `getComputedStyle` 只会读到过渡起点，
+     改完 class 必须等一个过渡周期再断言，否则"聚焦变亮"这种永远判不过；
+   - `addInitScript` 在**每个 frame** 里都会跑一遍，应用里的沙箱 iframe 读 `localStorage` 直接抛
+     SecurityError，不 try/catch 就会把它记成产品报错；
+   - 渲染端的接线可以造假依赖来测：先注入假的 `window.pancodeWin`（把调用记进 spy 数组）再断言，
+     这样浏览器探针能覆盖"preload → 页面"这一半，主进程那一半交给 `_verify_desktop.js` 真起 Electron。
+   - `public/app.js` 的 `state` 是**顶层 `const`**（全局词法绑定），`window.state` 恒为 undefined：
+     拿它当"hello 到没到"的判据会永远等不到（实测烧掉一次 20s 超时，还差点误判成服务端卡住）。
+     页面里要读它得写 `typeof state === "undefined" ? null : state`。
 
 ## 架构概览
 

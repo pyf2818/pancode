@@ -3,6 +3,11 @@
    2) 端到端：前端 WS -> 桥接 -> mock 语言服务器 -> 诊断/补全 回传
 */
 "use strict";
+/* 数据根必须先指到临时目录再 require auth：auth 的 users.json / sessions.json 取 config.ROOT，
+   不设的话这个脚本会把 lsp_test 写进真实仓库的 .pancode/users.json，收尾还整个 unlink 那个文件。 */
+const TMP_ROOT = require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "pancode-lsp-test-"));
+process.env.PANCODE_DATA_DIR = TMP_ROOT;
+
 const assert = require("assert");
 const http = require("http");
 const path = require("path");
@@ -37,8 +42,11 @@ function ok(name) { console.log("  ✓ " + name); pass++; }
 
 /* ---------- 2) 端到端桥接 ---------- */
 (async function testBridge() {
-  const reg = auth.register("lsp_test", "test1234");
-  const { token } = auth.login("lsp_test", "test1234");
+  // register / login 自 A2 起是 async（scrypt 不阻塞事件循环）：漏 await 会拿到 Promise，token=undefined
+  const reg = await auth.register("lsp_test", "test1234");
+  const logged = reg && reg.ok ? reg : await auth.login("lsp_test", "test1234");
+  const token = logged && logged.token;
+  if (!token) { console.error("FAIL - 测试账号注册/登录失败:", logged && logged.error); process.exit(1); }
 
   const cfg = { lsp: { enabled: true, servers: { mock: { command: process.execPath, args: [path.join(__dirname, "_mock_lsp.js")], enabled: true } } } };
   const mgr = new LspManager(cfg);
@@ -84,8 +92,7 @@ function ok(name) { console.log("  ✓ " + name); pass++; }
   ok("端到端桥接：initialize + 诊断推送 + 补全 全链路打通");
 
   ws.close(); server.close();
-  // 清理测试用户
-  try { require("fs").unlinkSync(path.join(__dirname, "..", ".pancode", "users.json")); } catch (e) {}
+  try { require("fs").rmSync(TMP_ROOT, { recursive: true, force: true }); } catch (e) {}
   console.log(`\nLSP 测试通过：${pass} 项 ✅`);
   process.exit(0);
 })().catch((e) => { console.error("LSP 测试失败:", e); process.exit(1); });

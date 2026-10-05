@@ -2,11 +2,11 @@
 /* 共享工具：从 agent-llm.js 抽出的行级 diff / 诊断格式化 / 变更工具集合。
    供 server/tools/ 下各 domain handler 复用。 */
 
-/** 变更类工具集合（规划模式拦截 / 守卫超时豁免） */
-const MUTATING_TOOLS = new Set([
-  "write_file", "apply_edit", "delete_file", "run_command",
-  "undo", "start_process", "stop_process", "git_commit", "git_branch",
-]);
+/* 变更类工具集合（规划模式拦截 / 守卫超时豁免）。
+   真相在 tools/contract.js 的契约表里，这里只是给既有 import 路径留一个转发，
+   避免同一份名单在两个文件里各写一遍（以前是各写一遍，且已经漂过一次）。 */
+const { DERIVED } = require("./contract");
+const MUTATING_TOOLS = DERIVED.MUTATING;
 
 /** 行级 diff（LCS）：计算 after 相对 before 新增的行号（1-indexed） */
 function computeDiffLines(before, after) {

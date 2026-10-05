@@ -87,7 +87,7 @@ console.log("== PatchEngine：暂存 + 应用 ==");
   const r1 = eng.stage("c1", { path: "a.txt", edits: [{ old_string: "line2", new_string: "LINE2" }] });
   ok("stage 成功", r1.ok && r1.staged.length === 1);
   ok("stage 后磁盘未变", mem["a.txt"] === "line1\nline2\n");
-  const applied = eng.apply("c1", []);
+  const { applied } = eng.apply("c1", []);
   ok("apply 写入磁盘", mem["a.txt"] === "line1\nLINE2\n" && applied[0] === "a.txt");
   ok("apply 后清空暂存", eng.list("c1").length === 0);
 }
@@ -115,7 +115,7 @@ console.log("== PatchEngine：逐 hunk 部分应用 ==");
     { old_string: "A", new_string: "a" },
   ] });
   // 只接受第 0 和第 2 个 hunk（B 和 A），拒绝第 1 个（C）
-  const applied = eng.apply("c3", ["c.txt"], { "c.txt": [0, 2] });
+  const { applied } = eng.apply("c3", ["c.txt"], { "c.txt": [0, 2] });
   ok("应用了选中文件", applied.length === 1 && applied[0] === "c.txt");
   ok("仅选中 hunk 生效（B→b, A→a, C 保留）", mem["c.txt"] === "a\nb\nC\nD\n");
 }
@@ -126,7 +126,7 @@ console.log("== PatchEngine：空 hunk 选择 = 整文件拒绝 ==");
   const fakeStore = { exists: (p) => p in mem, read: (p) => mem[p], write: (p, c) => { mem[p] = c; } };
   const eng = new PatchEngine(fakeStore);
   eng.stage("c4", { path: "d.txt", edits: [{ old_string: "X", new_string: "Z" }] });
-  const applied = eng.apply("c4", ["d.txt"], { "d.txt": [] });
+  const { applied } = eng.apply("c4", ["d.txt"], { "d.txt": [] });
   ok("空选择不写盘", applied.length === 0 && mem["d.txt"] === "X\nY\n");
   ok("空选择后暂存清空", eng.list("c4").length === 0);
 }

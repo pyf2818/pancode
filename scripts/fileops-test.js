@@ -4,6 +4,11 @@
    运行：npm run test:fileops
    ============================================================ */
 "use strict";
+/* 沙箱数据根 + 沙箱工作区：不设数据根会把 `_fileops_<时间戳>` 账号写进真实 .pancode/users.json
+   （真实用户表里那几十个探针账号就是这么来的），而工作区指到仓库的 workspace/ 则每跑一次
+   就往工作树里造一次 tmp/。这个探针只要"一个能读写文件的目录"，不需要演示夹具。 */
+const SANDBOX = require("./_sandbox").create({ tag: "fileops" });
+
 const { spawn } = require("child_process");
 const path = require("path");
 
@@ -14,12 +19,11 @@ function log(s) { console.log("[fileops] " + s); }
 function fail(s) { console.error("[fileops] FAIL: " + s); process.exit(1); }
 
 (async () => {
-  log("启动测试服务 (PORT=" + PORT + ") ...");
+  log("启动测试服务 (PORT=" + PORT + ", 数据根=" + SANDBOX.dataDir + ") ...");
   const server = spawn(process.execPath, ["server/index.js"], {
     cwd: root,
-    env: Object.assign({}, process.env, {
+    env: SANDBOX.env({
       PORT: String(PORT), AGENT_FAST: "1", CURSORWEB_ENGINE: "demo",
-      CURSORWEB_WORKSPACE: "workspace",   // 强制用自带演示夹具，不受用户打开的文件夹影响
     }),
   });
   server.stderr.on("data", (b) => process.stderr.write("[server] " + b));
@@ -44,15 +48,22 @@ function fail(s) { console.error("[fileops] FAIL: " + s); process.exit(1); }
   const ws = new WebSocket("ws://localhost:" + PORT + "?token=" + encodeURIComponent(token));
   let files = {};
   const waiters = [];
+  let evSeq = 0;
+  let lastOpError = null;
   ws.on("message", (raw) => {
     const ev = JSON.parse(raw.toString());
+    evSeq++;
+    if (ev.type === "op.error") lastOpError = { seq: evSeq, text: ev.error };
     if (ev.type === "hello" || ev.type === "fs.sync") files = ev.files;
     for (let i = waiters.length - 1; i >= 0; i--) {
       if (waiters[i].match(ev)) { waiters[i].resolve(ev); waiters.splice(i, 1); }
     }
   });
   const waitFor = (match, ms) => new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("等待事件超时")), ms || 5000);
+    const from = evSeq;
+    const t = setTimeout(() => reject(new Error("等待事件超时" + (
+      lastOpError && lastOpError.seq > from ? "；服务端回了 op.error: " + lastOpError.text : ""
+    ))), ms || 5000);
     waiters.push({ match, resolve: (ev) => { clearTimeout(t); resolve(ev); } });
   });
   const send = (o) => ws.send(JSON.stringify(o));

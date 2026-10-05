@@ -102,18 +102,43 @@ class FileStore {
     const abs = path.resolve(this.dir, norm);
     const root = path.resolve(this.dir);
     if (abs !== root && !abs.startsWith(root + path.sep)) throw new Error("路径越界: " + rel);
+    // 词法之外还要看真实路径：工作区里一个指向外部的软链（或 Windows junction），startsWith 是看不出来的
+    if (this._escapesRoot(abs)) throw new Error("路径经由软链指向工作区外，已拒绝: " + rel);
     return abs;
+  }
+
+  _realRoot() {
+    try { return fs.realpathSync(path.resolve(this.dir)); } catch (e) { return path.resolve(this.dir); }
+  }
+
+  /* abs 沿符号链接展开后是否落到根外。
+     目标可能还不存在（新建文件），所以向上找第一个真实存在的祖先再解析；
+     整条链都不存在时返回 false —— 那种情况已经被上面的词法判定挡住了。 */
+  _escapesRoot(abs) {
+    const rootReal = process.platform === "win32" ? this._realRoot().toLowerCase() : this._realRoot();
+    let cur = abs;
+    while (cur && cur !== path.dirname(cur)) {
+      let real = null;
+      try { real = fs.realpathSync(cur); } catch (e) { cur = path.dirname(cur); continue; }
+      const r = process.platform === "win32" ? real.toLowerCase() : real;
+      return r !== rootReal && !r.startsWith(rootReal + path.sep);
+    }
+    return false;
   }
 
   rel(abs) { return path.relative(this.dir, abs).replace(/\\/g, "/"); }
 
-  /* W15：文件变更审计——所有写/删/改名操作落盘到 .pancode/audit/<日期>.log，可追溯 */
+  /* W15：文件变更审计——所有写/删/改名操作落盘到 .pancode/audit/<日期>.log，可追溯。
+     审计目录是**全根共用一份**（多根授权之后 N 个 FileStore 写同一个日志），
+     所以每一行必须带上自己那个根：否则"A 项目里的 src/a.js"和"B 项目里的 src/a.js"
+     在日志里长得一模一样，事后无法回答"到底改了哪个项目"。 */
   _audit(actor, action, rel) {
     if (!this.auditDir) return;
     try {
       fs.mkdirSync(this.auditDir, { recursive: true });
       const f = path.join(this.auditDir, new Date().toISOString().slice(0, 10) + ".log");
-      const line = new Date().toISOString() + " | " + actor + " | " + action + " | " + String(rel).replace(/\r?\n/g, " ") + "\n";
+      const line = new Date().toISOString() + " | " + actor + " | " + action + " | " + String(rel).replace(/\r?\n/g, " ") +
+        " | root=" + path.resolve(this.dir) + "\n";
       fs.appendFileSync(f, line);
     } catch (e) {}
   }
@@ -132,7 +157,9 @@ class FileStore {
         const full = path.join(dir, name);
         const r = prefix ? prefix + "/" + name : name;
         let st;
-        try { st = fs.statSync(full); } catch (e) { continue; }
+        try { st = fs.lstatSync(full); } catch (e) { continue; }
+        // 不跟随软链：既挡住"根内软链指向根外"被列出来再读，也避免自引用软链把遍历绕死
+        if (st.isSymbolicLink()) continue;
         if (st.isDirectory()) walk(full, r);
         else if (st.size <= MAX_FILE) out.push(r);
       }
@@ -141,7 +168,10 @@ class FileStore {
     return out.sort();
   }
 
-  exists(rel) { return fs.existsSync(this.safePath(rel)); }
+  /* 我们拒绝触碰的路径（含软链逃逸）一律按"不存在"回答，而不是把异常抛给调用方 */
+  exists(rel) {
+    try { return fs.existsSync(this.safePath(rel)); } catch (e) { return false; }
+  }
 
   /* 是否二进制文件：扩展名 + 内容嗅探双保险，结果缓存 */
   isBinary(rel) {

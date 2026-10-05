@@ -13,7 +13,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
+const wsKey = require("./ws-key");            // 索引文件名与缓存键的唯一来源
 
 // 数据根：打包态(__dirname 落在只读 app.asar)必须指向可写目录，由桌面端 main.js 注入 PANCODE_DATA_DIR(=userData)
 const ROOT = process.env.PANCODE_DATA_DIR || path.join(__dirname, "..");
@@ -146,10 +146,11 @@ function bm25Score(qtokens, doc, idx) {
 }
 
 /* ---------- 索引构建 / 读取 / 检索 ---------- */
-function wsIndexFile(wsAbs) {
-  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
-  return path.join(INDEX_DIR, key + ".json");
+/* 索引文件名与内存缓存键都走 ws-key：同一目录只可能有一个键（老键在文件层面改名归并）。 */
+function wsIndexFile(wsDir) {
+  return wsKey.forWorkspace(wsDir).file(INDEX_DIR);
 }
+function cacheKeyOf(wsDir) { return wsKey.shardKey(wsDir); }
 function metaOf(wsAbs) { return { ws: wsAbs, builtAt: Date.now(), useVector: false, count: 0 }; }
 
 const _cache = new Map();   // wsHash -> { meta, chunks }
@@ -212,7 +213,7 @@ async function buildIndex({ wsDir, fileStore, cfg }) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(payload), "utf8");
   } catch (e) { console.warn("[code-index] 持久化失败:", e.message); }
-  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
+  const key = cacheKeyOf(wsAbs);
   _cache.set(key, payload);
   _lastCfg = cfg || _lastCfg;
   return { ok: true, count: chunks.length, useVector, file };
@@ -220,7 +221,7 @@ async function buildIndex({ wsDir, fileStore, cfg }) {
 
 function getIndex(wsDir) {
   const wsAbs = path.resolve(wsDir);
-  const key = crypto.createHash("md5").update(wsAbs).digest("hex");
+  const key = cacheKeyOf(wsAbs);
   if (_cache.has(key)) return _cache.get(key);
   const raw = loadFromDisk(wsIndexFile(wsAbs));
   if (raw) { _cache.set(key, raw); return raw; }
@@ -263,7 +264,7 @@ async function search({ wsDir, query, k = 8 }) {
 }
 
 /* ---------- 增量更新（编辑/新增/删除单文件，免全量重建） ---------- */
-function wsKeyOf(wsDir) { return crypto.createHash("md5").update(path.resolve(wsDir)).digest("hex"); }
+function wsKeyOf(wsDir) { return cacheKeyOf(wsDir); }
 
 function readSafe(rel, wsDir) {
   const abs = path.join(path.resolve(wsDir), rel);
@@ -346,4 +347,5 @@ function removeFile(wsDir, rel) {
   return { ok: true };
 }
 
-module.exports = { buildIndex, search, getIndex, chunkFile, langOfFile, metaOf, queueFileUpdate, removeFile, flushUpdate };
+module.exports = { buildIndex, search, getIndex, chunkFile, langOfFile, metaOf, queueFileUpdate, removeFile, flushUpdate,
+  wsIndexFile };   // 导出只为让"一个目录一个键"的回归能断到真实文件名

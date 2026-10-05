@@ -7,6 +7,12 @@
    用法：node scripts/verify-git-async.js
 */
 "use strict";
+/* 沙箱：这探针要真造 git 仓库。原先落在仓库根（w12-git-*、w12-snap-*），异常路径上不清理，
+   实测现在仓库根就躺着两个没人认领的空目录。改到沙箱里，整个根随进程退出一起消失。
+   顺带把"os.tmpdir() 对 git spawn 会 EBUSY"这条旧断言拿掉——test/git-toplevel.test.js 就是在临时目录里
+   建真仓库跑的，今天实测没问题。 */
+const SANDBOX = require("./_sandbox").create({ tag: "gitasync" });
+
 const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
@@ -21,11 +27,9 @@ function ok(name, cond, extra) {
 }
 function isPromise(x) { return x && typeof x.then === "function"; }
 
-// 用项目盘本地临时目录（os.tmpdir() 在沙箱内对 git spawn 报 EBUSY）
+// 沙箱内的临时目录（跟着数据根一起消失，不在仓库根留残骸）
 function makeTempDir(prefix) {
-  const base = path.join(__dirname, "..", prefix + Date.now() + "-" + Math.floor(Math.random() * 1e6));
-  fs.mkdirSync(base, { recursive: true });
-  return base;
+  return SANDBOX.scratch(prefix);
 }
 // 最小 FileStore mock：GitLayer 仅用到 list / read / isBinary / write / remove
 function mockStore(files) {
@@ -131,7 +135,6 @@ async function gitInit(repo, files) {
 
   /* ---------- 汇总 ---------- */
   console.log(`\n[W12] 结果：${pass} 通过 / ${fail} 失败`);
-  fs.rmSync(repo, { recursive: true, force: true });
-  fs.rmSync(snapDir, { recursive: true, force: true });
+  // 临时仓库不用自己收：_sandbox 在进程退出时连根删（异常路径也管，这正是原来漏掉的那条）
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => { console.error("VERIFY_CRASH", e); process.exit(1); });

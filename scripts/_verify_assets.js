@@ -12,6 +12,9 @@ const ROOT = path.resolve(__dirname, "..");
 const SANDBOX = path.join(ROOT, "scripts", "_verify_out", "assets-sandbox");
 const DATA_DIR = path.join(SANDBOX, "data");
 const WS_DIR = path.join(SANDBOX, "ws");
+/* 沙箱化的"用户主目录"：~/.pancode/AGENTS.md 这一层是跨项目的，
+   不给它一个假 HOME，探针就会去读开发者真实的用户全局规则，结果不可复现。 */
+const HOME_DIR = path.join(SANDBOX, "home");
 
 let pass = 0, fail = 0;
 const fails = [];
@@ -78,6 +81,8 @@ function seedWorkspace() {
   fs.mkdirSync(path.join(WS_DIR, ".pancode", "experts"), { recursive: true });
   fs.mkdirSync(path.join(DATA_DIR, ".pancode", "rules"), { recursive: true });
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(path.join(HOME_DIR, ".pancode"), { recursive: true });
+  fs.writeFileSync(path.join(HOME_DIR, ".pancode", "AGENTS.md"), "# 全局偏好\n\n跨项目规则：先给结论，再给依据。\n");
   // 应用级（数据根）遗留规则：Agent 不读，面板也不得标成生效
   fs.writeFileSync(path.join(DATA_DIR, ".pancode", "rules", "legacy.md"), "---\ntitle: 应用级遗留\n---\n\n这条不该被标成生效。\n");
   // 一条始终生效的规则 + 一条按需规则（glob 只命中 server/**）+ 一条停用规则
@@ -101,6 +106,8 @@ async function boot() {
     env: Object.assign({}, process.env, {
       PORT: String(PORT), PANCODE_DATA_DIR: DATA_DIR, CURSORWEB_WORKSPACE: WS_DIR,
       CURSORWEB_ENGINE: "demo", AGENT_FAST: "1", NODE_NO_WARNINGS: "1",
+      // os.homedir() 在调用时读这两个环境变量（Windows 取 USERPROFILE，POSIX 取 HOME）
+      HOME: HOME_DIR, USERPROFILE: HOME_DIR, HOMEDRIVE: "", HOMEPATH: "",
     }),
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -126,7 +133,16 @@ async function main() {
     let r = await req("GET", "/api/rules");
     ok("GET /api/rules 返回 ok", r.json.ok === true, r.json.error);
     const rules = r.json.rules || [];
-    ok("扫到 6 个规则源（3 pancode + 1 AGENTS.md + 1 Cursor mdc + 1 应用级遗留）", rules.length === 6, "实际 " + rules.length + "：" + rules.map((x) => x.file).join(", "));
+    ok("扫到 7 个规则源（3 pancode + 1 AGENTS.md + 1 Cursor mdc + 1 应用级遗留 + 1 用户全局）", rules.length === 7, "实际 " + rules.length + "：" + rules.map((x) => x.file).join(", "));
+    /* 用户全局层必须同时出现在清单和预览里：Agent 的 loadRules() 真的读它，
+       面板少列一次，用户就看到"预览里凭空多了一段没来源的规则"。 */
+    const globalRec = rules.find((x) => x.scope === "global");
+    ok("用户全局规则被列出且归类为 global", !!globalRec && globalRec.kind === "global" && globalRec.active === true,
+      JSON.stringify(globalRec && { file: globalRec.file, kind: globalRec.kind, active: globalRec.active }));
+    ok("用户全局规则排在项目级之前（它表达的是「我是谁」，项目规则表达的是「这个仓库」）",
+      !!globalRec && globalRec.order < (rules.find((x) => x.kind === "root") || {}).order,
+      JSON.stringify({ global: globalRec && globalRec.order, root: (rules.find((x) => x.kind === "root") || {}).order }));
+    ok("用户全局规则不可编辑（本面板只管工作区内的规则）", globalRec && globalRec.editable === false);
     const appRec = rules.find((x) => x.scope === "app");
     ok("应用级遗留规则被列出来", !!appRec, JSON.stringify(rules.map((x) => x.scope)));
     ok("应用级规则不得谎称生效", appRec && appRec.active === false && /不读取/.test(appRec.activeWhy || ""), JSON.stringify(appRec || {}));
@@ -139,17 +155,43 @@ async function main() {
     ok("始终生效规则 active", byTitle["汇报用中文"] && byTitle["汇报用中文"].active === true);
     ok("AGENTS.md 归为根级规则", byTitle["仓库约定"] && byTitle["仓库约定"].kind === "root", byTitle["仓库约定"] && byTitle["仓库约定"].kind);
     ok("counts.editable = 3（只有 .pancode/rules 可编辑）", r.json.counts && r.json.counts.editable === 3, JSON.stringify(r.json.counts));
+    const listBudgetMax = r.json.budget && r.json.budget.max;
 
     r = await req("GET", "/api/rules/preview");
     ok("预览不含停用规则", !/这条不该出现/.test(r.json.preview || ""), "停用规则漏进上下文");
     ok("预览含始终生效规则", /一律使用中文/.test(r.json.preview || ""));
     ok("预览无查询时不含按需规则", !/禁止 ESM/.test(r.json.preview || ""));
-    ok("预览标注了已省略/预算字段", typeof r.json.chars === "number" && r.json.max === 12000);
+    ok("预览含用户全局规则（与清单同源）", /先给结论，再给依据/.test(r.json.preview || ""),
+      "loadRules 读了这一层，预览却没体现");
+    ok("全局层排在项目级 AGENTS.md 之前",
+      (r.json.preview || "").indexOf("先给结论，再给依据") < (r.json.preview || "").indexOf("根级规则文件"),
+      "注入顺序与面板顺序不一致");
+    /* 预算数字不在这里写死：它只从 server/agent-llm.js 的常量来。
+       探针能验的是「两个端点报同一个分母」，写死 12000 那种断言只会制造第二个真相源。 */
+    ok("预览标注字符数与预算，且与清单端点同一分母",
+      typeof r.json.chars === "number" && r.json.max > 0 && r.json.chars <= r.json.max
+      && r.json.max === listBudgetMax,
+      JSON.stringify({ previewMax: r.json.max, listMax: listBudgetMax, chars: r.json.chars }));
 
     r = await req("GET", "/api/rules/preview?q=" + encodeURIComponent("server/demo.js"));
     ok("命中 server/** 时按需规则进入上下文", /禁止 ESM/.test(r.json.preview || ""), "touched=" + r.json.touched);
     ok("点目录里的 Cursor 规则被读到（list() 看不见点开头名字）", /复用的 Cursor 规则库/.test(r.json.preview || ""), "Cursor 规则漏读");
     ok("根级点文件规则也能被枚举", /根级规则/.test(r.json.preview || "") || /仓库约定/.test(r.json.preview || ""));
+
+    /* 只读来源也要能在详情里看到正文。面板对每一行都会打 /api/rules/content，
+       这一组断言是为了别让"列出来了却读不到"的行（AGENTS.md / Cursor mdc / 用户全局）
+       在详情里显示成"非法规则路径"。 */
+    for (const [label, q] of [
+      ["根级 AGENTS.md", "AGENTS.md"],
+      ["Cursor 规则 .mdc", ".cursor/rules/legacy.mdc"],
+      ["用户全局 ~/.pancode/AGENTS.md", "~/.pancode/AGENTS.md"],
+    ]) {
+      const cr = await req("GET", "/api/rules/content?file=" + encodeURIComponent(q));
+      ok("只读来源可读回正文：" + label, cr.json.ok === true && /\S/.test(String(cr.json.body || "")),
+        JSON.stringify(cr.json || cr.raw).slice(0, 160));
+    }
+    const tr = await req("GET", "/api/rules/content?file=" + encodeURIComponent("../secret.txt"));
+    ok("越界路径仍被拒", tr.json.ok === false, JSON.stringify(tr.json));
 
     r = await req("POST", "/api/rules", { title: "提交信息规范", content: "commit message 用中文，首行不超过 40 字。", globs: [], enabled: true });
     ok("POST /api/rules 新建成功", r.json.ok === true, r.json.error);

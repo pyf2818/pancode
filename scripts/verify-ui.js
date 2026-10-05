@@ -8,7 +8,20 @@
 "use strict";
 const { chromium } = require("playwright");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+
+/* 沙箱数据根 + 沙箱工作区：**必须**在拉起服务端之前定下来。
+   否则这个探针会把测试账号注册进开发者真实的 .pancode/users.json，
+   还会按 TTL 清掉真实对话（同一条坑在 _verify_workflow_ui.js 上实测踩过）。 */
+const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), "pc-ui-"));
+const SDATA = path.join(SANDBOX, "data");
+const SWS = path.join(SANDBOX, "ws");
+fs.mkdirSync(SDATA, { recursive: true });
+fs.mkdirSync(SWS, { recursive: true });
+fs.writeFileSync(path.join(SWS, "index.html"), "<!doctype html><title>ui</title>\n<p>hello</p>\n", "utf8");
+process.env.PANCODE_DATA_DIR = SDATA;
+process.env.CURSORWEB_WORKSPACE = SWS;
 
 process.env.PORT = process.env.PORT || "8822";
 require("../server/index.js");   // 启动服务端（同进程）
@@ -92,7 +105,8 @@ async function getToken() {
   process.exit(0);
 })().catch((e) => { console.error("VERIFY_FAIL", e); cleanup(); process.exit(1); });
 
-/* 自清理：删除本次验证注册的一次性账号 */
+/* 自清理：删除本次验证注册的一次性账号（在沙箱数据根下），并移走沙箱目录 */
 function cleanup() {
   try { if (__testUser && auth.removeUser(__testUser)) console.log("已清理临时账号: " + __testUser); } catch (e) {}
+  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) {}
 }

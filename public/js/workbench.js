@@ -281,7 +281,7 @@ function wbRenderGeneral(box) {
   }, "language lang 语言"));
   box.appendChild(g1);
 
-  const g2 = wbGroup("工作区", "Agent 只能在当前工作区内读写文件。");
+  const g2 = wbGroup("工作区", "当前工作区会自动出现在「权限与安全 · 授权目录」里；Agent 能进哪几扇门全部由那份清单说了算。");
   g2.appendChild(wbKV("当前工作区", (c.workspace && c.workspace.dir) || "—", true));
   const wsDir = (c.workspace && c.workspace.dir) || "";
   g2.appendChild(wbAction("切换工作区", "选择本机文件夹作为新的工作区", "选择…", () => {
@@ -558,7 +558,136 @@ function wbRenderAgent(box) {
 /* ============================================================
    分区：权限与安全
    ============================================================ */
+/* ============================================================
+   分区：权限与安全
+   ============================================================ */
+/* 授权目录（阶段二-4）。这一组管「能不能进这个门」，下面的 allow/deny 清单管「进门之后能干什么」，
+   两个轴刻意分开、不要混着写。清单是**全局一份**（<数据根>/.pancode/roots.json），换工作区也带着走。 */
+function wbRootsGroup(box) {
+  const g = wbGroup("授权目录", "Agent 只能读写下面这些目录。清单是全局一份，切换工作区不会带走它。");
+  const list = wbEl("div", "wb-list");
+  list.appendChild(wbEl("div", "wb-list-empty", "正在读取授权清单…"));
+  g.appendChild(list);
+
+  const post = (url, body, method) => fetch(url, {
+    method: method || "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body == null ? undefined : JSON.stringify(body),
+  }).then((x) => x.json());
+
+  let activeId = "";
+  /* 就地重画这一组，不整页重载：改一次读写档位就跳到页面顶部很难受 */
+  const draw = (roots) => {
+    list.innerHTML = "";
+    if (!roots.length) {
+      list.appendChild(wbEl("div", "wb-list-empty", "还没有任何授权目录（正常情况下当前工作区会自动出现在这里）"));
+    }
+    roots.forEach((row) => {
+      const isActive = row.id === activeId;
+      const it = wbEl("div", "wb-list-item wb-root-item");
+      const name = wbEl("div", "wb-root-name");
+      /* 清单是持久化的，而"当前工作区"是每轮现算的状态：老数据里存过这个 label，切过工作区之后
+         会出现两行都写着"当前工作区"（真实例实测到过）。名字位只认目录名，徽标位交给 isActive。 */
+      const stored = String(row.label || "");
+      const base = String(row.path).split(/[\\/]+/).pop();
+      const label = stored && stored !== "当前工作区" ? stored : base;
+      const labelEl = wbEl("span", "wb-root-label", esc(label));
+      /* 路径与名字都会被截断（Windows 的长路径必然超一行）：title 是"看全"的唯一去处，
+         布局探针把"截了又没地方看全"当缺陷报。 */
+      labelEl.title = label;
+      const pathEl = wbEl("code", "wb-root-path", esc(row.path));
+      pathEl.title = row.path;
+      name.appendChild(labelEl);
+      name.appendChild(pathEl);
+      it.appendChild(name);
+      if (isActive) it.appendChild(wbEl("span", "wb-badge wb-badge-blue", "当前工作区"));
+      if (row.stale) it.appendChild(wbEl("span", "wb-badge wb-badge-warn", "不在盘上"));
+      if (row.moved) it.appendChild(wbEl("span", "wb-badge wb-badge-warn", "已被移走"));
+      if (!row.writable && !row.stale) it.appendChild(wbEl("span", "wb-badge", "只读"));
+
+      /* 与 .wb-switch 同一套外观，只是嵌在列表行里：每行都能单独收放读写档位 */
+      const sw = wbEl("button", "wb-switch wb-root-switch" + (row.writable ? " on" : ""));
+      sw.type = "button";
+      sw.setAttribute("role", "switch");
+      sw.setAttribute("aria-checked", row.writable ? "true" : "false");
+      sw.title = row.writable ? "可写：Agent 能在这个目录里写文件、删文件（点击改成只读）"
+        : "只读：Agent 能看不能改（点击放开写入）";
+      sw.appendChild(wbEl("span", "wb-knob"));
+      sw.onclick = async () => {
+        const res = await post("/api/roots/" + encodeURIComponent(row.id) + "/writable", { writable: !row.writable });
+        if (!res.ok) return wbSaved("改读写性失败：" + ((res && res.error) || ""), true);
+        wbSaved((row.writable ? "已设为只读：" : "已放开写入：") + (row.label || row.path));
+        draw(res.roots || roots);
+      };
+      it.appendChild(sw);
+
+      const x = wbEl("button", "wb-icon-btn", ico("close"));
+      x.type = "button";
+      if (isActive) {
+        /* 当前工作区撤了等于 Agent 什么都碰不到，而且下次挂载会被 ensure 加回来 ——
+           给个能点的 X 只会让人以为"撤销成功了但怎么还在" */
+        x.disabled = true;
+        x.title = "当前工作区不能从这里撤销（切换工作区即可换掉它）";
+      } else {
+        x.title = "撤销授权：只把这一行从清单里移除，目录和其中的文件一概不动";
+        x.onclick = async () => {
+          if (!confirm("撤销「" + (row.label || row.path) + "」的授权？\n只会从清单里移除这一行，目录和其中的文件不会被删除。")) return;
+          const res = await post("/api/roots/" + encodeURIComponent(row.id), null, "DELETE");
+          if (!res.ok) return wbSaved("撤销失败：" + ((res && res.error) || ""), true);
+          wbSaved("已撤销授权：" + (row.label || row.path));
+          draw(res.roots || roots);
+        };
+      }
+      it.appendChild(x);
+      list.appendChild(it);
+    });
+  };
+
+  /* 异步读清单：失败要说出来，别留一片空白让人以为"没授权过任何目录" */
+  fetch("/api/roots").then((x) => x.json()).then((r) => {
+    if (r.ok === false) {
+      g.querySelector(".wb-group-desc").textContent = "读取授权清单失败：" + (r.error || "未知错误");
+      list.innerHTML = "";
+      list.appendChild(wbEl("div", "wb-list-empty wb-list-err", "授权清单读不出来，下面的开关此刻不可信"));
+      return;
+    }
+    activeId = r.activeId || "";
+    draw(r.roots || []);
+    replaceIcons(list);
+  }).catch((e) => {
+    list.innerHTML = "";
+    list.appendChild(wbEl("div", "wb-list-empty wb-list-err", "请求异常：" + e.message));
+  });
+
+  const add = wbEl("button", "wb-btn wb-btn-primary", "添加目录…");
+  add.type = "button";
+  add.onclick = () => {
+    if (typeof fmOpenPicker !== "function") return wbSaved("文件夹选择器未就绪", true);
+    fmOpenPicker({
+      title: "授权一个目录 — Agent 可以读写它，当前工作区不会被换掉",
+      btnText: "授权此文件夹",
+      onPick: async (dir) => {
+        const res = await post("/api/roots", { path: dir, writable: true });
+        if (!res.ok) { wbSaved("授权失败：" + ((res && res.error) || ""), true); return false; }
+        wbSaved("已授权：" + dir);
+        draw(res.roots || []);
+        return true;
+      },
+    });
+  };
+  const bar = wbEl("div", "wb-hook-form");
+  bar.appendChild(add);
+  g.appendChild(bar);
+  g.appendChild(wbNote("撤销授权立刻生效：下一次调用就够不着那个目录，不用等 Agent 重启。" +
+    "新加的目录要真被碰过之后，它自己的规则（AGENTS.md / .pancode/rules）才会从下一条消息起注入。"));
+  g.appendChild(wbNote("跨根写入不会被当前项目的「始终允许」放行——那边该问的照样问，避免 A 项目的规则替 B 项目做主。"));
+  /* 先占位再异步填：这一组要排在「审批策略」之前（先谈能不能进门，再谈进门后能干什么），
+     等 fetch 回来再 append 就会掉到整页最后面。 */
+  box.appendChild(g);
+}
+
 function wbRenderPerms(box) {
+  wbRootsGroup(box);
   const c = WB.cfg || {};
   const p = (c.agent && c.agent.permissions) || {};
   const g0 = wbGroup("审批策略", "越宽松越省交互，但误操作半径越大。");
@@ -866,7 +995,7 @@ wbRegister({ id: "appearance", group: "prefs", title: "外观与配色", icon: "
 wbRegister({ id: "general", group: "prefs", title: "通用", icon: "tune", desc: "语言、工作区与编辑器增强", keywords: "language workspace folder editor 语言 工作区", render: (b) => wbRenderGeneral(b) });
 wbRegister({ id: "model", group: "engine", title: "模型", icon: "robot", desc: "大模型接口、密钥与向量索引", keywords: "llm model api key embedding 模型 密钥 索引", render: (b) => wbRenderModel(b) });
 wbRegister({ id: "agent", group: "engine", title: "Agent 行为", icon: "sparkle", desc: "运行模式、规则、记忆、上下文与长任务时限", keywords: "agent mode rules memory context compact timeout 长任务 时限 超时 模式 上下文 压缩", render: (b) => wbRenderAgent(b) });
-wbRegister({ id: "perms", group: "engine", title: "权限与安全", icon: "shield", desc: "审批策略、允许/拒绝清单、前置拦截", keywords: "permission deny allow hook yolo security 权限 安全 审批 拦截", render: (b) => wbRenderPerms(b) });
+wbRegister({ id: "perms", group: "engine", title: "权限与安全", icon: "shield", desc: "授权目录、审批策略、允许/拒绝清单、前置拦截", keywords: "permission deny allow hook yolo security roots 授权 目录 文件夹 权限 安全 审批 拦截", render: (b) => wbRenderPerms(b) });
 wbRegister({ id: "mcp", group: "engine", title: "MCP 工具", icon: "layers", desc: "外部工具服务器", keywords: "mcp server tool 外部工具", render: (b) => wbRenderMcp(b) });
 wbRegister({ id: "data", group: "data", title: "数据与隐私", icon: "folder", desc: "导出导入、本地数据与审计", keywords: "export import data privacy audit 导出 导入 数据 审计", render: (b) => wbRenderData(b) });
 wbRegister({ id: "about", group: "data", title: "关于", icon: "read", desc: "版本与快捷键", keywords: "about version shortcut 关于 版本 快捷键", render: (b) => wbRenderAbout(b) });

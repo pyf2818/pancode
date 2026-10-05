@@ -152,8 +152,10 @@ function assemble(blocks, maxTotal) {
   return out;
 }
 
-/* 规则来源分类：与 agent-llm 的四级装配顺序一一对应 */
+/* 规则来源分类：与 agent-llm 的装配顺序一一对应。
+   global 排在 0：~/.pancode/AGENTS.md 是跨项目的个人约定，注入时也在项目级之前。 */
 const KIND = {
+  global: { order: 0, label: "用户全局规则" },
   root: { order: 1, label: "根级规则" },
   pancode: { order: 2, label: "项目规则" },
   cursor: { order: 3, label: "Cursor 规则" },
@@ -162,6 +164,7 @@ const KIND = {
 
 function kindOf(file, candidates) {
   const f = String(file).replace(/\\/g, "/");
+  if (f === "~/.pancode/AGENTS.md") return "global";
   if (candidates.includes(f)) return "root";
   if (f.startsWith(".pancode/rules/")) return "pancode";
   if (f.startsWith(".cursor/rules/")) return "cursor";
@@ -193,8 +196,30 @@ function describe(file, content, scope, candidates) {
   };
 }
 
+/* 只读通道（面板详情 /api/rules/content）的路径判定。
+   这条函数存在的理由：面板每一行都会打 content 端点，而旧版只认 .pancode/rules/*.md，
+   于是 AGENTS.md / CLAUDE.md / Cursor .mdc / 用户全局这四类只读行一律报"非法规则路径"。
+   它同时是安全边界——放宽一点点都会把"看规则正文"变成任意文件读取，
+   所以这里是白名单形状判定，不是黑名单过滤：只放行来源清单里真实存在的那几种形状。
+   写入通道（PUT/DELETE）仍然只走 rulePath，不经这里。 */
+function resolveReadableRule(absRoot, file, candidates) {
+  const f = String(file || "").replace(/\\/g, "/");
+  if (!f) return null;
+  // 绝对路径、盘符、以及任何 .. 段都先拒；剩下按形状白名单归类
+  if (f.includes("..") || f.startsWith("/") || /^[A-Za-z]:/.test(f)) return null;
+  const cand = candidates || [];
+  let kind = null;
+  if (f === "~/.pancode/AGENTS.md") kind = "global";
+  else if (cand.includes(f) && !f.includes("/")) kind = "root";
+  else if (f.startsWith(RULES_DIR + "/") && /\.md$/i.test(f)) kind = "pancode";
+  else if (f.startsWith(".cursor/rules/") && /\.(md|mdc)$/i.test(f)) kind = "cursor";
+  else if (/(^|\/)AGENTS\.md$/i.test(f)) kind = "diragents";
+  if (!kind) return null;
+  return { kind, rel: f, editable: kind === "pancode" };
+}
+
 module.exports = {
   globToRe, parseFrontmatter, toMd, activeFor, safeName, assemble,
-  describe, kindOf, KIND, listRuleDir, rootRuleFiles,
+  describe, kindOf, KIND, listRuleDir, rootRuleFiles, resolveReadableRule,
   RULES_DIR, RULE_DIRS,
 };

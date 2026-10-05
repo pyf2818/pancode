@@ -161,6 +161,7 @@ class Scheduler {
     this._running = new Set();   // 正在执行的任务 id（防重叠）
     this._timer = null;
     this.onFire = null;          // 可选回调（UI 通知用）
+    this.onStart = null;         // 开跑即回调：任务表要先进"进行中"，收口那一刻才谈得上"翻面"
   }
 
   start() {
@@ -200,6 +201,7 @@ class Scheduler {
     const t = this._store.get(id);
     if (!t || this._running.has(id)) return null;
     this._running.add(id);
+    if (typeof this.onStart === "function") { try { this.onStart(id, t); } catch (e) {} }
     const startedAt = Date.now();
     let rec = { startedAt, finishedAt: null, ok: false, output: "", error: null };
     try {

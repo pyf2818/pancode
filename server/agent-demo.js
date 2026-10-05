@@ -65,9 +65,13 @@ class DemoAgent extends AgentBase {
     // 演示模式同样需要可见内置 skill（修复 EXE 用户看不到内置 skill 的回归）
     this.skills = (ctx && ctx.skills) || null;
   }
-  async handleChat(text) {
+  /* 演示引擎也要带上 convId：任务表 / 变更卡片 / 前端会话归属都读它。
+     LLM 引擎由 AsyncLocalStorage 统一注入，演示引擎没有那层，就得自己带上。 */
+  async handleChat(text, opts) {
     if (this.running) return;
-    this.emit({ type: "user.msg", text });
+    const convId = (opts && opts.convId) || this._currentConv || "default";
+    this._currentConv = convId;
+    this.emit({ type: "user.msg", text, convId });
     try {
       if (this.round === 0) await this.mainFlow(text);
       else await this.followupFlow(text);
@@ -76,7 +80,7 @@ class DemoAgent extends AgentBase {
       await this.say("执行过程中出现异常：" + err.message);
     } finally {
       this.state(false);
-      this.emit({ type: "agent.done", round: this.round });
+      this.emit({ type: "agent.done", round: this.round, convId });
     }
   }
 

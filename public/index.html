@@ -235,13 +235,17 @@
     <header class="ag-chat-head">
       <div class="ag-head-left">
         <div class="ag-avatar">
-          <svg class="ag-glyph" viewBox="0 0 34 32" aria-hidden="true">
-            <defs><linearGradient id="pcGradAgAvatar" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" style="stop-color:#ffffff"/>
-              <stop offset="1" style="stop-color:#d7ecff"/>
-            </linearGradient></defs>
-            <path d="M9 27 V5 H18 a7 7 0 0 1 0 14 H9" fill="none" stroke="url(#pcGradAgAvatar)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M22 11 l3.4 4.2 -3.4 4.2" fill="none" stroke="url(#pcGradAgAvatar)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- 会动的轨道标记：两条交叉椭圆轨道 + 核心节点 + 一颗沿轨运行的信号点。
+               全部描边、全部 currentColor，跟随当前配色；跑任务时轨道转、核心脉。
+               原来这里是一块渐变底 + 字母 P 的头像方块，跟标题栏的品牌图形重复，
+               且在浅色配色下发白，换成这个不带底色方块的线性标记后两处各司其职。 -->
+          <svg class="ag-glyph" viewBox="0 0 24 24" aria-hidden="true">
+            <g class="ag-orbit" fill="none" stroke="currentColor" stroke-width="1.25">
+              <ellipse cx="12" cy="12" rx="9.2" ry="4.4" transform="rotate(-30 12 12)"/>
+              <ellipse cx="12" cy="12" rx="9.2" ry="4.4" transform="rotate(30 12 12)"/>
+            </g>
+            <circle class="ag-core" cx="12" cy="12" r="2.3"/>
+            <circle class="ag-node" cx="19.6" cy="8.6" r="1.15"/>
           </svg>
         </div>
         <div class="ag-head-txt">
@@ -315,7 +319,8 @@
       <div id="traceStats" class="trace-stats">
         <div class="ts-item"><b id="traceRounds">0</b><span>rounds</span></div>
         <div class="ts-item"><b id="traceTools">0</b><span>tools</span></div>
-        <div class="ts-item"><b id="traceTokens">0</b><span>tokens</span></div>
+        <div class="ts-item" title="本会话累计发出去的 token（每次请求都含全量上下文，所以它必然远大于窗口占用，别读成「用了多少内存」）"><b id="traceTokens">0</b><span>累计</span></div>
+        <div class="ts-item" title="当前上下文占自动压缩水位线的百分比，与输入框旁的环形进度同源"><b id="traceCtx">0%</b><span>水位</span></div>
         <div class="ts-item"><b id="traceLoops">0</b><span>loops</span></div>
         <div class="ts-item"><b id="traceErrors">0</b><span>errors</span></div>
       </div>

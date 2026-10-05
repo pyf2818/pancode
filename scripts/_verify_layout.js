@@ -174,7 +174,12 @@ window.__audit = function (scopeSel) {
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) continue;
     const scrollableX = /(auto|scroll)/.test(cs.overflowX);
-    if (!scrollableX && el.scrollWidth > el.clientWidth + 3 && el.clientWidth > 0)
+    /* 有意省略 ≠ 溢出：overflow:hidden + text-overflow:ellipsis 且元素带 title，
+       用户悬停就能看到被截断的整串（长路径、长标题本来就得这么排）。
+       "截了又没地方看全"才是要抓的缺陷 —— 那种情况下面照旧报。 */
+    const recoverableEllipsis = cs.overflowX === "hidden" && cs.textOverflow === "ellipsis" &&
+      !!String(el.getAttribute("title") || "").trim();
+    if (!scrollableX && !recoverableEllipsis && el.scrollWidth > el.clientWidth + 3 && el.clientWidth > 0)
       out.overflow.push({ p: path(el), sw: el.scrollWidth, cw: el.clientWidth });
     if (r.right > window.innerWidth + 2 || r.left < -2)
       out.offscreen.push({ p: path(el), right: Math.round(r.right), left: Math.round(r.left) });

@@ -13,13 +13,18 @@ const crypto = require("crypto");
 
 require("./dotenv").loadDotEnv();   // 启动即加载本地 .env（LLM 密钥来源，已被 .gitignore 忽略）
 const configMod = require("./config");
+const wsKey = require("./ws-key");            // 工作区分片键唯一来源（老键改名迁移）
 const { FileStore, langOf } = require("./files");
 const { GitLayer } = require("./git");
 const { summarize, docDraft } = require("./change-summary");
 const { TerminalLayer } = require("./terminal");
 const { ProcessLayer } = require("./processes");
 const { ping } = require("./llm");
-const { LlmAgent } = require("./agent-llm");
+const { LlmAgent, _ctx: agentCtx } = require("./agent-llm");
+const { TaskBoard } = require("./tasks");
+const { RootGrants } = require("./root-grants");
+const { RootStore } = require("./root-store");
+const evScope = require("./event-scope");
 const { DemoAgent } = require("./agent-demo");
 const { LspManager, setActiveManager } = require("./lsp-bridge");
 const codeIndex = require("./code-index");
@@ -54,9 +59,14 @@ mcpManager.onStatus = () => { try { broadcast({ type: "mcp.servers", servers: mc
 const AUTH_TOKEN = process.env.PANCODE_TOKEN || crypto.randomBytes(18).toString("hex");
 
 const clients = new Set();
-function broadcast(ev) {
+/* 第二个参数决定"这条事件属于谁"：给了就只发那个用户的连接，不给（或 anon）就广播。
+   判据与理由见 server/event-scope.js。发送包 try/catch 是新加的一环：
+   过滤之后收件人变少了，一个已断的连接抛错会把后面那个本来该收到的人整段跳过。 */
+function broadcast(ev, userKey) {
   const s = JSON.stringify(ev);
-  for (const c of clients) if (c.readyState === 1) c.send(s);
+  for (const c of evScope.recipients(clients, userKey)) {
+    try { c.send(s); } catch (e) { /* 连接正在关：心跳那一轮会把它摘掉 */ }
+  }
 }
 
 /* W11：事件循环延迟（ELD）探针
@@ -79,6 +89,18 @@ setInterval(() => {
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
 let WS_DIR = null;
 let files = null, git = null, term = null, procs = null, engine = null, soulStore = null, progressionStore = null, skillStore = null;
+let taskBoard = null;   // 任务表：派出去的活到哪一步了（关窗/断线后回来还能查）
+/* 全局授权根清单：一台机器一份，落 <数据根>/.pancode/roots.json，不按工作区分片。
+   用户拍板的是"全局一份"（类操作系统的权限面板），所以它必须在挂载之前就存在——
+   挂载动作本身要往清单里登记当前工作区。 */
+const rootGrants = new RootGrants(path.join(configMod.ROOT, ".pancode", "roots.json"), configMod.ROOT);
+/* 多根路径解析：把"这个路径属于哪个已授权根"集中一处回答，工具不再各自判越界。
+   审计目录全根共用一份（撤销授权要能在审计里追到）。 */
+const rootStore = new RootStore({
+  grants: rootGrants,
+  dataRoot: configMod.ROOT,
+  auditDir: path.join(configMod.ROOT, ".pancode", "audit"),
+});
 let automationStore = null, schedulerInst = null; // W4 自动化任务（随工作区重建）
 const userEngines = new Map();   // userKey -> LlmAgent（每个登录用户一份，会话/目标/trace 独立）
 const _engineAssets = {};        // 共享资产（memory/skills/plan/... 按工作区一份，跨用户共用）
@@ -91,36 +113,92 @@ function buildEngine() {
     try { if (eng && typeof eng.flushConversations === "function") eng.flushConversations(); } catch (_) {}
   }
   userEngines.clear();
-  const wsHash = _wsIdHash(WS_DIR);
+  const ws = wsKey.forWorkspace(WS_DIR, configMod.ROOT);   // 全部项目级分片只用这一个键
   const marketDir = path.join(configMod.ROOT, ".pancode", "skills", "market");
   const skillDir = path.join(configMod.ROOT, ".pancode", "skills");
-  _engineAssets.wsHash = wsHash;
-  _engineAssets.skillStore = new SkillStore(marketDir, path.join(skillDir, wsHash + ".json"), path.join(__dirname, "builtin-skills"), path.join(require("os").homedir(), ".pancode", "skills")); // W1：+ 用户级目录
+  _engineAssets.skillStore = new SkillStore(marketDir, ws.file(skillDir), path.join(__dirname, "builtin-skills"), path.join(require("os").homedir(), ".pancode", "skills")); // W1：+ 用户级目录
   _engineAssets.memDir = path.join(configMod.ROOT, ".pancode", "memory");
-  _engineAssets.memory = new MemoryStore(path.join(_engineAssets.memDir, wsHash + ".json"));
+  _engineAssets.memory = new MemoryStore(ws.file(_engineAssets.memDir));
   // W3：用户级记忆（跨项目偏好/约定），~/.pancode/memory/user.json，随工作区重挂共享同一实例
   _engineAssets.userMemory = new MemoryStore(path.join(require("os").homedir(), ".pancode", "memory", "user.json"));
   // W2：专家注册表（项目级 = <工作区>/.pancode/experts，用户级 = ~/.pancode/experts，内置 = BUILTIN_EXPERTS）
   _engineAssets.experts = new ExpertStore(WS_DIR ? path.join(WS_DIR, ".pancode", "experts") : null,
     path.join(require("os").homedir(), ".pancode", "experts"));
-  // W4：自动化任务（ROOT/.pancode/automations/<wsHash>/，随工作区重建；停掉旧调度器防泄漏）
+  // W4：自动化任务（ROOT/.pancode/automations/<分片键>/，随工作区重建；停掉旧调度器防泄漏）
   if (schedulerInst) { try { schedulerInst.stop(); } catch (_) {} schedulerInst = null; }
-  automationStore = new AutomationStore(path.join(configMod.ROOT, ".pancode", "automations", wsHash));
+  automationStore = new AutomationStore(ws.subdir(path.join(configMod.ROOT, ".pancode", "automations")));
   schedulerInst = new Scheduler(automationStore, () => engine);
+  /* 定时器跑的活也要走"派出去 → 回来查 → 被通知"：开跑先落一行 running，收口再翻成 done/failed。
+     必须先有 running 这一面——桌面端每 3s 轮询比较前后两次快照，只在"翻面"那一刻弹通知；
+     若开跑与收口都发生在两次轮询之间，通知就会静默丢失。 */
+  schedulerInst.onStart = (id, t) => {
+    if (!taskBoard) return;
+    taskBoard.begin("automation", "auto-" + id, "自动化：" + ((t && t.name) || id), "automation");
+    broadcast({ type: "term.line", text: "[自动化] 开始执行「" + ((t && t.name) || id) + "」", cls: "tl-info" });
+  };
+  schedulerInst.onFire = (id, rec) => {
+    if (!taskBoard) return;
+    let name = id;
+    try { const t = automationStore.get(id); if (t && t.name) name = t.name; } catch (e) {}
+    taskBoard.end("automation", "auto-" + id, rec && rec.ok ? "done" : "failed", { error: (rec && rec.error) || "" });
+    broadcast({
+      type: "term.line",
+      text: "[自动化]「" + name + "」" + (rec && rec.ok ? "跑完了" : "失败：" + ((rec && rec.error) || "未知原因")),
+      cls: rec && rec.ok ? "tl-info" : "tl-err",
+    });
+  };
   schedulerInst.start();
   const planDir = path.join(configMod.ROOT, ".pancode", "plans");
-  _engineAssets.plan = new PlanStore(path.join(planDir, wsHash + ".json"));
+  _engineAssets.plan = new PlanStore(ws.file(planDir));
   const wfDir = path.join(configMod.ROOT, ".pancode", "workflows");
   fs.mkdirSync(wfDir, { recursive: true });
-  _engineAssets.workflow = new WorkflowStore(path.join(wfDir, wsHash + ".json"));
+  _engineAssets.workflow = new WorkflowStore(ws.file(wfDir));
   const soulDir = path.join(configMod.ROOT, ".pancode", "soul");
-  _engineAssets.soul = new SoulStore(path.join(soulDir, wsHash + ".json"));
+  _engineAssets.soul = new SoulStore(ws.file(soulDir));
   const progDir = path.join(configMod.ROOT, ".pancode", "progression");
-  _engineAssets.progression = new ProgressionStore(path.join(progDir, wsHash + ".json"));
+  _engineAssets.progression = new ProgressionStore(ws.file(progDir));
   _engineAssets.cfg = cfg;
+  // 任务表按工作区分片；换工作区即换表（旧表的行属于旧目录，不该串到新目录里显示）
+  taskBoard = new TaskBoard(ws.file(path.join(configMod.ROOT, ".pancode", "tasks")));
+  if (taskBoard.interruptedCount) {
+    console.log("[pancode] 上次进程退出时有 " + taskBoard.interruptedCount + " 个任务未收口，已标为 interrupted");
+  }
   // 默认 engine（helloPayload 等全局状态用）
   engine = ensureUserEngine("anon");
   soulStore = _engineAssets.soul;
+  progressionStore = _engineAssets.progression;   // 同 soulStore：HTTP 侧与 Agent 侧必须共用同一实例，否则一边写一边读旧态
+  /* 分片键归并结果要说得出口：搬了哪些文件、还留着哪些同工作区的老键名等人合并 */
+  const moved = wsKey.drainMigrated();
+  if (moved.length) {
+    console.log("[pancode] 分片键归并 " + moved.length + " 个文件："
+      + moved.map((m) => path.basename(m.from) + " → " + path.basename(m.to)).join("、"));
+  }
+  for (const d of wsKey.drainDrift()) {
+    console.warn("[pancode] " + d.dir + " 下同属本工作区还有别的历史分片（当前读 " + d.live + "）："
+      + (d.leftovers || []).join("、") + (d.error ? "（改名失败，退回原文件：" + d.error + "）" : "") + "；内容合并需人工确认。");
+  }
+}
+
+/* 从 Agent 事件流里维护任务表。事件由内核统一带 convId（AsyncLocalStorage 注入），
+   所以这里不需要知道引擎内部状态，也不新增一条上报通道。 */
+function observeTask(ev, userKey) {
+  if (!taskBoard || !ev) return;
+  /* LLM 引擎的事件由 AsyncLocalStorage 统一带上 convId；演示引擎（无 API Key 时桌面端开箱就是它）
+     不带。取不到就退回该用户引擎的当前会话——否则任务表在没有 Key 的装机上是空的。 */
+  const convId = ev.convId || (userEngines.get(userKey) || {})._currentConv;
+  if (!convId) return;
+  try {
+    switch (ev.type) {
+      case "user.msg": taskBoard.begin(userKey, convId, ev.text); break;
+      case "tool.end": taskBoard.inc(userKey, convId, "tools", true); break;
+      case "tool.pending": taskBoard.note(userKey, convId, { status: "waiting", waitingFor: ev.tool || "" }); break;
+      case "goal.continue": taskBoard.note(userKey, convId, { status: "running", turns: ev.turn, waitingFor: "" }); break;
+      case "chat.queued": taskBoard.note(userKey, convId, { queueLen: ev.position }); break;
+      case "chat.dequeued": taskBoard.note(userKey, convId, { queueLen: ev.remaining }); break;
+      case "agent.error": taskBoard.end(userKey, convId, "failed", { error: String(ev.message || "").slice(0, 300) }); break;
+      case "agent.done": taskBoard.end(userKey, convId, ev.aborted ? "aborted" : "done", { waitingFor: "" }); break;
+    }
+  } catch (e) { /* 任务表绝不反过来影响主链路 */ }
 }
 
 /* 按 userKey 获取或创建该用户的 LlmAgent 实例。每个用户的 history/conversations/goal/trace 独立，
@@ -129,7 +207,8 @@ function ensureUserEngine(userKey) {
   if (userEngines.has(userKey)) return userEngines.get(userKey);
   const a = _engineAssets;
   const ctx = {
-    emit: broadcast, files, git, term, procs, cfg: a.cfg,
+    emit: (ev) => { observeTask(ev, userKey); broadcast(ev, userKey); }, files, git, term, procs, cfg: a.cfg,
+    roots: rootStore,   // 多根路径解析（阶段二）：不带 root 的调用仍然落在当前工作区
     skills: a.skillStore,
     sharedMemory: a.memory, sharedPlan: a.plan, sharedWorkflow: a.workflow,
     sharedUserMemory: a.userMemory,
@@ -152,7 +231,7 @@ function ensureUserEngine(userKey) {
 }
 
 /* 从 WS 取 userKey：登录用户 = token 的 8 位哈希（会话/目标按人隔离），无 token = "anon"。
-   工作区维度由 agent 构造器内部用 wsHash 组合，此处不重复拼，保持文件名片段干净（Windows 安全）。 */
+   工作区维度由 agent 构造器内部用分片键组合，此处不重复拼，保持文件名片段干净（Windows 安全）。 */
 function wsUserKey(ws) {
   const tok = ws._userToken || "";
   if (!tok) return "anon";
@@ -169,7 +248,14 @@ function mountWorkspace(dir) {
   if (files) files.stopWatch();
   if (procs) { try { procs.stopAll(); } catch (e) {} }   // 切换工作区前清理上一工作区的后台进程（孤儿防护）
   WS_DIR = abs;
+  /* 活动工作区必须在授权清单里，否则阶段二把工具接到清单上之后，第一个吃亏的就是当前目录。
+     add 的行是同步进内存的，这里不等落盘——挂载失败不该被一次写盘拖住。 */
+  /* 不往清单里写"当前工作区"这种会变的状态：它是每次请求现算的徽标（workbench 按 active 上色）。
+     当年写进 roots.json 的后果是切过一次工作区后，两条授权行都自称"当前工作区"（实测在真实例里看到过）。 */
+  rootGrants.ensure(abs).catch((e) => console.warn("[pancode] 授权清单登记失败：" + e.message));
   files = new FileStore(WS_DIR, path.join(configMod.ROOT, ".pancode", "audit"));
+  /* 活动根认的就是这个实例：不能再造第二个，否则同一目录两份 fs.watch，外部改动会被推两遍 */
+  rootStore.setActive(WS_DIR, files);
   git = new GitLayer(WS_DIR, files);
   require("./security").setAuditDir(path.join(configMod.ROOT, ".pancode", "audit")); // W14：agent 层审计统一落同一目录
   term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"), cfg.permissions.strictCommand !== false);
@@ -189,8 +275,12 @@ try { fs.mkdirSync(wsAbs, { recursive: true }); } catch (e) {}
 mountWorkspace(wsAbs);
 
 /* ---------- 快照/状态 ---------- */
+/* 取基线优先走 git.baselinePlanner()：一次 ls-files + 一次 status 就把绝大多数文件的基线定下来，
+   只有真被修改的文件才发 `git show`。旧写法每个文件发一次子进程，实测 126ms × 127 文件
+   = 22.3s 才出第一屏（hello 里带全量 files）。 */
 async function snapshotFiles() {
   const out = {};
+  const pick = await git.baselinePlanner();
   for (const rel of files.list()) {
     // 二进制文件（Word/图片/压缩包等）：出现在文件树，但不读内容（按文本读必乱码）
     if (files.isBinary(rel)) {
@@ -201,7 +291,7 @@ async function snapshotFiles() {
     }
     let content;
     try { content = files.read(rel); } catch (e) { continue; }
-    const base = await git.baseline(rel);
+    const base = pick ? await pick(rel, content) : await git.baseline(rel);
     out[rel] = {
       content,
       original: base === null ? "" : base,
@@ -215,6 +305,7 @@ async function snapshotFiles() {
 /* 增量快照：只读取指定路径，避免大工作区全量读盘 */
 async function snapshotFilesIncremental(paths) {
   const out = {};
+  const pick = await git.baselinePlanner();
   for (const rel of paths) {
     if (files.isBinary(rel)) {
       let size = 0;
@@ -224,7 +315,7 @@ async function snapshotFilesIncremental(paths) {
     }
     let content;
     try { content = files.read(rel); } catch (e) { continue; }
-    const base = await git.baseline(rel);
+    const base = pick ? await pick(rel, content) : await git.baseline(rel);
     out[rel] = {
       content,
       original: base === null ? "" : base,
@@ -235,9 +326,7 @@ async function snapshotFilesIncremental(paths) {
   return out;
 }
 
-function _wsIdHash(p) { let h = 0; for (let i = 0; i < p.length; i++) h = (h * 31 + p.charCodeAt(i)) >>> 0; return h.toString(36); }
-
-async function helloPayload(eng) {
+async function helloPayload(eng, userKey) {
   const e = eng || engine;
   return {
     type: "hello",
@@ -249,10 +338,13 @@ async function helloPayload(eng) {
     lsp: lspManager.capabilities(),
     git: git.info(),
     project: path.basename(WS_DIR),
-    wsId: _wsIdHash(WS_DIR),
+    /* wsId 是前端 localStorage 的会话存储 key 后缀（app.js 拼 cw-conv-v1:<id>），故意沿用旧的
+       31 项多项式哈希：换算法等于让老用户浏览器里的历史列表凭空消失。磁盘分片键走 wsKey，两码事。 */
+    wsId: wsKey.legacyStorageId(WS_DIR),
     workspace: WS_DIR,
     truncated: !!files.truncated,
     tabs: term.list(),          // 还原多标签终端（同一服务进程内刷新可恢复）
+    tasks: taskBoard ? taskBoard.snapshot(userKey) : [],   // 进行中/最近收口的任务（关窗回来能查）
   };
 }
 
@@ -487,8 +579,12 @@ app.post("/api/plans/:id/complete", (req, res) => {
 /* ---------- 工作流模板 API（供前端工作流面板展示真实模板，含用户自定义） ---------- */
 app.get("/api/templates", (req, res) => {
   try {
-    if (!engine || !engine.workflows) return res.json({ ok: true, templates: [] });
-    const templates = engine.workflows.list().map((t) => ({
+    /* 取工作区级那份 store，不要绕引擎拿：`this.workflows` 只在 LlmAgent 构造函数里挂，
+       演示引擎（没配 API Key 的第一次启动——桌面端最典型的初始态）下它是 undefined，
+       于是这里回空数组，前端工作流面板会静默退化成快捷提示词列表，内置模板一个都不见。 */
+    const wf = _engineAssets.workflow || (engine && engine.workflows);
+    if (!wf) return res.json({ ok: true, templates: [] });
+    const templates = wf.list().map((t) => ({
       name: t.name,
       description: t.description || "",
       title: t.title || "",
@@ -498,6 +594,59 @@ app.get("/api/templates", (req, res) => {
     }));
     res.json({ ok: true, templates });
   } catch (e) { res.json({ ok: true, templates: [] }); }
+});
+
+/* ---------- 任务表（桌面端托盘/系统通知的唯一数据源） ---------- */
+/* 不带 userKey：托盘在窗口关闭时也要能看见"有几个任务在跑"，那是本机自己的后端。
+   需要按人过滤时走 hello.tasks（那里按连接的 userKey 过滤）。 */
+app.get("/api/tasks", (req, res) => {
+  try {
+    res.json({ ok: true, tasks: taskBoard ? taskBoard.snapshot(null) : [], workspace: WS_DIR });
+  } catch (e) { res.json({ ok: false, error: e.message, tasks: [] }); }
+});
+
+/* ---------- 全局授权根清单（阶段二：Agent 能进哪几扇门） ---------- */
+/* 与 allow/deny 工具规则是两个轴：规则管"在目录里能干什么"，这份清单管"能不能进这个门"。
+   全局一份、跨工作区共用，所以它在 <数据根>/.pancode/roots.json，不在工作区里。
+   这些接口一律走登录闸门（app.use 的 NO_AUTH 白名单不含它们）——授权目录是敏感操作。 */
+app.get("/api/roots", (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      roots: rootGrants.list(),
+      active: WS_DIR,
+      activeId: wsKey.shardKey(WS_DIR, configMod.ROOT),   // 前端据此把"当前工作区"单独标出来
+      dataRoot: configMod.ROOT,
+    });
+  } catch (e) { res.json({ ok: false, error: e.message, roots: [] }); }
+});
+
+app.post("/api/roots", async (req, res) => {
+  try {
+    const r = await rootGrants.add(req.body || {});
+    if (r.error) return res.status(400).json({ ok: false, error: r.error });
+    res.json({ ok: true, root: r.root, roots: rootGrants.list() });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+/* 只读 ↔ 可写：用户想"让它能看别的项目，但别乱改"就是这一档 */
+app.post("/api/roots/:id/writable", async (req, res) => {
+  try {
+    const r = await rootGrants.setWritable(req.params.id, !!(req.body && req.body.writable));
+    if (r.error) return res.status(404).json({ ok: false, error: r.error });
+    rootStore.invalidate(req.params.id);   // 顺带丢掉缓存实例；真正的拦截靠每次解析现查清单
+    res.json({ ok: true, root: r.root, roots: rootGrants.list() });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+/* 撤销授权只删这一行，目录与其中文件一概不碰（这条在 roots.test.js 里钉着） */
+app.delete("/api/roots/:id", async (req, res) => {
+  try {
+    const r = await rootGrants.remove(req.params.id);
+    if (r.error) return res.status(404).json({ ok: false, error: r.error });
+    rootStore.invalidate(req.params.id);
+    res.json({ ok: true, roots: rootGrants.list() });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 /* ---------- W6 产物清单（历史会话回看：切换会话时前端拉取渲染） ---------- */
@@ -514,7 +663,7 @@ app.get("/api/git/status", async (req, res) => {
     if (!git) return res.json({ ok: true, available: false, branch: "", changes: [] });
     let remote = "";
     try { remote = (await git.remotes())[0] || ""; } catch (e) {}
-    res.json({ ok: true, available: git.available, branch: git.branch, remote, changes: await git.changes() });
+    res.json({ ok: true, available: git.available, branch: git.branch, remote, sub: git.info().sub, changes: await git.changes() });
   } catch (e) { res.json({ ok: true, available: false, changes: [] }); }
 });
 app.post("/api/git/push", async (req, res) => {
@@ -1014,7 +1163,11 @@ function enrichMem(e) {
     ageDays,
     ttlDays: ttl,
     sticky,
-    injected: !e.archived && w >= 1,
+    /* 「会进上下文」的口径跟着 #31 的分道改：地板从 1 提到 1.5，且区分
+       常驻（偏好/归纳产物，无条件在场）与按相关性（本轮词元命中才进）。
+       面板上只写"强度达标"是不诚实的——达标不等于每轮都被读进去。 */
+    lane: (e.type === "preference" || e.source === "consolidate" || e.source === "sediment" || e.sticky) ? "resident" : "relevant",
+    injected: !e.archived && w >= 1.5,
     risk: !sticky && w < 2.5 ? (w < 0.5 ? "drop" : "archive") : "keep",
   });
 }
@@ -1556,6 +1709,12 @@ function collectRuleRecords(touched) {
   };
   let listed = [];
   try { listed = files.list().map((x) => x.replace(/\\/g, "/")); } catch (e) {}
+  /* 用户全局层：Agent 的 loadRules() 真的会读 ~/.pancode/AGENTS.md。
+     面板不列它就会出现"预览里有、清单里无"的裂口——两边必须同源。 */
+  try {
+    const gp = agentCtx.userGlobalRulePath();
+    if (gp) pushRec("~/.pancode/AGENTS.md", fs.readFileSync(gp, "utf8"), "global");
+  } catch (e) {}
   // files.list() 看不见点开头目录，规则目录必须另外枚举磁盘（与 loadRules 同一套枚举函数）
   const dotFiles = [];
   for (const rel of rulesLib.RULE_DIRS) {
@@ -1619,7 +1778,8 @@ app.get("/api/rules", (req, res) => {
       },
       budget: {
         chars: rules.filter((r) => r.active).reduce((n, r) => n + r.chars + r.file.length + 24, 0),
-        max: 12000,
+        // 面板分母与 Agent 的实际预算同源：stable 桶 + conditional 桶
+        max: agentCtx.RULE_MAX_STABLE + agentCtx.RULE_MAX_CONDITIONAL,
       },
       enabledGlob: !!(cfg.rules && cfg.rules.enabled),
     });
@@ -1629,12 +1789,22 @@ app.get("/api/rules/content", (req, res) => {
   try {
     const f = String(req.query.file || "");
     if (f.startsWith("app:/")) return res.json({ ok: false, error: "应用级规则为只读遗留文件，请直接在工作区 .pancode/rules 新建同名规则覆盖" });
-    const rel = rulePath(f);
-    if (!rel) return res.json({ ok: false, error: "非法规则路径" });
-    if (!files.exists(rel)) return res.json({ ok: false, error: "规则文件不存在" });
-    const raw = files.read(rel);
+    /* 只读通道走白名单形状判定：AGENTS.md / CLAUDE.md / Cursor .mdc / 用户全局
+       这些"面板列得出来却读不到"的行，点进去以前一律报「非法规则路径」。
+       写入仍只认 rulePath(.pancode/rules/*.md)，两者不同源是刻意的。 */
+    const rr = rulesLib.resolveReadableRule(files.dir, f, LlmAgent.RULE_CANDIDATES);
+    if (!rr) return res.json({ ok: false, error: "非法规则路径" });
+    let raw = "";
+    if (rr.kind === "global") {
+      const gp = agentCtx.userGlobalRulePath();
+      if (!gp) return res.json({ ok: false, error: "用户全局规则文件不存在" });
+      raw = fs.readFileSync(gp, "utf8");
+    } else {
+      if (!files.exists(rr.rel)) return res.json({ ok: false, error: "规则文件不存在" });
+      raw = files.read(rr.rel);
+    }
     const parsed = rulesLib.parseFrontmatter(raw);
-    res.json({ ok: true, file: rel, raw, meta: parsed.meta, body: parsed.body });
+    res.json({ ok: true, file: rr.rel, kind: rr.kind, editable: rr.editable, raw, meta: parsed.meta, body: parsed.body });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 app.post("/api/rules", (req, res) => {
@@ -1704,9 +1874,14 @@ app.get("/api/rules/preview", (req, res) => {
     let touched = [];
     if (q) { try { touched = files.list().filter((x) => String(x).toLowerCase().includes(q.toLowerCase())).slice(0, 40); } catch (e) {} }
     let text = "";
-    try { text = LlmAgent.prototype.loadRules.call({ files }, touched); }
-    catch (e) { return res.json({ ok: false, error: "预览失败：" + e.message }); }
-    res.json({ ok: true, preview: text, chars: text.length, max: 12000, touched: touched.length, query: q });
+    /* 必须挂上原型再调：loadRules 内部会分派到 this.loadRulesParts()，
+       用裸对象 { files } 当 this 时那个方法不存在，预览会直接抛错。 */
+    try {
+      const probe = Object.create(LlmAgent.prototype);
+      probe.files = files;
+      text = probe.loadRules(touched);
+    } catch (e) { return res.json({ ok: false, error: "预览失败：" + e.message }); }
+    res.json({ ok: true, preview: text, chars: text.length, max: agentCtx.RULE_MAX_STABLE + agentCtx.RULE_MAX_CONDITIONAL, touched: touched.length, query: q });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
@@ -1819,13 +1994,27 @@ wss.on("connection", (ws) => {
   ws.on("pong", () => { ws._alive = true; });
   // 缺省无 error 监听时，ws 抛出的连接错误会成为未处理事件（靠全局兜底吞掉，连接却残留在集合里）
   ws.on("error", () => clients.delete(ws));
-  helloPayload(ensureUserEngine(uKey)).then((h) => { if (ws.readyState === 1) ws.send(JSON.stringify(h)); });
+  helloPayload(ensureUserEngine(uKey), uKey).then((h) => {
+    if (ws.readyState !== 1) return;
+    ws.send(JSON.stringify(h));
+    /* 上次进程退出时没收口的 Goal：连上来就说一句，别让用户自己发现"它不动了"。
+       只提示不自动续跑——重启后擅自继续改盘/跑命令，是用户没点头的事。 */
+    const eng = userEngines.get(uKey);
+    const pending = eng && typeof eng._pendingGoals === "function" ? eng._pendingGoals() : [];
+    for (const p of pending) {
+      ws.send(JSON.stringify({ type: "goal.pending", convId: p.convId, turns: p.turns, goal: eng._goal }));
+      ws.send(JSON.stringify({ type: "term.line", text: "[Goal] 上次这个会话跑到第 " + p.turns + " 轮被进程退出打断，要不要继续？", cls: "tl-warn" }));
+    }
+  });
   ws.on("close", () => clients.delete(ws));
   ws.on("message", (raw) => {
     ws._alive = true;                  // 客户端有来流即证明链路可用
     let m;
     try { m = JSON.parse(raw.toString()); } catch (e) { return; }
     const uEng = ensureUserEngine(ws._userKey || "anon");   // 每条消息按 userKey 查表（Map.get，无分配开销）
+    /* 这条消息来自哪个用户——随后所有"属于某个会话"的事件都按它收窄收件人，
+       免得 A 的操作把 B 的界面/审批卡一起改了（理由见 server/event-scope.js）。 */
+    const msgKey = ws._userKey || "anon";
 
     switch (m.type) {
       case "chat":
@@ -1838,14 +2027,16 @@ wss.on("connection", (ws) => {
       /* 前端主动查询上下文实测水位（页面加载 / 会话切换 / 收到回答后调用） */
       case "ctx.query": {
         try {
-          // 与 compactHistory 用同一套预算口径，否则前端进度条按 1M 分母显示、与服务端
-          // 实际触发压缩的阈值（min(budgetTokens, 模型窗口×0.9)）永远对不上。
-          const budget = uEng && uEng._ctxBudget
-            ? Math.min((cfg.context || {}).budgetTokens || Infinity, Math.round(uEng._ctxBudget() * 0.9))
+          /* 分母必须与引擎的压缩判定同源（_ctxLimit = _compactSpec().thresholdTokens）。
+             以前这里自己拿模型窗口 ×0.9，于是进度条按 115200 走、真正触发压缩的线是 102400，
+             用户永远看不到 100%，Agent 却在一遍遍压缩——看起来就像"统计是假的"。 */
+          const budget = uEng && typeof uEng._ctxLimit === "function"
+            ? uEng._ctxLimit()
             : ((cfg.context || {}).budgetTokens || 1000000);
           const used = (uEng && typeof uEng._ctxUsed === "function" && Array.isArray(uEng.history))
             ? uEng._ctxUsed(uEng.history) : 0;
-          ws.send(JSON.stringify({ type: "context.usage", used, budget, est: !(uEng && uEng._lastPrompt) }));
+          ws.send(JSON.stringify({ type: "context.usage", used, budget,
+            est: !(uEng && uEng._lastPrompt && uEng._lastPromptArr === uEng.history) }));
         } catch (e) { /* 引擎未就绪时静默 */ }
         break;
       }
@@ -1860,17 +2051,29 @@ wss.on("connection", (ws) => {
         uEng._saveGoal();
         uEng._goalState = uEng._goalState || {};
         uEng._goalState[cid] = { turns: 0, stall: 0, lastSig: "" };
-        broadcast({ type: "goal.set", goal: g || null, convId: cid });
+        broadcast({ type: "goal.set", goal: g || null, convId: cid }, msgKey);
         if (g && !uEng.runningConvs.has(cid)) {
           uEng.handleChat("【Goal】请围绕以下目标自主推进直到完成：\n" + g + "\n先用 create_plan 拆解为可验收步骤，逐步执行并验证，全部完成后结束。", { convId: cid });
         }
+        break;
+      }
+      /* 重启后接续被打断的 Goal：用户点一下「继续」才重新起跑。 */
+      case "goal.resume": {
+        if (!uEng || typeof uEng._pendingGoals !== "function") break;
+        const cid = m.convId || uEng._currentConv || "default";
+        const hit = uEng._pendingGoals().find((p) => p.convId === cid);
+        if (!hit) { ws.send(JSON.stringify({ type: "term.line", text: "[Goal] 这个会话没有被打断的目标可继续。", cls: "tl-warn" })); break; }
+        if (uEng.runningConvs.has(cid)) { uEng._queueChat(cid, "【Goal】继续推进未完成的目标。", { convId: cid }); break; }
+        broadcast({ type: "goal.resumed", convId: cid, turns: hit.turns }, msgKey);
+        uEng.handleChat("【Goal 续跑 · 上次被进程退出打断，已跑 " + hit.turns + " 轮】目标：" + uEng._goal
+          + "\n先核对上几轮已经改过/验过的部分，别重复劳动，然后继续推进到完成。", { convId: cid });
         break;
       }
       case "goal.clear": {
         if (!uEng) break;
         uEng._goal = null; uEng._saveGoal();
         if (uEng._goalState) uEng._goalState[m.convId || uEng._currentConv] = undefined;
-        broadcast({ type: "goal.set", goal: null, convId: m.convId || uEng._currentConv });
+        broadcast({ type: "goal.set", goal: null, convId: m.convId || uEng._currentConv }, msgKey);
         break;
       }
 
@@ -1882,9 +2085,11 @@ wss.on("connection", (ws) => {
             const before = Array.isArray(uEng.history) ? uEng.history.slice() : [];
             const after = await uEng.compactHistory(before, { force: true });
             if (Array.isArray(after) && after !== before) {
+              const beforePct = Math.round((uEng._ctxUsed(before) || 0) / (uEng._ctxLimit() || 1) * 100);
               uEng.history = after;
-              uEng._lastPrompt = null; uEng._lastPromptLen = null;
-              if (ws.readyState === 1) ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 已按你的要求手动压缩上下文（" + before.length + " 条 → " + after.length + " 条）", cls: "tl-info" }));
+              uEng._dropCtxAnchor();
+              const afterPct = Math.round((uEng._ctxUsed(after) || 0) / (uEng._ctxLimit() || 1) * 100);
+              if (ws.readyState === 1) ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 已按你的要求手动压缩上下文（水位 " + beforePct + "% → " + afterPct + "%）", cls: "tl-info" }));
             } else if (ws.readyState === 1) {
               ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 未压缩：自动压缩已关闭，或历史条数不足以压缩", cls: "tl-warn" }));
             }
@@ -1975,8 +2180,8 @@ wss.on("connection", (ws) => {
             if (uEng.convChanges) uEng.convChanges[uEng._currentConv] = [];
             if (typeof uEng.saveConversations === "function") uEng.saveConversations();
             uEng.pushChanges(false);
-            broadcast({ type: "term.line", text: "[pancode] 工作区已恢复到基线状态", cls: "tl-info" });
-            broadcast({ type: "agent.reset" });
+            broadcast({ type: "term.line", text: "[pancode] 工作区已恢复到基线状态", cls: "tl-info" }, msgKey);
+            broadcast({ type: "agent.reset" }, msgKey);
             snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
           }).catch((e) => console.error("[reset] discardAll 失败:", e));
         }, ws);
@@ -1994,8 +2199,8 @@ wss.on("connection", (ws) => {
           uEng.round = 0;
           if (uEng.history) uEng.history = [];
           if (typeof uEng.saveConversations === "function") uEng.saveConversations();
-          broadcast({ type: "agent.reset" });
-          broadcast({ type: "term.line", text: "[pancode] 已开始新对话，AI 上下文已清空（文件改动保留）", cls: "tl-info" });
+          broadcast({ type: "agent.reset" }, msgKey);
+          broadcast({ type: "term.line", text: "[pancode] 已开始新对话，AI 上下文已清空（文件改动保留）", cls: "tl-info" }, msgKey);
         }, ws);
         break;
 
@@ -2030,9 +2235,9 @@ wss.on("connection", (ws) => {
         safe(() => {
           if (typeof uEng.abort === "function") {
             uEng.abort(m.convId);
-            broadcast({ type: "term.line", text: "[pancode] Agent 已中断", cls: "tl-warn" });
-            broadcast({ type: "agent.state", running: false, label: "AI 空闲", convId: m.convId });
-            broadcast({ type: "agent.done", round: uEng.round, convId: m.convId });
+            broadcast({ type: "term.line", text: "[pancode] Agent 已中断", cls: "tl-warn" }, msgKey);
+            broadcast({ type: "agent.state", running: false, label: "AI 空闲", convId: m.convId }, msgKey);
+            broadcast({ type: "agent.done", round: uEng.round, convId: m.convId }, msgKey);
           }
         }, ws);
         break;
@@ -2062,9 +2267,9 @@ wss.on("connection", (ws) => {
           if (applied.length || conflicts.length) {
             // 增量同步：只发 applied 路径，避免大工作区全量读盘
             snapshotFilesIncremental(applied).then((files2) => broadcast({ type: "fs.sync", files: files2, incremental: true }));
-            broadcast({ type: "patch.applied", paths: applied, convId, conflicts });
+            broadcast({ type: "patch.applied", paths: applied, convId, conflicts }, msgKey);
           } else {
-            broadcast({ type: "patch.applied", paths: [], convId, empty: true });
+            broadcast({ type: "patch.applied", paths: [], convId, empty: true }, msgKey);
           }
         }, ws);
         break;
@@ -2073,7 +2278,7 @@ wss.on("connection", (ws) => {
           const convId = m.convId || uEng._currentConv;
           const paths = Array.isArray(m.paths) ? m.paths : [];
           if (typeof uEng.rejectPatch === "function") uEng.rejectPatch(convId, paths);
-          broadcast({ type: "patch.rejected", paths, convId, all: !paths.length });
+          broadcast({ type: "patch.rejected", paths, convId, all: !paths.length }, msgKey);
         }, ws);
         break;
     }
@@ -2118,7 +2323,8 @@ server.listen(cfg.port, "127.0.0.1", () => {
   const info = configMod.publicInfo(cfg);
   console.log("pancode v" + VERSION + " 已启动: http://localhost:" + cfg.port);
   console.log("workspace: " + WS_DIR);
-  console.log("Git: " + (git.info().git ? "已启用（基线 = HEAD）" : "未启用（基线 = 启动快照）"));
+  const gi = git.info();
+  console.log("Git: " + (gi.git ? ("已启用（基线 = HEAD" + (gi.sub ? "，工作区在仓库的 " + gi.sub + " 子目录" : "") + "）") : "未启用（基线 = 启动快照）"));
   console.log("Agent 引擎: " + (info.mode === "llm" ? "真实 LLM（" + info.model + "）" : "内置演示引擎（配置 API Key 后自动切换真实 LLM）"));
   // 启动已启用的 MCP 服务器（非阻塞：按服务器响应速度异步就绪，不影响主流程）
   try { mcpManager.connectAll(); } catch (e) { console.warn("[mcp] 初始化失败:", e.message); }
@@ -2154,3 +2360,8 @@ process.on("uncaughtException", (err) => logFatal("uncaughtException", err));
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+/* 桌面端在同一进程里 require 本文件（electron/main.js），托盘菜单的「退出并终止所有任务」
+   需要一个能显式收口的入口：中止各用户引擎、刷盘会话、杀终端/MCP 子进程，再退出。
+   没有它，app.quit() 只是让进程消失，落盘全凭运气。 */
+module.exports = { shutdown, getTaskBoard: () => taskBoard };

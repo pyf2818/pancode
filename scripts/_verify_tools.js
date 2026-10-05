@@ -1,5 +1,9 @@
 /* 验证 agent-llm.js 的 TOOLS 常量已定义，并被正确传入 chatStream（ReAct 循环可运行）
    通过 Module._load 覆写 ./llm ./agent-base ./config 的 require，无需真实 LLM / 文件系统。 */
+/* 沙箱数据根：本探针用 mockConfig.ROOT 当"仓库根"，trace/artifacts/memory 全都往它下面的 .pancode 写。
+   指真实仓库根的实测后果是每次跑都改一次 .pancode/artifacts/default.json 和 .pancode/memory/<ws-key>.json。 */
+const SANDBOX = require("./_sandbox").create({ tag: "tools" });
+
 const Module = require("module");
 const path = require("path");
 const fs = require("fs");
@@ -54,7 +58,7 @@ class AgentBase {
   resolveApproval() {}
 }
 
-const mockConfig = { ROOT: path.resolve(__dirname, "..") };
+const mockConfig = { ROOT: SANDBOX.dataDir };
 
 const origLoad = Module._load;
 Module._load = function (request, parent, isMain) {

@@ -72,12 +72,19 @@ module.exports = {
     // W3：scope=user 时沉淀到用户级记忆（跨项目偏好/约定，如"我惯用中文变量名"）
     const mem = (args.scope === "user" && agent.userMemory) ? agent.userMemory : agent.memory;
     const scopeTag = mem === agent.userMemory ? "（用户级，跨项目生效）" : "";
+    /* 门槛与自动沉淀同一套（#31）：正文要成句、不能是问句或"继续"这类短指令；
+       价值分从写死的 4 降到 3——4 分等于 sticky 豁免，prune() 永远跳过它，
+       模型自己说"这条重要"不该一次性换来永久免检（被再次提到时 add() 会升到 4）。 */
+    const { isJunkPhrase } = require("../memory-store");
+    const accept = (s) => {
+      const t = String(s || "").trim();
+      return t.length >= 10 && !isJunkPhrase(t) ? t.slice(0, 300) : null;
+    };
+    const put = (type, topic, v, vs) => { const t = accept(v); return t && mem.add(type, topic, t, { valueScore: vs }) ? 1 : 0; };
     let saved = 0;
-    // 价值分级：决策/教训 4 分（高），被拒反例 2 分（中）
-    const VS = { decision: 4, lesson: 4, error: 2 };
-    decisions.forEach((d) => { if (mem.add("decision", "会话决策", String(d).trim(), { valueScore: 4 })) saved++; });
-    lessons.forEach((l) => { if (mem.add("lesson", "经验教训", String(l).trim(), { valueScore: 4 })) saved++; });
-    rejected.forEach((r) => { if (mem.add("error", "被拒操作/反例", String(r).trim(), { valueScore: 2 })) saved++; });
+    decisions.forEach((d) => { saved += put("decision", "会话决策", d, 3); });
+    lessons.forEach((l) => { saved += put("lesson", "经验教训", l, 3); });
+    rejected.forEach((r) => { saved += put("error", "被拒操作/反例", r, 2); });
     let skillName = null;
     if (args.skill && args.skill.name) {
       const sk = agent.skills.add({

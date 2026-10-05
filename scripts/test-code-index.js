@@ -4,6 +4,10 @@
    3) 检索能命中相关片段
 */
 "use strict";
+/* 索引落盘位置是 `<PANCODE_DATA_DIR>/.pancode/code-index/`，不设沙箱就是往真实仓库的 .pancode 里塞分片
+   （实测：跑一次多一个 json）。必须排在 require server 之前——code-index.js 在加载时就固化了数据根。 */
+const SANDBOX = require("./_sandbox").create({ tag: "codeindex" });
+
 const assert = require("assert");
 const fs = require("fs");
 const os = require("os");

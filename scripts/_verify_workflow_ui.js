@@ -20,7 +20,44 @@
 "use strict";
 const { chromium } = require("playwright");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
+
+/* 沙箱数据根 + 沙箱工作区：**必须在拉起服务端之前**定下来。
+   晚一步，这个探针就会把测试账号写进开发者真实的 .pancode/users.json，
+   并按 TTL 清掉真实对话（实测曾在这里删掉一条 30 天未活跃的会话），
+   还会把"上一次开发者打开的那个项目"当工作区——面板对什么内容断言变得不确定。 */
+/* realpath 是为了拿"长路径名"：Windows 的 tmpdir 常是 8.3 短名（ANLAN0~1），
+   而 `git rev-parse --show-toplevel` 返回长名，GitLayer 比绝对路径时两者不等 → git 整体不启用，
+   C14/C15 会白跑成"跳过"分支。 */
+const TMPBASE = fs.realpathSync(os.tmpdir());
+const SANDBOX = fs.mkdtempSync(path.join(TMPBASE, "pc-wfui-"));
+const SDATA = path.join(SANDBOX, "data");
+const SWS = path.join(SANDBOX, "ws");
+fs.mkdirSync(SDATA, { recursive: true });
+fs.mkdirSync(SWS, { recursive: true });
+fs.writeFileSync(path.join(SWS, "index.html"), "<!doctype html><title>wfui</title>\n", "utf8");
+fs.writeFileSync(path.join(SWS, "README.md"), "# 原始内容\n", "utf8");
+/* 仓库根刻意放在**沙箱根**、工作区是它的一个子目录（ws/）：这样这一份探针顺带跑通了
+   "打开的是 monorepo 子目录"的整条 git 链路（改动面板只列这里、选择性提交只吃这里、
+   提交弹窗要说清 scope）。data/ 忽略掉，免得把数据根的运行时文件当成项目改动。
+   C14/C15 的"智能摘要/文档草稿"分支要有真实 diff 才会跑；git 不可用时那两个检查自己跳过。 */
+fs.writeFileSync(path.join(SANDBOX, ".gitignore"), "data/\n", "utf8");
+const git = spawnSync("git", ["-C", SANDBOX, "init", "-q"], { encoding: "utf8" });
+if (!git.status) {
+  const g = (...a) => spawnSync("git", ["-C", SANDBOX].concat(a), { encoding: "utf8" });
+  g("config", "user.email", "wfverify@local");
+  g("config", "user.name", "wfverify");
+  g("config", "core.autocrlf", "false");
+  g("add", "-A");
+  g("commit", "-q", "-m", "init");
+  fs.writeFileSync(path.join(SWS, "README.md"), "# 改过的内容\n\n新增一段。\n", "utf8");
+  /* C13 要"取消勾选其中一个文件"，工作区里至少得有两处改动，否则那条判据恒等于 0 个文件。 */
+  fs.writeFileSync(path.join(SWS, "notes.md"), "# 新增的另一处改动\n", "utf8");
+}
+process.env.PANCODE_DATA_DIR = SDATA;
+process.env.CURSORWEB_WORKSPACE = SWS;
 
 process.env.PORT = process.env.PORT || "8823";
 require("../server/index.js"); // 同进程拉起服务端
@@ -60,6 +97,8 @@ async function getToken() {
   const errors = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
   page.on("pageerror", (e) => errors.push("PAGEERROR: " + e.message));
+  /* 浏览器只报"Failed to load resource: ... 401"，不带是哪个接口——记不下来就没法定位。 */
+  page.on("response", (r) => { if (r.status() >= 400) errors.push("HTTP " + r.status() + " " + r.url().replace(BASE, "")); });
 
   await page.addInitScript((t) => localStorage.setItem("cw-user-token", t), token);
   await page.goto(BASE + "/", { waitUntil: "load", timeout: 30000 });
@@ -238,6 +277,9 @@ async function getToken() {
   });
   check("C9 提交弹窗可打开并加载 Git 状态（未实际提交）", cm.display !== "none",
     "display=" + cm.display + " branch=" + cm.branch + " 提交按钮=" + (cm.submitDisabled ? "禁用" : "可用"));
+  /* 工作区是仓库的子目录（沙箱故意这么摆）：弹窗必须说清"这里只含 ws/ 子目录"，
+     否则用户看到的变化列表比仓库少，会以为工具漏了文件。 */
+  check("C9b 子目录工作区的提交弹窗标出 scope", /只含 ws\//.test(cm.branch), "branch=" + cm.branch);
   await page.screenshot({ path: path.join(OUT, "commit.png") });
   console.log("shot: commit.png");
   await page.keyboard.press("Escape");
@@ -336,9 +378,10 @@ async function getToken() {
   process.exit(1);
 });
 
-/* 自清理：删除本次临时账号，避免 users.json 堆积测试数据 */
+/* 自清理：删除本次临时账号（沙箱数据根下的），并整体移走沙箱目录 */
 function cleanup() {
   try {
     if (auth.removeUser(USER)) console.log("已清理临时账号: " + USER);
   } catch (e) {}
+  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) {}
 }

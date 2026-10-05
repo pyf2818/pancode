@@ -1,16 +1,51 @@
 "use strict";
 /* 文件工具：list_files / read_file / write_file / apply_edit / delete_file / search_code */
+const path = require("path");
 const codeIndex = require("../code-index");
 const { getActiveManager } = require("../lsp-bridge");
 const { computeDiffLines, fmtDiag } = require("./util");
 
+/* 路径归属交给 root-store 判：不带 root 的相对路径就是当前工作区，与单根时代逐字一致。
+   ctx 里没有 roots（假 agent / 老路径）就退回 agent.files —— 这条改造不许打断任何既有调用。 */
+function locate(agent, args, mutation) {
+  if (!agent || !agent.roots || typeof agent.roots.resolve !== "function") {
+    const p = String((args && args.path) || "");
+    return { ok: true, store: agent.files, rel: p, root: { active: true, dir: agent.files.dir, label: "" } };
+  }
+  const res = agent.roots.resolve(args, mutation);
+  /* 碰过哪个根就记下来：下一轮装配规则层时，那个根自己的 AGENTS.md / .pancode/rules 也要进来。
+     否则跨根读了半天文件，模型看到的约定却仍然只有当前项目的——等于拿 A 的规矩办 B 的事。 */
+  if (res.ok && res.root && !res.root.active && typeof agent.noteSessionRoot === "function") {
+    agent.noteSessionRoot(res.root.id);
+  }
+  return res;
+}
+
+/* 卡片上要给人看清是哪家的文件：跨根时带上根名，避免两个项目里的同名文件看起来像同一个 */
+function showPath(args, res) {
+  const rel = res.rel || String((args && args.path) || "");
+  if (!res.root || res.root.active) return rel;
+  const who = res.root.label || path.basename(res.root.dir || "");
+  return who + ":" + rel;
+}
+
 module.exports = {
   list_files: async (agent, args) => {
-    const t = agent.tool("read", "列出文件", "workspace/");
-    const list = agent.files.list();
+    /* 不带 root = 当前工作区，行为与单根时代一字不差；带 root 时列的是那个已授权根 */
+    const res = locate(agent, { root: args && args.root, path: "." }, false);
+    if (!res.ok) {
+      const t0 = agent.tool("read", "列出被拒", String(args && args.root));
+      t0.done(false, "没有授权");
+      return "错误: " + res.error;
+    }
+    const cross = !!(res.root && !res.root.active);
+    const who = res.root.label || path.basename(res.root.dir || "");
+    const t = agent.tool("read", "列出文件", cross ? who + "/" : "workspace/");
+    const list = res.store.list();
     t.body(list.join("\n"));
     t.done(true, list.length + " 个文件");
-    return list.join("\n") || "(空工作区)";
+    if (!list.length) return cross ? "(这个授权的目录是空的)" : "(空工作区)";
+    return (cross ? "（" + who + " = " + res.root.dir + "）\n" : "") + list.join("\n");
   },
 
   read_file: async (agent, args) => {
@@ -19,9 +54,15 @@ module.exports = {
       t.done(false, "路径为空");
       return "错误: 未提供有效的文件路径（path 参数缺失或为空）。请提供要读取的文件相对路径，如 src/app.js。";
     }
-    const t = agent.tool("read", "读取文件", args.path);
+    const res = locate(agent, args, false);
+    if (!res.ok) {
+      const t = agent.tool("read", "读取被拒", args.path);
+      t.done(false, "没有授权");
+      return "错误: " + res.error;
+    }
+    const t = agent.tool("read", "读取文件", showPath(args, res));
     try {
-      const txt = agent.files.read(args.path);
+      const txt = res.store.read(res.rel);
       t.body(txt.split("\n").slice(0, 40).join("\n"));
       t.done(true, txt.split("\n").length + " 行");
       return txt;
@@ -37,39 +78,58 @@ module.exports = {
       const t = agent.tool("edit", "写入被拒", args.path); t.done(false, "内容为空", false);
       return "错误: 未提供文件内容（content 参数缺失）。如需清空文件请传空字符串。";
     }
-    const isNew = !agent.files.exists(args.path);
-    const gate = await agent._gate("write_file", { path: args.path, content: args.content }, isNew ? "high" : "medium");
+    /* 门（授权清单）先判，再谈屋里的规则（allow/deny）。 */
+    const res = locate(agent, args, true);
+    if (!res.ok) {
+      const t = agent.tool("edit", "写入被拒", args.path); t.done(false, "没有授权", false);
+      return "错误: " + res.error;
+    }
+    /* 归属定了才谈规则（阶段二-25）：跨根写走"根限定的绝对主体"过 allow 判定
+       （见 _subjectForms），所以当前项目写的 src/** 不能替另一个项目背书。 */
+    const store = res.root.active ? agent.files : res.store;
+    const foreign = !res.root.active;
+    const rel = res.rel;
+    const shown = showPath(args, res);
+    const isNew = !store.exists(rel);
+    const gate = await agent._gate("write_file", { path: args.path, content: args.content, root: args.root }, isNew ? "high" : "medium");
     if (gate.blocked) {
-      const t = agent.tool("edit", "创建被拒", args.path); t.done(false, "被拒绝规则拦截", false);
-      return "命令被拒绝规则拦截：" + args.path;
+      const t = agent.tool("edit", "创建被拒", shown); t.done(false, "被拒绝规则拦截", false);
+      return "命令被拒绝规则拦截：" + shown;
     }
     if (!gate.approved) {
-      const t = agent.tool("edit", isNew ? "创建被拒" : "编辑被拒", args.path);
+      const t = agent.tool("edit", isNew ? "创建被拒" : "编辑被拒", shown);
       t.done(false, "用户拒绝", false);
-      return "用户拒绝了" + (isNew ? "创建" : "写入") + "文件：" + args.path + (gate.reason ? "（" + gate.reason + "）" : "");
+      return "用户拒绝了" + (isNew ? "创建" : "写入") + "文件：" + shown + (gate.reason ? "（" + gate.reason + "）" : "");
     }
-    const t = agent.tool("edit", isNew ? "创建文件" : "编辑文件", args.path);
+    const t = agent.tool("edit", isNew ? "创建文件" : "编辑文件", shown);
     try {
-      const snap = agent._snapshotBefore(args.path);
-      agent._pushCheckpoint([snap], (isNew ? "创建 " : "写入 ") + args.path);
-      agent.files.write(args.path, args.content);
-      codeIndex.queueFileUpdate(agent.files.dir, args.path);
-      agent.fileChanged(args.path);
-      agent.pushChanges(false);
+      const snap = agent._snapshotBefore(rel, store);
+      agent._pushCheckpoint([snap], (isNew ? "创建 " : "写入 ") + shown);
+      store.write(rel, args.content);
+      codeIndex.queueFileUpdate(store.dir, rel);
       const st = require("../agent-base").diffStat(isNew ? "" : snap.beforeContent, args.content);
       t.body((isNew ? "(新文件)\n" : "") + args.content.split("\n").slice(0, 30).join("\n"));
       t.done(true, "+" + st.add + " −" + st.del, false);
-      agent.emit({ type: "editor.open", path: args.path });
+      if (foreign) {
+        /* 前端编辑器与改动面板按「工作区相对路径」认文件，跨根同名会撞车（改 B 的 src/a.js
+           却刷新了 A 的 src/a.js）；LSP 也只跟着当前工作区。所以跨根只给一句终端痕，
+           并把落点写在回执里，让模型知道它改的不是本项目。 */
+        agent.emit({ type: "term.line", text: "[跨根写入] " + shown + (isNew ? "（新建）" : "") + " → " + store.dir, cls: "tl-info" });
+        return "写入成功: " + shown + "（已授权目录 " + store.dir + "；不在当前工作区，编辑器与改动面板不跟踪它，/undo 可以撤销）";
+      }
+      agent.fileChanged(rel);
+      agent.pushChanges(false);
+      agent.emit({ type: "editor.open", path: rel });
       if (!isNew && snap.beforeContent != null) {
         const _diffLines = computeDiffLines(snap.beforeContent, args.content);
-        if (_diffLines.length) agent.emit({ type: "editor.diff", path: args.path, added: _diffLines });
+        if (_diffLines.length) agent.emit({ type: "editor.diff", path: rel, added: _diffLines });
       }
-      let _result = "写入成功: " + args.path;
+      let _result = "写入成功: " + rel;
       try {
         const _mgr = getActiveManager();
         if (_mgr) {
           await new Promise((r) => setTimeout(r, 400));
-          const _d = _mgr.getDiagnostics(agent.files.dir, args.path);
+          const _d = _mgr.getDiagnostics(agent.files.dir, rel);
           if (_d.scope === "file" && _d.items && _d.items.length) {
             const _errs = _d.items.filter((x) => x.severity === 1);
             const _warns = _d.items.filter((x) => x.severity === 2);
@@ -128,25 +188,41 @@ module.exports = {
       const t = agent.tool("edit", "删除被拒", String(args.path)); t.done(false, "路径为空", false);
       return "错误: 未提供有效的文件路径（path 参数缺失或为空）。";
     }
-    const gate = await agent._gate("delete_file", { path: args.path }, "high");
+    /* 先判门（授权 + 读写档位），再判屋里的规则。删除是不可逆的：_gate 里那条
+       "即使 auto 模式也强制人工确认"的守卫对跨根同样生效。 */
+    const res = locate(agent, args, true);
+    if (!res.ok) {
+      const t0 = agent.tool("edit", "删除被拒", args.path); t0.done(false, "没有授权", false);
+      return "错误: " + res.error;
+    }
+    const store = res.root.active ? agent.files : res.store;
+    const foreign = !res.root.active;
+    const rel = res.rel;
+    const shown = showPath(args, res);
+    const gate = await agent._gate("delete_file", { path: args.path, root: args.root }, "high");
     if (gate.blocked) {
-      const t = agent.tool("edit", "删除被拒", args.path); t.done(false, "被拒绝规则拦截", false);
-      return "命令被拒绝规则拦截：" + args.path;
+      const t = agent.tool("edit", "删除被拒", shown); t.done(false, "被拒绝规则拦截", false);
+      return "命令被拒绝规则拦截：" + shown;
     }
     if (!gate.approved) {
-      const t = agent.tool("edit", "删除被拒", args.path);
+      const t = agent.tool("edit", "删除被拒", shown);
       t.done(false, "用户拒绝", false);
-      return "用户拒绝了删除文件：" + args.path + (gate.reason ? "（" + gate.reason + "）" : "");
+      return "用户拒绝了删除文件：" + shown + (gate.reason ? "（" + gate.reason + "）" : "");
     }
-    const t = agent.tool("edit", "删除文件", args.path);
+    const t = agent.tool("edit", "删除文件", shown);
     try {
-      agent._pushCheckpoint([agent._snapshotBefore(args.path)], "删除 " + args.path);
-      agent.files.remove(args.path);
-      codeIndex.removeFile(agent.files.dir, args.path);
-      agent.fileChanged(args.path);
+      agent._pushCheckpoint([agent._snapshotBefore(rel, store)], "删除 " + shown);
+      store.remove(rel);
+      codeIndex.removeFile(store.dir, rel);
+      if (foreign) {
+        agent.emit({ type: "term.line", text: "[跨根删除] " + shown + " → " + store.dir, cls: "tl-warn" });
+        t.done(true, "已删除");
+        return "删除成功: " + shown + "（已授权目录 " + store.dir + "；/undo 可以恢复）";
+      }
+      agent.fileChanged(rel);
       agent.pushChanges(false);
       t.done(true, "已删除");
-      return "删除成功: " + args.path;
+      return "删除成功: " + rel;
     } catch (e) { t.done(false, "删除失败"); return "错误: " + e.message; }
   },
 

@@ -32,7 +32,10 @@ function onTraceEvent(ev, isHistory) {
   else if (ev.type === "tool.call") traceState.tools++;
   else if (ev.type === "tool.loop" || ev.type === "tool.failstreak") traceState.loops++;
   else if (ev.type === "tool.arg_err") traceState.errors++;
-  else if (ev.type === "usage" && ev.data) traceState.tokens = ev.data.total_tokens || traceState.tokens;
+  // 落盘的 jsonl 记的是「单次请求」的 usage，实时 agent.usage 记的是「本会话累计」——
+  // 两种口径喂同一个格子就会看人下菜：刚跑完显示累计、切回旧会话显示最后一包。
+  // 统一成累加：回放把每包加起来，实时那路服务端已按会话分桶，直接覆盖。
+  else if (ev.type === "usage" && ev.data) traceState.tokens += (ev.data.total_tokens || 0);
   setTraceText("traceRounds", traceState.rounds);
   setTraceText("traceTools", traceState.tools);
   setTraceText("traceLoops", traceState.loops);
@@ -55,6 +58,7 @@ function clearTrace() {
   const list = $("traceList"); if (list) list.innerHTML = "";
   setTraceText("traceRounds", "0"); setTraceText("traceTools", "0"); setTraceText("traceLoops", "0");
   setTraceText("traceErrors", "0"); setTraceText("traceTokens", "0"); setTraceText("agTraceCount", "0 事件");
+  setTraceText("traceCtx", "—");
 }
 function onUsageEvent(u) { if (!u) return; traceState.tokens = u.total_tokens || traceState.tokens; setTraceText("traceTokens", fmtTok(traceState.tokens)); }
 /* 跨会话回看：从服务端拉取某会话落盘的 trace 历史并渲染（dimmed），然后 live 事件继续追加 */

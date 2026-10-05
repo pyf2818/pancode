@@ -23,8 +23,32 @@ function decayWeight(e) {
   return vs * Math.exp(-ageDays / stability);
 }
 
+/* 一次性对话特征：疑问句、纯指令短句、招呼语。
+   这类文本既不该当记忆正文，更不该当主题名——主题名会原样出现在溯源卡上，
+   用户看到的就满屏是"启动项目""项目有没有问题"，像它把每句话都记了一遍。
+   写入端（evolution / auto memory / 主题命名）三家共用这一把尺子，别再各写一份。
+   minLen 可覆盖那条"太短即垃圾"的地板：主题名本来就该短（≤12 字的名词短语，
+   "打包降级""探针数据根"都是合法主题），只有正文才用默认 6 字地板。 */
+function isJunkPhrase(s, minLen) {
+  const t = String(s || "").trim();
+  if (!t || t.length < (minLen == null ? 6 : minLen)) return true;
+  if (/[？?]\s*$/.test(t) || /吗[。.!！~～]?\s*$/.test(t)) return true;
+  if (/^(为什么|怎么|如何|是否|能不能|可不可以|怎样|咋|哪些|哪个)/.test(t)) return true;
+  if (/(有没有|是不是|行不行|对不对|可不可以|怎么样了|可以吗|在哪)/.test(t)) return true;
+  if (/^(继续|你好|启动项目|测试一下|开始吧|好的|嗯|行|再来|重来|停|提交)$/i.test(t)) return true;
+  return false;
+}
+
 /* 未访问过的非 sticky 条目按类型 TTL（天）：错误易过时，偏好较持久 */
 const TYPE_TTL = { error: 60, preference: 180, lesson: 90, pattern: 90, decision: 90, skill: 90 };
+/* 注入侧的三道降噪闸（#31）：强度地板、同主题限量、两条道各自的上限。
+   地板从 1 提到 1.5 是配合写入端"自动沉淀一律给 3 分"一起设计的：
+   新写入的记忆要活到 3 分被反复确认过才会长期占上下文，一次性闲聊会自己滑出去。 */
+const CTX_MIN_STRENGTH = 1.5;
+const CTX_MAX_PER_TOPIC = 2;
+const CTX_STABLE_MAX = 6;
+const CTX_RELEVANT_MAX = 6;
+const CTX_MAX = 10;                 // 两条道合起来的总上限（与旧口径一致，注入量必须有界）
 /* 高价值 / 归纳产物 / 显式 sticky 条目豁免主动裁剪（仍会被 200 上限挤出） */
 function isSticky(e) { return e.sticky === true || e.source === "consolidate" || (e.valueScore || 0) >= 4; }
 
@@ -82,6 +106,21 @@ class MemoryStore {
     e.lastAccessAt = Date.now();
     this._save();
     return true;
+  }
+
+  /* 批量复习：一次任务注入十来条，逐条 touch 就是逐条全量重写 JSON（N 次落盘）。
+     合成一次：省 IO，且同一轮的复习时间戳一致，溯源卡上才看得出"这批是一起进的"。 */
+  touchMany(ids) {
+    let n = 0;
+    for (const id of ids || []) {
+      const e = this._entries.find((x) => x.id === id);
+      if (!e) continue;
+      e.accessCount = (e.accessCount || 0) + 1;
+      e.lastAccessAt = Date.now();
+      n++;
+    }
+    if (n) this._save();
+    return n;
   }
 
   /* ---------- 写入 ---------- */
@@ -277,36 +316,102 @@ class MemoryStore {
     this._save();
   }
 
-  /* ---------- 格式化输出（注入到 LLM 上下文） ----------
-     按有效强度取 top 10 而非"最近 20 条"：低价值/已遗忘的条目不再注入，
-     且行首标注价值档（高/中），让 LLM 能分级对待，缓解"记忆模糊"。 */
-  formatForContext(maxChars) {
-    maxChars = maxChars || 1500;
-    // 排除归档条目；按强度排序取前 10，强度 < 1 的直接不注入（与 topForContext 同口径）
-    const top = this.topForContext(10).map((e) => ({ e, w: decayWeight(e) }));
-    if (!top.length) return "";
-    const lines = top.map(({ e, w }) => {
+  /* ---------- 注入（#31：按质量与相关性选，而不是凑满 10 条） ----------
+     记忆最容易自伤的地方是"越存越像噪音"：旧实现只看遗忘曲线强度、且固定取满 10 条，
+     于是同一主题连着三条一起进榜、跟本轮问题八竿子不着的高强度条目也进榜，
+     用户读到的就是"它记了一堆我当初随口说的话"。
+
+     现在分两条道：
+       · stable（无条件在场）= 用户偏好/禁忌 + 归纳产物 + 显式 sticky。
+         这些与"本轮问什么"无关，字节稳定，才谈得上命中提示词前缀缓存。
+       · relevant（看本轮输入才在场）= lesson/pattern/decision/error，
+         必须与用户本轮原话有词元交集，否则一个字都不进上下文。
+     两条道各自再加：强度地板（低于它宁可不注入）与同主题限量（防霸榜）。 */
+  _isStableEntry(e) {
+    return e.type === "preference" || e.source === "consolidate" || e.source === "sediment" || e.sticky === true;
+  }
+
+  _ctxCandidates(userText) {
+    const q = userText ? this._tokenizeText(userText) : null;
+    const out = [];
+    for (const e of this._entries) {
+      if (e.archived) continue;
+      const w = decayWeight(e);
+      if (w < CTX_MIN_STRENGTH) continue;
+      const stable = this._isStableEntry(e);
+      let rel = 1;
+      if (q && !stable) {
+        rel = this._jaccard(q, this._tokenizeText(e.topic + " " + e.content));
+        if (rel <= 0) continue;        // 本轮问的与它毫无交集 → 不占上下文
+      }
+      out.push({ e, w, rel, stable });
+    }
+    return out;
+  }
+
+  /* 排序：强度 ×（1 + 相关性权重），稳定条目略优先；同主题最多 CTX_MAX_PER_TOPIC 条 */
+  _ctxPick(cands, n) {
+    const list = cands.slice().sort((a, b) =>
+      (b.w * (1 + b.rel * 2) + (b.stable ? 0.5 : 0)) - (a.w * (1 + a.rel * 2) + (a.stable ? 0.5 : 0)));
+    const perTopic = new Map();
+    const out = [];
+    for (const x of list) {
+      const key = x.e.topic || "(无主题)";
+      if ((perTopic.get(key) || 0) >= CTX_MAX_PER_TOPIC) continue;
+      perTopic.set(key, (perTopic.get(key) || 0) + 1);
+      out.push(x.e);
+      if (out.length >= n) break;
+    }
+    return out;
+  }
+
+  stableForContext(n) {
+    return this._ctxPick(this._ctxCandidates("").filter((x) => x.stable), n || CTX_STABLE_MAX);
+  }
+
+  relevantForContext(userText, n) {
+    if (!userText) return [];
+    return this._ctxPick(this._ctxCandidates(userText).filter((x) => !x.stable), n || CTX_RELEVANT_MAX);
+  }
+
+  _formatLines(entries, maxChars) {
+    if (!entries.length) return "";
+    const lines = entries.map((e) => {
+      const w = decayWeight(e);
       const tier = w >= 4 ? "高" : "中";
       const age = Math.floor((Date.now() - (e.lastAccessAt || e.ts)) / (1000 * 60 * 60 * 24));
       const ageStr = age === 0 ? "今天" : age + "天前";
       return "- (" + tier + ") [" + e.type + "] " + (e.topic ? e.topic + "：" : "") + e.content.slice(0, 160) + " (" + ageStr + ")";
     });
     let out = lines.join("\n");
-    if (out.length > maxChars) out = out.slice(0, maxChars) + "\n...";
+    if (maxChars && out.length > maxChars) out = out.slice(0, maxChars) + "\n...";
     return out;
   }
 
-  /* 供注入端去重：返回 formatForContext 实际会注入的条目集合（与 formatForContext 同口径：
-     非归档 + 强度≥1 + 按强度 top 10）。相关记忆检索块用本方法排除已注入条目，避免重复稀释。 */
-  topForContext(n) {
-    n = n || 10;
-    return this._entries
-      .filter((e) => !e.archived)
-      .map((e) => ({ e, w: decayWeight(e) }))
-      .filter((x) => x.w >= 1)
-      .sort((a, b) => b.w - a.w)
-      .slice(0, n)
-      .map((x) => x.e);
+  /* 稳定道文本（进提示词的可缓存区） */
+  formatStable(maxChars) {
+    return this._formatLines(this.stableForContext(), maxChars || 1500);
+  }
+
+  /* 相关道文本（进提示词的每轮变化区） */
+  formatRelevant(userText, maxChars) {
+    return this._formatLines(this.relevantForContext(userText), maxChars || 1500);
+  }
+
+  /* ---------- 格式化输出（注入到 LLM 上下文） ----------
+     兼容口：两条道合在一起的文本（旧的调用方 / 面板预览用）。
+     注入路径已改为分别取 formatStable / formatRelevant，以便稳定道字节不随本轮输入抖动。 */
+  formatForContext(maxChars, userText) {
+    maxChars = maxChars || 1500;
+    return this._formatLines(this.topForContext(CTX_MAX, userText), maxChars);
+  }
+
+  /* 供注入端去重：返回本次会进上下文的条目集合（与 format* 同口径）。
+     相关记忆检索块用本方法排除已注入条目，避免重复稀释。 */
+  topForContext(n, userText) {
+    const stable = this._ctxCandidates("").filter((x) => x.stable);
+    const rel = this._ctxCandidates(userText).filter((x) => !x.stable);
+    return this._ctxPick(stable.concat(rel), n || CTX_MAX);
   }
 
   get size() { return this._entries.length; }
@@ -341,4 +446,4 @@ class MemoryStore {
   }
 }
 
-module.exports = { MemoryStore, TYPES, decayWeight, isSticky };
+module.exports = { MemoryStore, TYPES, decayWeight, isSticky, isJunkPhrase };
