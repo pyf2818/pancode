@@ -972,43 +972,88 @@ const MD_CSS =
 let previewTimer = null;
 function isPreviewable(p) { return PREVIEW_EXTS.has(extOf(p)); }
 
+/* 预览用的 Markdown 渲染器。
+   ⚠ 段落分支必须至少吃掉一行（下面写成 do…while）：旧版是 while + 一个"块起始"停止条件，
+   而那个条件比上面的分支表宽——`#标题`（井号后没空格）、`#`、`-- 不是分隔线` 这类行
+   既不被任何分支接住，也不被段落吃掉，于是 i 永远不前进：整个渲染进程死循环，
+   srcdoc 根本没机会赋值。用户看到的"预览面板一片空白、界面点不动"就是这个。
+   语义按 CommonMark/GFM：井号后没空格就是普通文本，不猜它是标题。 */
+const MD_HEAD = /^(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
+const MD_FENCE = /^```/;
+const MD_HR = /^(?:-{3,}|\*{3,}|_{3,})$/;
+const MD_QUOTE = /^>[ \t]?(.*)$/;
+const MD_UL = /^[ \t]*[-*+][ \t]+(.*)$/;
+const MD_OL = /^[ \t]*\d+[.)][ \t]+(.*)$/;
+const MD_TDEL = /^:?-{1,}:?$/;
+function mdIsBlockStart(ln) {
+  return MD_FENCE.test(ln) || MD_HEAD.test(ln) || MD_HR.test(ln.trim()) ||
+    MD_QUOTE.test(ln) || MD_UL.test(ln) || MD_OL.test(ln);
+}
+/* GFM 表格行：去掉首尾竖线再切格 */
+function mdCells(ln) {
+  let s = ln.trim();
+  if (s[0] === "|") s = s.slice(1);
+  if (s[s.length - 1] === "|") s = s.slice(0, -1);
+  return s.split("|").map((c) => c.trim());
+}
+function mdIsDelim(ln) {
+  const c = mdCells(ln);
+  return c.length > 0 && ln.includes("-") && c.every((x) => MD_TDEL.test(x));
+}
+function mdAlign(cell) {
+  const l = cell[0] === ":", r = cell[cell.length - 1] === ":";
+  return l && r ? "center" : r ? "right" : "left";
+}
 function renderMarkdown(src) {
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const lines = src.replace(/\r\n/g, "\n").split("\n");
-  const inline = (t) => esc(t)
-    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-    .replace(/\*([^*]+)\*/g, "<i>$1</i>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  /* 行内代码要先摘出来存好：不这么做，`a*b*c` 里的星号会被后面的强调规则二次加工成 <i>。 */
+  const inline = (t) => {
+    const kept = [];
+    let s = esc(t).replace(/`([^`]+)`/g, (m, c) => { kept.push("<code>" + c + "</code>"); return "\u0000" + (kept.length - 1) + "\u0000"; });
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    return s.replace(/\u0000(\d+)\u0000/g, (m, k) => kept[+k]);
+  };
+  const lines = String(src == null ? "" : src).replace(/\r\n/g, "\n").split("\n");
   const out = []; let i = 0;
   while (i < lines.length) {
     const ln = lines[i];
-    if (/^```/.test(ln)) {
+    if (ln.trim() === "") { i++; continue; }
+    if (MD_FENCE.test(ln)) {
       const buf = []; i++;
-      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
-      i++; out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>"); continue;
+      while (i < lines.length && !MD_FENCE.test(lines[i])) { buf.push(lines[i]); i++; }
+      if (i < lines.length) i++;
+      out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>"); continue;
     }
-    if (/^###### /.test(ln)) { out.push("<h6>" + inline(ln.slice(7)) + "</h6>"); i++; continue; }
-    if (/^##### /.test(ln)) { out.push("<h5>" + inline(ln.slice(6)) + "</h5>"); i++; continue; }
-    if (/^#### /.test(ln)) { out.push("<h4>" + inline(ln.slice(5)) + "</h4>"); i++; continue; }
-    if (/^### /.test(ln)) { out.push("<h3>" + inline(ln.slice(4)) + "</h3>"); i++; continue; }
-    if (/^## /.test(ln)) { out.push("<h2>" + inline(ln.slice(3)) + "</h2>"); i++; continue; }
-    if (/^# /.test(ln)) { out.push("<h1>" + inline(ln.slice(2)) + "</h1>"); i++; continue; }
-    if (/^---+$/.test(ln)) { out.push("<hr>"); i++; continue; }
-    if (/^&gt; |^> /.test(ln)) {
+    const h = ln.match(MD_HEAD);
+    if (h) { const lv = h[1].length; out.push("<h" + lv + ">" + inline(h[2] || "") + "</h" + lv + ">"); i++; continue; }
+    if (MD_HR.test(ln.trim())) { out.push("<hr>"); i++; continue; }
+    if (MD_QUOTE.test(ln)) {
       const q = [];
-      while (i < lines.length && /^&gt; |^> /.test(lines[i])) { q.push(lines[i].replace(/^&gt; |^> /, "")); i++; }
+      while (i < lines.length && MD_QUOTE.test(lines[i])) { q.push(lines[i].match(MD_QUOTE)[1]); i++; }
       out.push("<blockquote>" + inline(q.join("\n")).replace(/\n/g, "<br>") + "</blockquote>"); continue;
     }
-    if (/^(-|\*|\d+\.)\s/.test(ln)) {
-      const ord = /^\d+\./.test(ln); const items = [];
-      while (i < lines.length && /^(-|\*|\d+\.)\s/.test(lines[i])) { items.push("<li>" + inline(lines[i].replace(/^(-|\*|\d+\.)\s/, "")) + "</li>"); i++; }
-      out.push("<" + (ord ? "ol" : "ul") + ">" + items.join("") + "</" + (ord ? "ol" : "ul") + ">");
+    if (MD_UL.test(ln) || MD_OL.test(ln)) {
+      const ord = MD_OL.test(ln); const re = ord ? MD_OL : MD_UL; const items = [];
+      while (i < lines.length && re.test(lines[i])) { items.push("<li>" + inline(lines[i].match(re)[1]) + "</li>"); i++; }
+      out.push("<" + (ord ? "ol" : "ul") + ">" + items.join("") + "</" + (ord ? "ol" : "ul") + ">"); continue;
+    }
+    if (ln.includes("|") && i + 1 < lines.length && mdIsDelim(lines[i + 1])) {
+      const head = mdCells(ln);
+      const al = mdCells(lines[i + 1]).map(mdAlign);
+      i += 2;
+      const body = [];
+      while (i < lines.length && lines[i].trim() !== "" && lines[i].includes("|")) { body.push(mdCells(lines[i])); i++; }
+      const th = head.map((c, k) => '<th style="text-align:' + (al[k] || "left") + '">' + inline(c) + "</th>").join("");
+      const td = body.map((r) => "<tr>" + head.map((_, k) =>
+        '<td style="text-align:' + (al[k] || "left") + '">' + inline(r[k] || "") + "</td>").join("") + "</tr>").join("");
+      out.push("<table><thead><tr>" + th + "</tr></thead>" + (td ? "<tbody>" + td + "</tbody>" : "") + "</table>");
       continue;
     }
-    if (ln.trim() === "") { i++; continue; }
     const para = [];
-    while (i < lines.length && lines[i].trim() !== "" && !/^(#|##|###|####|#####|######|```|&gt;|> |--+|[-*]\s|\d+\.\s)/.test(lines[i])) { para.push(lines[i]); i++; }
+    do { para.push(lines[i]); i++; }
+    while (i < lines.length && lines[i].trim() !== "" && !mdIsBlockStart(lines[i]));
     out.push("<p>" + inline(para.join("\n")).replace(/\n/g, "<br>") + "</p>");
   }
   return out.join("\n");
@@ -1956,10 +2001,19 @@ function addMsgCopyBtn(el, text) {
   el.appendChild(btn);
 }
 
-function addUserMsg(text) {
+function addUserMsg(text, skill) {
   const el = document.createElement("div");
   el.className = "msg msg-user";
   el.textContent = text;
+  /* 这一轮用了哪个 Skill：只在气泡上方挂一枚标记，正文不进消息。
+     用户诉求是"用技能不需要在输入框输入或展示内容"——技能是能力，不是要发出去的话。 */
+  if (skill) {
+    const chip = document.createElement("span");
+    chip.className = "msg-skill";
+    chip.textContent = "✦ " + skill;
+    chip.title = "本轮采用 Skill：" + skill + "（正文已随上下文交给 Agent）";
+    el.insertBefore(chip, el.firstChild);
+  }
   addMsgCopyBtn(el, text);
   chatPane().appendChild(el); scrollChat(true);
 }
@@ -2256,7 +2310,7 @@ function handleEventInner(ev) {
       const sep = document.createElement("div");
       sep.className = "run-sep";
       chatPane().appendChild(sep);
-      addUserMsg(ev.text);
+      addUserMsg(ev.text, ev.skill);
       break;
     }
     case "op.error": termLine('<span class="tl-err">[操作失败] ' + esc(ev.userHint || ev.error) + "</span>"); break;
@@ -2823,16 +2877,26 @@ function wireEnvPanel() {
 
 /* 记忆溯源卡（pancode 原创）：长期记忆最容易自欺欺人——存了几百条，没人知道这次到底用上了哪几条。 */
 function renderRecallCard(ev) {
-  const list = (ev.entries || []).filter((e) => e && (e.topic || e.type));
+  const list = (ev.entries || []).filter((e) => e && (e.topic || e.content || e.type));
   if (!list.length) return;
   const el = document.createElement("div");
   el.className = "recall-card";
-  const rows = list.map((e) =>
-    '<div class="rc-row"><span class="rc-scope ' + (e.scope === "user" ? "user" : "proj") + '">' + (e.scope === "user" ? "跨项目" : "本项目") + "</span>" +
-    '<span class="rc-topic">' + esc(e.topic || e.type) + "</span>" +
-    '<span class="rc-tag">' + esc(e.type || "") + "</span>" +
-    '<span class="rc-meta">价值 ' + (e.valueScore >= 4 ? "高" : e.valueScore >= 3 ? "中" : "低") + " · 已用上 " + (e.accessCount || 0) + " 次</span></div>"
-  ).join("");
+  const rows = list.map((e) => {
+    const c = (e.content || "").trim();
+    const t = (e.topic || "").trim();
+    // 旧条目的 topic 多是当年拿用户原话切片落盘的（#31 遗留），与正文开头重复时不再显示，
+    // 回显卡以正文内容为主，免得满屏"用户说过的话"显得记忆没价值
+    const dup = t && c && c.replace(/\s+/g, "").startsWith(t.replace(/\s+/g, ""));
+    return '<div class="rc-row">' +
+      '<div class="rc-line">' +
+        '<span class="rc-scope ' + (e.scope === "user" ? "user" : "proj") + '">' + (e.scope === "user" ? "跨项目" : "本项目") + "</span>" +
+        (t && !dup ? '<span class="rc-topic">' + esc(t) + "</span>" : "") +
+        '<span class="rc-tag">' + esc(e.type || "") + "</span>" +
+        '<span class="rc-meta">价值 ' + (e.valueScore >= 4 ? "高" : e.valueScore >= 3 ? "中" : "低") + " · 已用上 " + (e.accessCount || 0) + " 次</span>" +
+      "</div>" +
+      (c ? '<div class="rc-content">' + esc(c) + "</div>" : "") +
+    "</div>";
+  }).join("");
   el.innerHTML =
     '<div class="rc-head">' + ico("memory") +
       '<span class="rc-title">本次任务读进了 ' + list.length + " 条长期记忆</span>" +
@@ -3044,11 +3108,26 @@ async function renderOrchHistory() {
       const d = new Date(h.ts);
       const meta = (d.getMonth() + 1) + "/" + d.getDate() + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
       const c = h.counts || {};
+      /* 每条历史直接摊开子任务：派了什么活（task）+ 跑出什么（output 摘要）。
+         以前这里只有标题和成败计数，用户看不出编排到底分发了什么——
+         结果全文点开回放仍能看（每步 1500 字）。 */
+      const stepRows = (h.steps || []).slice(0, 4).map((s) => {
+        const st = s.status === "done" ? "done" : s.status === "fail" ? "fail" : "run";
+        return '<div class="ag-orch-step ' + st + '">' +
+          '<span class="ag-orch-step-name">' + esc(s.name || s.id) + "</span>" +
+          (s.elapsed ? '<span class="ag-orch-step-t">' + (+s.elapsed).toFixed(1) + "s</span>" : "") +
+          (s.task ? '<span class="ag-orch-step-task">' + esc(s.task.slice(0, 70)) + "</span>" : "") +
+          (s.output ? '<span class="ag-orch-step-out">' + esc(s.output.slice(0, 90)) + "</span>" : "") +
+          "</div>";
+      }).join("");
+      const more = (h.steps || []).length > 4
+        ? '<div class="ag-orch-more">…共 ' + (h.steps || []).length + " 步，点开看全文</div>" : "";
       el.innerHTML = '<div class="ag-orch-item-head">' +
         '<span class="ag-orch-item-badge ' + (h.ok ? "ok" : "fail") + '">' + (h.ok ? "✓" : "✗") + '</span>' +
         '<span class="ag-orch-item-title">' + esc((h.title || "编排").slice(0, 40)) + '</span></div>' +
         '<div class="ag-orch-item-meta">' + meta + (h.elapsed ? " · " + h.elapsed + "s" : "") +
-        " · " + (c.total || 0) + " 步" + (c.fail ? '<b class="ag-orch-fail"> · ' + c.fail + " 失败</b>" : "") + "</div>";
+        " · " + (c.total || 0) + " 步" + (c.fail ? '<b class="ag-orch-fail"> · ' + c.fail + " 失败</b>" : "") + "</div>" +
+        '<div class="ag-orch-steps">' + stepRows + "</div>" + more;
       el.onclick = () => replayOrchRun(h.id, h.title);
       host.appendChild(el);
     });
@@ -3262,7 +3341,8 @@ function bindInput() {
   let atMenu = null;
   const doSend = () => {
     const v = ta.value.trim();
-    if (!v && !pendingAttach.length) return;
+    const skillId = activeSkill ? activeSkill.id : "";
+    if (!v && !pendingAttach.length && !skillId) return;
 
     ta.value = "";
     // 记录到当前会话的发送历史，供 ↑/↓ 浏览回填
@@ -3272,13 +3352,12 @@ function bindInput() {
     histNav = -1;
     const attachments = pendingAttach.splice(0, pendingAttach.length).map((a) => ({ src: a.src, name: a.name }));
     renderChips();
-    let text = v || "（请分析所附图片）";
-    if (activeSkill) {
-      text = "[引用 Skill: " + activeSkill.name + "]\n" + (activeSkill.description || "") + "\n\n" + activeSkill.body + "\n\n---\n\n" + text;
-      fetch("/api/skills/market/" + activeSkill.id + "/use", { method: "POST" }).catch(() => {});
-    }
+    /* Skill 走 skillId 单独发出去，正文由服务端注入到模型看到的上下文里。
+       旧写法是把整份 body 前置拼进这条消息：气泡里糊一大段模板、每轮都重复占上下文，
+       而且"用技能"必须靠输入框里有字才成立。 */
+    const text = v || (attachments.length ? "（请分析所附图片）" : "");
     // 多会话并行：直接发送，不再排队
-    lastUserText = text; send({ type: "chat", text, attachments, convId });
+    lastUserText = text; send({ type: "chat", text, attachments, convId, skillId });
     if (attachments.length) termLine('<span class="tl-info">[附件] 已随消息发送 ' + attachments.length + " 张图片</span>");
   };
   window._doSend = doSend;   // 暴露全局引用供 setRunning / openConv 使用

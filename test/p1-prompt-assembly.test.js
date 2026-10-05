@@ -364,3 +364,56 @@ describe("会话落盘裁剪（CONV_MAX_MSGS 回归）", () => {
     expect(fs.existsSync(a._convPath)).toBe(false);
   });
 });
+
+describe("记忆溯源台账：content 必须随台账走（回显卡要能看到记了什么）", () => {
+  const entry = (id, scope, extra) => Object.assign(
+    { id, type: "lesson", topic: "主题" + id, content: "经验正文" + id, valueScore: 3, accessCount: 1 },
+    extra || {});
+  const memStubs = (projectEntries, userEntries) => ({
+    memory: {
+      formatStable: () => "stable 注入文本",
+      formatRelevant: () => "relevant 注入文本",
+      stableForContext: () => projectEntries.filter((e) => e._stable),
+      relevantForContext: () => projectEntries.filter((e) => !e._stable),
+      list: () => [],
+      _tokenizeText: () => new Set(),
+    },
+    userMemory: {
+      formatStable: () => "用户级 stable 注入文本",
+      stableForContext: () => userEntries.filter((e) => e._stable),
+      relevantForContext: () => userEntries.filter((e) => !e._stable),
+      list: () => [],
+      _tokenizeText: () => new Set(),
+    },
+  });
+
+  it("台账条目带 content 摘要（≤120 字、压平空白），前端回显卡才有正文可显", () => {
+    // 用户级记忆只有稳定道（buildAugmentParts 不给 userMemory 走 relevant）
+    const proj = [
+      entry("p1", "project", { content: "  a\n\n  b   c  " + "x".repeat(130), _stable: true }),
+      entry("p2", "project", { _stable: false }),
+    ];
+    const user = [entry("u1", "user", { _stable: true })];
+    const a = makeAgent({ memory: { enabled: true } }, memStubs(proj, user));
+    a.buildAugmentParts("问题");
+    const used = a._usedMemory;
+    expect(used.length).toBe(3);
+    for (const u of used) {
+      expect(typeof u.content).toBe("string");
+      expect(u.content.length).toBeGreaterThan(0);
+      expect(u.content).not.toMatch(/\n/);
+      expect(u.content.length).toBeLessThanOrEqual(120);
+    }
+    // scope 传递不破：用户级仍是 user，且注入文本本身不受影响
+    expect(used.filter((u) => u.scope === "user").map((u) => u.id)).toEqual(["u1"]);
+    expect(used.find((u) => u.id === "u1").content).toBe("经验正文u1");
+  });
+
+  it("条目没有 content 时不炸，content 为空串", () => {
+    const proj = [entry("p2", "project", { content: undefined, _stable: true })];
+    const a = makeAgent({ memory: { enabled: true } }, memStubs(proj, []));
+    a.buildAugmentParts("问题");
+    expect(a._usedMemory.length).toBe(1);
+    expect(a._usedMemory[0].content).toBe("");
+  });
+});

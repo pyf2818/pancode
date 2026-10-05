@@ -21,15 +21,18 @@
      ## 验证
      npm test && npm run build
 
-   三种存储:
-     1. 市场 Skills  -> .pancode/skills/market/*.md  (用户创建/导入)
-     2. 工作区 Skills -> .pancode/skills/{wsHash}.json (Agent 沉淀)
-     3. 内置 Workflow -> 代码内置
+   四种存储:
+     1. 市场 Skills  -> .pancode/skills/market/*.md  (用户创建/导入，可写)
+     2. 工作区 Skills -> .pancode/skills/{wsHash}.json (Agent 沉淀，可写)
+     3. 用户级 Skills -> ~/.pancode/skills/*.md      (跨项目，可写；同名时项目级覆盖它)
+     4. 内置         -> 代码里的 BUILTIN_WORKFLOWS + 安装包随附的 builtin-skills/*.md（只读）
 
-   使用方式:
-     1. 输入框上方 @skill 选择器 -> 引用到对话
-     2. 自动匹配 - Agent 分析意图后注入上下文
-     3. /skill <名称> - 在对话中直接触发
+   使用方式（对齐 Claude Agent Skills 的渐进式披露）:
+     1. 目录先行：每轮只把命中技能的「名字 + 一句话描述 + 触发词」注入 system，正文不占 token
+     2. 正文按需：Agent 决定要用时调 use_skill(name) 取回完整步骤
+     3. 用户显式选用：输入框上方那枚 Skill chip —— 发送时带 skillId，
+        服务端把正文注入这一轮的模型上下文，消息文本与输入框都不掺技能内容
+     4. 改内置项 = forkBuiltin 另存一份我的副本（内置那份随安装包走，改了会被升级覆盖）
    ============================================================ */
 "use strict";
 const fs = require("fs");
@@ -331,6 +334,32 @@ class SkillStore {
     return skill;
   }
 
+  /* 内置池（代码里的 BUILTIN_WORKFLOWS + 安装包随附的 builtin-skills/*.md）按 id 取。
+     以前只有 builtinWorkflows 这个 getter 认得它们，getById / update 都看不见，
+     于是"改一条内置技能"必然 404，而详情弹窗的保存按钮对内置项照样发 PUT。 */
+  _builtinById(id) {
+    if (!id) return null;
+    return this.builtinWorkflows.find((s) => s.id === id) || null;
+  }
+  isBuiltin(id) { return !!this._builtinById(id); }
+
+  /* 改内置技能 = 另存一份"我的副本"：内置那份随安装包走，就地改了下次升级就被覆盖，
+     所以不能真改；但也不能像以前那样回一句"Skill 不存在"——用户明明在编辑器里改完了。
+     同名副本已存在时更新那条，免得每改一次就多一条重名技能。 */
+  forkBuiltin(id, patch) {
+    const src = this._builtinById(id);
+    if (!src) return null;
+    const wanted = Object.assign({}, src, patch || {}, { source: "manual" });
+    delete wanted.id;
+    delete wanted.disabled;
+    const dup = this._marketSkills.find((s) => s.name === wanted.name && !s.deprecated)
+      || this._userSkills.find((s) => s.name === wanted.name && !s.deprecated);
+    if (dup) return this.update(dup.id, patch || {});
+    const added = this.add(wanted, "manual");
+    if (added && added._duplicate) return this.update(added.id, patch || {}) || added;
+    return added;
+  }
+
   remove(id) {
     let idx = this._marketSkills.findIndex((s) => s.id === id);
     if (idx !== -1) { this._marketSkills.splice(idx, 1); this._saveMarket(); return true; }
@@ -341,7 +370,12 @@ class SkillStore {
     return false;
   }
 
-  getById(id) { return this._marketSkills.find((s) => s.id === id) || this._localSkills.find((s) => s.id === id) || this._userSkills.find((s) => s.id === id) || null; }
+  /* 读路径要认得内置项：详情正文、导出、按 id 取都走这里。
+     内置那份是只读视图（builtinWorkflows 给的是拷贝），改它不会落盘——改内置请走 forkBuiltin。 */
+  getById(id) {
+    return this._marketSkills.find((s) => s.id === id) || this._localSkills.find((s) => s.id === id)
+      || this._userSkills.find((s) => s.id === id) || this._builtinById(id) || null;
+  }
 
   list(opts) {
     opts = opts || {};
@@ -381,7 +415,10 @@ class SkillStore {
   }
 
   findByName(name) {
-    const q = name.toLowerCase().trim();
+    const q = String(name == null ? "" : name).toLowerCase().trim();
+    /* 空串对任何 name 都 includes("")===true，以前 findByName("") 会返回池里第一条——
+       详情弹窗按 id 查不到时兜底调它，于是内置技能的正文显示成了别人的正文，还不报错。 */
+    if (!q) return null;
     const all = [...this._marketSkills, ...this._mergedUserSkills(), ...this._localSkills, ...BUILTIN_WORKFLOWS, ...this._builtinSkills];
     return all.find((s) => s.name.toLowerCase() === q) || all.find((s) => s.name.toLowerCase().includes(q)) || null;
   }

@@ -295,6 +295,19 @@ function wbRenderGeneral(box) {
         .catch(() => wbSaved("保存失败", true));
     }, "close 关闭 退出 后台 托盘 tray 窗口 desktop 驻留"));
     box.appendChild(gd);
+
+    /* GPU 策略与 main.js 启动期那份判定同源（electron/main.js gpuPref）：
+       默认开（交给 Chromium 自检）；无 GPU 环境选 off 才回到旧的全禁四连。重启生效——
+       Chromium 的 GPU 开关是启动期一次性决定，运行时改不回来，所以文案里明说。 */
+    const gp = wbGroup("性能", "默认使用硬件加速（显卡合成动画与模糊，切换更顺滑）。虚拟机 / 远程桌面里若界面异常或崩溃，切到软件渲染。");
+    gp.appendChild(wbSeg("硬件加速", "改动重启应用后生效", [
+      { v: "on", t: "硬件加速" }, { v: "off", t: "软件渲染" },
+    ], (c.desktop && c.desktop.gpu) || "on", (v) => {
+      Promise.resolve(wbSave("desktop", { gpu: v }))
+        .then(() => wbSaved("已保存，重启应用后生效"))
+        .catch(() => wbSaved("保存失败", true));
+    }, "gpu 硬件加速 显卡 软件渲染 卡顿 性能 闪烁 崩溃"));
+    box.appendChild(gp);
   }
 
   const g2 = wbGroup("工作区", "当前工作区会自动出现在「权限与安全 · 授权目录」里；Agent 能进哪几扇门全部由那份清单说了算。");

@@ -109,7 +109,11 @@ function showSkillDetail(skill) {
   body += "<label style=\"display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px\">内容（Markdown）</label>";
   body += "<textarea id=\"sdBody\" rows=\"10\" style=\"width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:12px;line-height:1.6;font-family:var(--mono);resize:vertical;outline:none\">" + esc(skill.body || "") + "</textarea>";
   body += "<div style=\"display:flex;gap:8px;margin-top:12px;justify-content:flex-end\">";
-  body += "<button id=\"skillDetailSave\" class=\"set-btn\" style=\"background:var(--ok);color:#000\">保存修改</button>";
+  /* 内置项随安装包走，就地改了下次升级就被覆盖——所以按钮说的是"另存"，不是"保存"。
+     以前这里对所有技能都写「保存修改」，而 PUT 打到内置 id 上必然 404「Skill 不存在」，
+     用户看到的就是"改完保存说不存在"。 */
+  const builtinEdit = skill.source === "workflow" || /^wf_|^builtin_/.test(skill.id || "");
+  body += "<button id=\"skillDetailSave\" class=\"set-btn\" style=\"background:var(--ok);color:#000\">" + (builtinEdit ? "另存为我的技能" : "保存修改") + "</button>";
   body += "<button id=\"skillDetailRef\" class=\"set-btn\" style=\"background:var(--accent);color:#fff\">引用到对话</button>";
   body += "</div>";
   $("skillDetailBody").innerHTML = body;
@@ -124,23 +128,23 @@ function showSkillDetail(skill) {
       category: skill.category || "other",
     };
     try {
-      let r;
-      if (skill.id) {
-        // 已有 Skill -> 更新
-        r = await fetch("/api/skills/market/" + skill.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then((x) => x.json());
-      } else {
-        // 内置 Workflow 没有 id -> 创建为新 Skill
-        r = await fetch("/api/skills/market", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then((x) => x.json());
-      }
-      if (r.ok) { toast("Skill 已保存"); modal.style.display = "none"; loadSkills(); }
-      else toast("保存失败: " + r.error);
+      const url = skill.id ? "/api/skills/market/" + encodeURIComponent(skill.id) : "/api/skills/market";
+      const r = await fetch(url, {
+        method: skill.id ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+      }).then((x) => x.json());
+      if (r.ok) {
+        toast(r.forked ? "已另存为我的技能（内置那份没动，改的是副本）" : "Skill 已保存");
+        if (r.forked && activeSkill && activeSkill.id === skill.id) activeSkill = r.skill;
+        modal.style.display = "none"; loadSkills();
+      } else toast("保存失败: " + r.error);
     } catch (e) { toast("请求异常: " + e.message); }
   };
   modal.style.display = "flex";
 }
 
 function insertSkillToChat(skill) {
-  // 设置 activeSkill，发送时自动注入
+  // 只记住"这一局用哪个技能"，正文由服务端在发送时注入上下文
   activeSkill = skill;
   const tag = inputBox.querySelector("#ciSkillActive");
   if (tag) {
@@ -152,8 +156,7 @@ function insertSkillToChat(skill) {
   // 关闭弹出框
   const pop = inputBox.querySelector("#ciSkillPop");
   if (pop) pop.style.display = "none";
-  toast("已引用 Skill：" + skill.name + "（发送时自动注入）");
-  fetch("/api/skills/market/" + skill.id + "/use", { method: "POST" }).catch(() => {});
+  toast("已选用 Skill：" + skill.name + "（直接说你要做什么就行）");
 }
 
 /* Skill 选择器弹出列表（按来源分组：内置 / 创建 / 沉淀，支持搜索 + 滚动） */

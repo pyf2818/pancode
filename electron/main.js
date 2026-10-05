@@ -6,6 +6,7 @@
 "use strict";
 const { app, BrowserWindow, shell, nativeTheme, Tray, nativeImage, Notification, dialog, Menu, ipcMain } = require("electron");
 const http = require("http");
+const fs = require("fs");
 const path = require("path");
 const taskWatch = require("./task-watch");
 const closePolicy = require("./close-policy");
@@ -17,11 +18,27 @@ process.env.PORT = String(PORT);
 /* Windows 下不设这个，系统通知会被当成"未关联应用的通知"直接丢弃，气泡根本不弹 */
 app.setAppUserModelId("com.pancode.desktop");
 
-/* 虚拟机/远程桌面等无独立 GPU 环境下回退软件渲染，避免 GPU 进程崩溃 */
-app.disableHardwareAcceleration();
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("disable-software-rasterizer");
+/* GPU 策略：默认交给 Chromium 自检（真桌面 GPU 上合成动画/模糊才有硬件加速，
+   无条件禁用曾把整台应用压进软件光栅化，设置面板一次切换要 200-320ms）。
+   虚拟机/远程桌面等无 GPU 环境才回退：PANCODE_GPU=0 或配置 desktop.gpu:"off"。
+   GPU 开关是启动期一次性决定，所以这里要在 ready 前同步读配置文件——
+   不能等 backend 起来再读，那时 appendSwitch 已经过了生效窗口。 */
+const gpuPref = (() => {
+  if (process.env.PANCODE_GPU === "0") return "off";
+  if (process.env.PANCODE_GPU === "1") return "on";
+  try {
+    const root = process.env.PANCODE_DATA_DIR || path.join(__dirname, "..");
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, "pancode.config.json"), "utf8"));
+    if (cfg && cfg.desktop && cfg.desktop.gpu === "off") return "off";
+  } catch (e) { /* 没有配置文件 / 读不动 = 默认开 GPU */ }
+  return "on";
+})();
+if (gpuPref === "off") {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+}
 app.commandLine.appendSwitch("no-sandbox");
 
 let win = null;

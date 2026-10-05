@@ -71,10 +71,16 @@ class DemoAgent extends AgentBase {
     if (this.running) return;
     const convId = (opts && opts.convId) || this._currentConv || "default";
     this._currentConv = convId;
-    this.emit({ type: "user.msg", text, convId });
+    /* 演示引擎没有真 LLM，但"用户选了哪个技能"必须在界面上有反馈：
+       没配 API Key 的装机状态跑的就是这条引擎，不认 skillId 的话
+       用户点完技能什么也不会发生，看起来就像"技能功能坏了"。 */
+    const picked = opts && opts.skillId && this.skills ? this.skills.getById(opts.skillId) : null;
+    if (picked) this.skills.recordUse(picked.id);
+    this.emit({ type: "user.msg", text, convId, skill: picked ? picked.name : "" });
+    const brief = (picked ? "【本轮采用 Skill：" + picked.name + "】\n" : "") + text;
     try {
-      if (this.round === 0) await this.mainFlow(text);
-      else await this.followupFlow(text);
+      if (this.round === 0) await this.mainFlow(brief);
+      else await this.followupFlow(brief);
     } catch (err) {
       this.emit({ type: "term.line", text: "[Agent 异常] " + err.stack, cls: "tl-err" });
       await this.say("执行过程中出现异常：" + err.message);

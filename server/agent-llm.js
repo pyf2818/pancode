@@ -1458,7 +1458,10 @@ ${taskSummary}
     const snap = mayMutate ? this._workspaceSnapshot() : null;
     try {
       for (let round = 0; round < maxRounds; round++) {
-        if (this._abort) { finalText = finalText || "(子智能体已随主任务中断)"; break; }
+        // 中断检查必须走会话级 abortRef（subAborted）：this._abort 是引擎级旧标志，
+        // 编排跑到一半用户在**另一个会话**点「停止」，会把这里的子智能体整批打断，
+        // 观感就是"编排不稳定、莫名失败"。
+        if (subAborted()) { finalText = finalText || "(子智能体已随主任务中断)"; break; }
         const r = await this._chatStream(messages, subTools, {});
         if (r.content) finalText = r.content;
         if (!r.toolCalls || !r.toolCalls.length) break;
@@ -1474,13 +1477,16 @@ ${taskSummary}
         });
         const toolMsgs = [];
         for (let si = 0; si < r.toolCalls.length; si++) {
-          if (this._abort) break;
+          if (subAborted()) break;
           const tc = r.toolCalls[si];
           const res = await this._runToolGuarded(tc.name, tc.args || {});
           toolMsgs.push({ role: "tool", tool_call_id: subIds[si], content: String(res) });
         }
         messages.push(...toolMsgs);
       }
+      // 轮数用尽时最后一轮可能只有工具调用没有文本（finalText 为空）——
+      // 调用方（编排步骤 / agent 工具）拿到空串只能显示"(无返回)"，像个没来由的失败。
+      if (!finalText) finalText = "(子智能体达到 " + maxRounds + " 轮上限未给出总结，上面是它最后一轮的工具输出)";
     } finally {
       this._subDepth = Math.max(0, (this._subDepth || 1) - 1);
       if (this._subDepth === 0 && saved) Object.assign(this, saved);
@@ -2070,7 +2076,13 @@ ${taskSummary}
          注意这里只记台账，不再顺手 accessCount++（旧写法是"注入即算用过"，
          于是同几条被反复自我强化、永远霸榜，垃圾越滚越大；真用过才计数，见 finally 收尾）。 */
       const used = [];
-      const note = (scope) => (e) => used.push({ scope, id: e.id, type: e.type, topic: e.topic, valueScore: e.valueScore || 2, accessCount: e.accessCount || 0 });
+      /* content 必须随台账走：回显卡要让用户看到"记了什么"，
+         只有 topic 的话旧条目满屏都是当年拿用户原话切片落盘的主题名（#31 遗留）。 */
+      const note = (scope) => (e) => used.push({
+        scope, id: e.id, type: e.type, topic: e.topic,
+        content: String(e.content || "").replace(/\s+/g, " ").trim().slice(0, 120),
+        valueScore: e.valueScore || 2, accessCount: e.accessCount || 0,
+      });
       /* 分道是 MemoryStore 的能力；子智能体与测试替身给的常常只有 formatForContext，
          取不到分道口就退回旧的整体注入，绝不因此炸掉整轮提示词装配。 */
       const stableText = (store, chars) => !store ? ""
@@ -3124,11 +3136,33 @@ ${taskSummary}
     this._currentConv = convId;
 
     const { clean, block } = this._resolveMentions(text);
+    /* 用户显式挑的 Skill：正文只进模型看到的那份历史，不进用户那句话。
+       旧做法是在前端把整份 body 前置拼进消息文本——气泡里糊一大段模板、
+       每轮上下文都重复带着它，而且"用技能"这件事必须靠输入框里有字才成立。
+       ⚠ 判"有没有打字"不能用 clean：_resolveMentions 会把空消息兜成 "(见下方引用上下文)"，
+       拿它判空永远为真，于是"只挂技能没打字"这条路径根本走不通。 */
+    const bare = !String(text || "").trim();
+    const picked = opts.skillId ? this.skills.getById(opts.skillId) : null;
+    if (opts.skillId && !picked) {
+      this.emit({ type: "op.error", error: "这个 Skill 已经不在了，本条消息没有带上它", userHint: "Skill 未生效（" + opts.skillId + "）：请到 Skills 面板重新选择" });
+      if (bare) {
+        /* 一个字的消息都没有、技能又是空的 → 这一轮没有任何内容可发。
+           收摊要按 finally 里那套来：看门狗不摘掉就会在 30 分钟后对着一个已结束的会话报中断。 */
+        clearTimeout(_wd);
+        this.runningConvs.delete(convId);
+        this._currentConv = prevConv;
+        this.state(false, "AI 空闲");
+        return;
+      }
+    }
+    if (picked) this.skills.recordUse(picked.id);
+    const skillText = picked ? this.skills.formatBodyFor(picked) : "";
     this._maybeRemember(text);
-    this.emit({ type: "user.msg", text, convId });
+    this.emit({ type: "user.msg", text, convId, skill: picked ? picked.name : "" });
     this.state(true, "AI 思考中");
 
-    const content = this._buildUserContent(clean + (block ? "\n\n" + block : ""), attachments);
+    const said = bare && picked ? "请按上面这份 Skill 的步骤开始处理当前任务。" : clean;
+    const content = this._buildUserContent((skillText ? "【本轮采用 Skill：" + picked.name + "】\n" + skillText + "\n\n" : "") + said + (block ? "\n\n" + block : ""), attachments);
     history.push({ role: "user", content });
 
     // 用 convContext.run 包裹：深层调用（execTool/emit/_runToolGuarded）自动获取 convId + abortRef

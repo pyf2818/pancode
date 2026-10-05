@@ -681,13 +681,13 @@ async function main() {
       document.getElementById("btnSkillPick").click();                 // 先真的选一个 Skill
       await new Promise((r) => setTimeout(r, 500));
       const opt = document.querySelector("#ciSkillPop .ci-skill-opt");
-      const pickedName = opt ? (opt.textContent || "").trim() : "";
+      const pickedName = opt ? String((opt.querySelector(".ci-skill-opt-name") || {}).textContent || "").trim() : "";
       if (opt) opt.click();
       document.getElementById("chatInput").value = "列出 workspace 的文件并说明各自作用";
       window._doSend();
       return pickedName;
     });
-    ok("真实运行前成功引用了一个 Skill", sent.length > 1, "Skill=" + sent);
+    ok("真实运行前成功选用了 Skill", sent.length > 1, "Skill=" + sent);
     const live = await page.evaluate(async () => {
       const deadline = Date.now() + 60000;
       let steps = 0, running = 1, done = false;
@@ -715,13 +715,23 @@ async function main() {
             groupH: Math.round(r.height),
           };
         }),
-        userTxt: user ? (user.textContent || "").trim().slice(0, 40) : "",
+        userTxt: user ? (user.textContent || "").trim().slice(0, 60) : "",
+        userFull: user ? (user.textContent || "").trim() : "",
+        userChip: user ? String((user.querySelector(".msg-skill") || {}).textContent || "") : "",
+        skillInBody: /【本轮采用 Skill|\[引用 Skill/.test(user ? (user.textContent || "") : ""),
         answer: (() => { const a = pane.querySelector(".msg-row.ans-row .msg-ai"); return a ? (a.textContent || "").trim().slice(0, 40) : ""; })(),
       };
     });
     const el = ((Date.now() - started) / 1000).toFixed(1);
     ok("演示引擎真跑完一轮（" + live.steps + " 步 / " + el + "s）", live.done === true, JSON.stringify(live).slice(0, 300));
-    ok("用户气泡里带着引用的 Skill（发送时自动注入生效）", /引用 Skill/.test(live.userTxt), live.userTxt);
+    /* #43 之后的契约：选 Skill 不该往用户那句话里塞正文。
+       气泡上只留一枚"✦ 技能名"标记，用户原话原样显示；旧写法是
+       "[引用 Skill: 名]\n<整份正文>\n\n---\n\n<原话>"，气泡被模板糊满。 */
+    ok("用户气泡上方有 Skill 标记，且带的是选中的那个名字",
+      live.userChip === "✦ " + sent, JSON.stringify({ chip: live.userChip, picked: sent }));
+    ok("用户原话原样在气泡里（没被 Skill 正文糊住）",
+      live.userFull.endsWith("列出 workspace 的文件并说明各自作用"), live.userTxt);
+    ok("正文没被拼进用户消息（旧格式与新格式都不许出现）", live.skillInBody === false, live.userTxt);
     ok("真实事件流下每张步骤卡都在时间轴分组里（" + live.stepsInGroups + "/" + live.steps + "）",
       live.groups >= 1 && live.stepsInGroups === live.steps, JSON.stringify({ groups: live.groups, in: live.stepsInGroups, steps: live.steps }));
     ok("真实运行后每个分组的左槽依然只有 1 条竖线",
@@ -751,6 +761,69 @@ async function main() {
       pillEnd.spin === false && pillEnd.busy !== "1", JSON.stringify({ spin: pillEnd.spin, busy: pillEnd.busy }));
     ok("跑完后胶囊换成完成/失败图标", pillEnd.icon === true && /步骤/.test(pillEnd.txt), pillEnd.txt);
     ok("收尾时界面里不留「执行中」的步骤卡", pillEnd.leftRunning === 0, "残留 " + pillEnd.leftRunning + " 张");
+
+    /* 用户报「长期记忆没显示具体内容，只显示我发送的某些消息」：
+       旧卡片只渲染 topic，而旧条目的 topic 是当年拿用户原话切片落盘的——回显卡满屏"用户说过的话"。
+       新契约：content 随台账走、卡片正文行显示记忆内容；topic 与正文开头重复时不再重复显示。 */
+    const recall = await page.evaluate(() => {
+      renderRecallCard({ type: "memory.recall", entries: [
+        { scope: "project", id: "p1", type: "lesson", topic: "端口约定", content: "dev 服务器固定跑 5178 端口，换端口要同步改 electron 配置", valueScore: 4, accessCount: 2 },
+        { scope: "user", id: "u1", type: "preference", topic: "启动项目", content: "启动项目后要先装依赖再跑 dev，否则端口会冲突", valueScore: 3, accessCount: 0 },
+        { scope: "project", id: "p2", type: "decision", topic: "只有标题没有正文", content: "", valueScore: 2, accessCount: 0 },
+      ] });
+      const cards = document.querySelectorAll(".recall-card");
+      const card = cards[cards.length - 1];
+      if (!card) return { found: false };
+      card.classList.add("open");
+      const rows = [...card.querySelectorAll(".rc-row")];
+      const topic = (r) => (r.querySelector(".rc-topic") || {}).textContent || "";
+      const content = (r) => (r.querySelector(".rc-content") || {}).textContent || "";
+      return {
+        found: true, rows: rows.length,
+        head: (card.querySelector(".rc-title") || {}).textContent || "",
+        t0: topic(rows[0]), c0: content(rows[0]),
+        t1: topic(rows[1]), c1: content(rows[1]),
+        c2: content(rows[2]),
+        scope1: rows[1] ? rows[1].querySelector(".rc-scope.user") != null : false,
+      };
+    });
+    ok("记忆回显卡渲染出来（3 条明细，标题计数正确）",
+      recall.found === true && recall.rows === 3 && /3 条/.test(recall.head), JSON.stringify(recall).slice(0, 240));
+    ok("回显卡正文行显示记忆内容（不再只有 topic）",
+      recall.c0 === "dev 服务器固定跑 5178 端口，换端口要同步改 electron 配置", JSON.stringify(recall).slice(0, 300));
+    ok("像样的 topic 保留显示", recall.t0 === "端口约定", "t0=" + recall.t0);
+    ok("topic 与正文开头重复（旧的原话切片）不再重复显示", recall.t1 === "", "t1=" + recall.t1);
+    ok("无正文的条目不出空内容行", recall.c2 === "", "c2=" + recall.c2);
+    ok("跨项目记忆仍带用户级标色", recall.scope1 === true, "scope1=" + recall.scope1);
+
+    /* #45：编排历史侧栏要能看到"分发出去的子 agent 任务与结果"。
+       mock /api/orch/history 灌一条三步记录（成功/失败/进行中），断言步骤行渲染出 task 与 output 摘要。 */
+    const orchUi = await page.evaluate(async () => {
+      const runs = [{ id: "orch-test", title: "探针编排", ok: false, elapsed: 3.2, ts: Date.now(),
+        counts: { done: 1, fail: 1, total: 3 }, summary: "编排「探针编排」完成：1 成功，1 失败",
+        steps: [
+          { id: "s1", name: "检索", status: "done", layer: 0, agent_type: "general", task: "在仓库里找出所有入口文件", output: "找到 3 个入口：server/index.js、electron/main.js、public/index.html" },
+          { id: "s2", name: "评审", status: "fail", layer: 0, agent_type: "reviewer", task: "评审上一步结果", output: "子智能体超时" },
+          { id: "s3", name: "补位", status: "running", layer: 1, agent_type: "general", task: "修复评审意见", output: "" },
+        ] }];
+      const realFetch = window.fetch;
+      window.fetch = () => Promise.resolve(new Response(JSON.stringify({ ok: true, runs }), { headers: { "Content-Type": "application/json" } }));
+      try { await renderOrchHistory(); } finally { window.fetch = realFetch; }
+      const items = [...document.querySelectorAll("#agOrchHistory .ag-orch-item")];
+      const it = items.find((x) => (x.textContent || "").includes("探针编排"));
+      if (!it) return { found: false, items: items.length };
+      const steps = [...it.querySelectorAll(".ag-orch-step")];
+      return {
+        found: true, items: items.length, steps: steps.length,
+        task0: (steps[0].querySelector(".ag-orch-step-task") || {}).textContent || "",
+        out0: (steps[0].querySelector(".ag-orch-step-out") || {}).textContent || "",
+        failDot: !!it.querySelector(".ag-orch-step.fail"),
+      };
+    });
+    ok("编排历史条目渲染（3 个子任务行）", orchUi.found === true && orchUi.steps === 3, JSON.stringify(orchUi).slice(0, 240));
+    ok("子任务行显示派发的任务原文（task）", /入口文件/.test(orchUi.task0), "task=" + orchUi.task0);
+    ok("子任务行显示结果摘要（output）", /server\/index\.js/.test(orchUi.out0), "out=" + orchUi.out0);
+    ok("失败子任务带失败状态点", orchUi.failDot === true, "failDot=" + orchUi.failDot);
 
     /* 诊断：胶囊有没有被谁裁掉（临时输出，确认后转断言） */
     await page.evaluate(() => {

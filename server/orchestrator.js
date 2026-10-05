@@ -36,19 +36,34 @@ function histPath() {
   return wsKey.forWorkspace(path.resolve(ROOT, (cfg && cfg.workspace) || "workspace"), ROOT)
     .file(path.join(ROOT, ".pancode", "orch-history"));
 }
+/* 进程内权威副本 + 懒加载一次。以前每次 append 都裸读盘再 unshift：
+   saveJson 是异步排队落盘，连续两次编排时第二次读到的还是旧文件，
+   会把第一次的记录整条覆盖丢掉。 */
+let _histCache = null;
 function histLoad() {
-  try { return JSON.parse(fs.readFileSync(histPath(), "utf8")); } catch (e) { return []; }
+  if (_histCache) return _histCache;
+  try { _histCache = JSON.parse(fs.readFileSync(histPath(), "utf8")) || []; }
+  catch (e) { _histCache = []; }
+  return _histCache;
 }
 function histAppend(rec) {
   const list = histLoad();
   list.unshift(rec);
-  safeWrite.saveJson(histPath(), list.slice(0, HIST_MAX));
-  return list.slice(0, HIST_MAX);
+  const kept = list.slice(0, HIST_MAX);
+  _histCache = kept;
+  safeWrite.saveJson(histPath(), kept);
+  return kept;
 }
 function histList() {
   return histLoad().map((r) => ({
     id: r.id, title: r.title, ok: r.ok, elapsed: r.elapsed, ts: r.ts,
-    counts: r.counts, steps: r.steps.map((s) => ({ id: s.id, name: s.name, status: s.status, layer: s.layer })),
+    counts: r.counts, summary: r.summary || "",
+    steps: (r.steps || []).map((s) => ({
+      id: s.id, name: s.name, status: s.status, layer: s.layer,
+      agent_type: s.agent_type || "general",
+      task: String(s.task || "").slice(0, 160),
+      output: String(s.output || "").slice(0, 120),
+    })),
   }));
 }
 function histGet(id) { return histLoad().find((r) => r.id === id) || null; }
@@ -86,7 +101,14 @@ class Orchestrator {
   /* 执行一个编排计划 */
   async run(plan) {
     const steps = plan.steps || [];
-    if (!steps.length) return { title: plan.title || "编排", results: {}, summary: "无步骤" };
+    if (!steps.length) {
+      /* 以前这里静默返回 summary="无步骤"（ok 未置 false、orch.start 都不发）：
+         前端什么也不弹，模型拿到"无步骤"两个字还可能向用户复述"编排完成"。
+         现在明确告诉两边：这个计划无效，模型需要重新给步骤。 */
+      const msg = "编排计划无效：steps 为空。请给出至少 1 个步骤（每个含 id/name/task）。";
+      this.agent.emit({ type: "op.error", error: msg, userHint: "编排没有跑起来：Agent 给出的计划里一个步骤都没有，请让它重新拆分任务" });
+      return { title: plan.title || "编排", results: {}, summary: msg, ok: false, fullReport: "" };
+    }
 
     const layers = this._topoLayers(steps);
     const results = {};
@@ -106,7 +128,9 @@ class Orchestrator {
       // 同层步骤并行执行
       const promises = layer.map(async (step) => {
         const t0 = Date.now();
-        stepMeta.push({ id: step.id, name: step.name, layer: li, parallel, agent_type: step.agent_type || "general", status: "running", output: "", elapsed: 0 });
+        // task 必须随明细落盘：历史回放要让用户看到"这个子 agent 被派了什么活"，
+        // 只有 name 的话（"分析"“实现"）等于什么都没说。
+        stepMeta.push({ id: step.id, name: step.name, layer: li, parallel, agent_type: step.agent_type || "general", task: String(step.task || ""), status: "running", output: "", elapsed: 0 });
         this.agent.emit({
           type: "orch.step.start",
           stepId: step.id,
@@ -191,7 +215,10 @@ class Orchestrator {
 
     this.agent.emit({ type: "orch.done", summary, ok: failCount === 0, elapsed, runId, steps: stepMeta.map((s) => ({ id: s.id, name: s.name, status: s.status, elapsed: +s.elapsed.toFixed(1) })) });
 
-    return { title: plan.title, results, summary, fullReport, elapsed };
+    // ok 必须随返回体走：orchestrate 工具拿它决定 t.done 的成败；
+    // 以前返回体从没有这个字段（只有 orch.done 事件带），有步骤失败时
+    // 工具卡照样亮"完成"，模型也不知道要向用户交代失败的部分。
+    return { title: plan.title, results, summary, fullReport, elapsed, ok: failCount === 0 };
   }
 }
 

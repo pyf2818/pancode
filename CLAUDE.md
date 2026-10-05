@@ -45,6 +45,14 @@ npm test                 # 运行全部测试套件（首尾带 .pancode 数据�
    - `public/app.js` 的 `state` 是**顶层 `const`**（全局词法绑定），`window.state` 恒为 undefined：
      拿它当"hello 到没到"的判据会永远等不到（实测烧掉一次 20s 超时，还差点误判成服务端卡住）。
      页面里要读它得写 `typeof state === "undefined" ? null : state`。
+   - **沙箱 iframe 的像素在真 Electron 里取不到**：`locator('#hpFrame').screenshot()` 对
+     `sandbox="allow-scripts"`（不透明源）的 iframe 会返回一张纯白图，读 `contentDocument` 抛
+     SecurityError。这不是产品空白——整页 `page.screenshot()` 里内容好好的。
+     判"预览有没有画出来"要断 `srcdoc` 结构 + 面板几何，像素交给整页截图人工复核。
+   - 要在**真 Electron**里驱动界面：`electron . --remote-debugging-port=9333` 起，
+     `chromium.connectOverCDP("http://127.0.0.1:9333")` 接进去就能用 Playwright 那套 API。
+     必须再带 `--user-data-dir=<沙箱>`：Electron 的单实例锁按 userData 算，开发者机器上
+     已经跑着打包版时，第二个实例会直接 `app.quit()`（退出码 0，看起来像"启动失败"）。
 
 ## 架构概览
 

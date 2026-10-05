@@ -513,9 +513,17 @@ app.post("/api/skills/market", (req, res) => {
 app.put("/api/skills/market/:id", (req, res) => {
   try {
     if (!engine || !engine.skills) return res.status(503).json({ ok: false, error: "引擎未就绪" });
-    const skill = engine.skills.update(req.params.id, req.body || {});
+    const id = req.params.id;
+    let skill = engine.skills.update(id, req.body || {});
+    /* 内置项改不动（随安装包走），但也不该回"Skill 不存在"把人堵在那儿——
+       另存一份我的副本，改的就是这份副本。forked 给前端把提示说清楚。 */
+    const forked = !skill && engine.skills.isBuiltin(id);
+    if (forked) skill = engine.skills.forkBuiltin(id, req.body || {});
+    if (skill && skill._auditRejected) {
+      return res.status(403).json({ ok: false, error: "安全审计发现 P0 风险，已拒绝保存（需显式确认）", audit: skill._auditRejected });
+    }
     if (!skill) return res.status(404).json({ ok: false, error: "Skill 不存在" });
-    res.json({ ok: true, skill });
+    res.json({ ok: true, skill, forked });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.delete("/api/skills/market/:id", (req, res) => {
@@ -1451,9 +1459,12 @@ app.post("/api/skills", (req, res) => {
 });
 app.put("/api/skills/:id", (req, res) => {
   try {
-    const skill = engine.skills.update(req.params.id, req.body || {});
+    const id = req.params.id;
+    let skill = engine.skills.update(id, req.body || {});
+    const forked = !skill && engine.skills.isBuiltin(id);
+    if (forked) skill = engine.skills.forkBuiltin(id, req.body || {});
     if (!skill) return res.status(404).json({ ok: false, error: "Skill 不存在" });
-    res.json({ ok: true, skill });
+    res.json({ ok: true, skill, forked });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.delete("/api/skills/:id", (req, res) => {
@@ -1493,17 +1504,22 @@ app.get("/api/skills/managed", (req, res) => {
 });
 app.get("/api/skills/content", (req, res) => {
   try {
-    const s = engine.skills.getById(req.query.id) || engine.skills.findByName(req.query.name || "");
+    const name = String(req.query.name || "").trim();
+    const s = engine.skills.getById(req.query.id) || (name ? engine.skills.findByName(name) : null);
     if (!s) return res.json({ ok: false, error: "技能不存在" });
-    res.json({ ok: true, skill: { id: s.id, name: s.name, description: s.description, trigger: s.trigger, tags: s.tags, version: s.version, body: s.body || "", steps: s.steps || [], risk: s.risk_level, disabled: !!s.disabled, source: s.source } });
+    res.json({ ok: true, skill: { id: s.id, name: s.name, description: s.description, trigger: s.trigger, tags: s.tags, version: s.version, body: s.body || "", steps: s.steps || [], risk: s.risk_level, disabled: !!s.disabled, source: s.source, builtin: engine.skills.isBuiltin(s.id) } });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 app.post("/api/skills/:id/toggle", (req, res) => {
   try {
-    const cur = engine.skills.getById(req.params.id);
-    if (!cur) return res.json({ ok: false, error: "技能不存在或为内置项（内置不可启停）" });
+    const id = req.params.id;
+    /* 内置项不参与启停：它没有可写的落点（getById 现在认得内置项，
+       所以这里必须显式挡，否则停用会悄悄走到 forkBuiltin，凭空多出一条副本）。 */
+    if (engine.skills.isBuiltin(id)) return res.json({ ok: false, error: "内置技能随安装包分发，不可停用；要停用请先另存为我的技能" });
+    const cur = engine.skills.getById(id);
+    if (!cur) return res.json({ ok: false, error: "技能不存在" });
     const next = req.body && req.body.disabled != null ? !!req.body.disabled : !cur.disabled;
-    engine.skills.update(req.params.id, { disabled: next });
+    engine.skills.update(id, { disabled: next });
     res.json({ ok: true, disabled: next, skills: skillRecords("") });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
@@ -2019,12 +2035,17 @@ wss.on("connection", (ws) => {
     const msgKey = ws._userKey || "anon";
 
     switch (m.type) {
-      case "chat":
-        if (typeof m.text === "string" && m.text.trim()) {
+      case "chat": {
+        const txt = typeof m.text === "string" ? m.text.slice(0, 8000) : "";
+        const skillId = typeof m.skillId === "string" ? m.skillId : "";
+        /* 挂了 Skill 就不要求输入框必须有字：选一个技能本身就是一个指令
+           （对齐 Claude Code 的 slash command——/skill-name 可以不带参数）。 */
+        if (txt.trim() || skillId) {
           // 多会话并行：不切换会话，直接传 convId 给 handleChat（按连接绑定的用户实例）
-          uEng.handleChat(m.text.slice(0, 8000), { convId: m.convId, attachments: Array.isArray(m.attachments) ? m.attachments : [] });
+          uEng.handleChat(txt, { convId: m.convId, attachments: Array.isArray(m.attachments) ? m.attachments : [], skillId });
         }
         break;
+      }
 
       /* 前端主动查询上下文实测水位（页面加载 / 会话切换 / 收到回答后调用） */
       case "ctx.query": {

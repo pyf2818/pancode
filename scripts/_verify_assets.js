@@ -299,6 +299,36 @@ async function main() {
     r = await req("GET", "/api/skills/managed");
     ok("GET /api/skills/managed 返回 ok", r.json.ok === true, r.json.error);
     ok("内置工作流被标记 builtin", (r.json.skills || []).some((s) => s.builtin));
+    /* —— #43：内置技能"改完保存说不存在"这一整串。
+       判据要的是：读得到它自己的正文（不是兜底查到池里第一条）、改它 = 另存副本、
+       内置那份原文不动、停用明确拒绝。 —— */
+    const bkRow = (r.json.skills || []).find((s) => /^builtin_/.test(s.id || ""));
+    ok("拿得到一条内置技能做判据（夹具前提）", !!bkRow, JSON.stringify((r.json.skills || []).slice(0, 3)));
+    const bkId = bkRow.id;
+    r = await req("GET", "/api/skills/content?id=" + encodeURIComponent(bkId));
+    const bkBody = (r.json.skill || {}).body || "";
+    ok("按 id 读内置技能的正文（旧实现 getById 不认内置，兜底 findByName(\"\") 会返回别人的正文）",
+      r.json.ok === true && bkBody.length > 0 && r.json.skill.name === bkRow.name, JSON.stringify(r.json.skill || {}).slice(0, 120));
+    ok("内容接口标得出这是内置项", r.json.skill.builtin === true, JSON.stringify(r.json.skill.builtin));
+    r = await req("PUT", "/api/skills/market/" + encodeURIComponent(bkId), { body: "我改过的内置副本正文" });
+    ok("改内置技能不再报「Skill 不存在」", r.json.ok === true, r.json.error);
+    ok("改的是另存出来的我的副本（forked=true，id 换了）",
+      r.json.forked === true && !!r.json.skill && r.json.skill.id !== bkId, JSON.stringify({ forked: r.json.forked, id: (r.json.skill || {}).id }));
+    const forkId = (r.json.skill || {}).id;
+    r = await req("GET", "/api/skills/content?id=" + encodeURIComponent(bkId));
+    ok("内置那份原文没被动", (r.json.skill || {}).body === bkBody, "长度 " + (r.json.skill || {}).body.length + " vs " + bkBody.length);
+    r = await req("GET", "/api/skills/content?id=" + encodeURIComponent(forkId));
+    ok("副本读回来就是改过的正文", (r.json.skill || {}).body === "我改过的内置副本正文", (r.json.skill || {}).body);
+    r = await req("POST", "/api/skills/" + encodeURIComponent(bkId) + "/toggle", { disabled: true });
+    ok("停用内置项：明确拒绝，不会悄悄 fork 出一条副本",
+      r.json.ok === false && /内置/.test(r.json.error || ""), JSON.stringify(r.json));
+    r = await req("GET", "/api/skills/managed");
+    const sameName = (r.json.skills || []).filter((s) => s.name === bkRow.name);
+    ok("停用没有再生出第二条副本（只剩内置本体 + 探针这一条副本）",
+      sameName.length === 2 && sameName.filter((s) => s.id === forkId).length === 1,
+      JSON.stringify(sameName.map((s) => s.id)));
+    r = await req("DELETE", "/api/skills/" + encodeURIComponent(forkId));
+    ok("删掉探针造的副本", r.json.ok === true, r.json.error);
     r = await req("POST", "/api/skills", { name: "端点验证技能", description: "仅用于验证", trigger: "验证xyz", body: "步骤一" });
     const created = r.json.skill || {};
     ok("创建技能成功", r.json.ok === true && !!created.id, r.json.error);
