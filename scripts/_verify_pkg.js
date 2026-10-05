@@ -124,6 +124,9 @@ function readArchive(archive) {
     ok("首页把界面与脚本挂上了（不是回一个空壳/错误页）",
       html.includes('id="chatInputEditor"') && /<script[^>]+src="[^"]*app\.js/.test(html),
       html.slice(0, 120));
+    /* 登录页（hello 还没来）阶段标题栏读的是这个占位：以前硬编码着 "todo-app"，
+       等于开机先报一个不存在的项目名。 */
+    ok("首页没有把项目名写死在壳里", !html.includes("todo-app"), "");
     const css = await (await fetch(`http://127.0.0.1:${PORT}/styles.css`)).text();
     ok("服务出来的 styles.css 含本轮补上的 --bg-elev（#35 下拉透明）",
       css.includes("--bg-elev") && css.includes("--bg-bar"), "");

@@ -815,7 +815,7 @@ minimize / toggle-max / close，**close 仍走 `win.close()`**，让既有的"�
 **整段用户原话当主题**的长句——`isJunkPhrase` 的句式表按短句设计，长原话没进去。
 它们是被产品自己的 `prune()` 收掉的，不是这支脚本干的；写入端闸门（#31）已经不让新的一批进来了。
 
-**22′ 3.2.1 那个包其实一个窗口都没弹出来（用户"启动看看效果"当场抓到）—— 已修复并重建为 3.2.2**
+**22′ 3.2.1 那个包其实一个窗口都没弹出来（用户"启动看看效果"当场抓到）—— 已修复，重建为 3.2.3**
 
 现象：`release/win-unpacked/pancode.exe` 起来后三个进程都在、`/api/health` 回 200 且版本 3.2.1，
 但**屏幕上什么都没有**，`wsClients` 恒 0。日志里一条 `unhandledRejection` 把根因摊开：
@@ -848,7 +848,9 @@ TypeError [ERR_INVALID_ARG_TYPE]: The "listener" argument must be of type functi
 - 别用 `wsClients` 判"界面起没起来"：全新数据根下应用先出登录页、不连 WS 是设计行为，
   那条测的是登录态（我第一版就是这么写错的，沙箱里恒为 0）。
 - 截图复核时顺手抓到一处小谎：`public/index.html` 的标题栏项目名硬编码着 `todo-app`，
-  登录页（hello 还没来）阶段就顶着一个不存在的项目名。改成与状态栏同一套中性占位 `…`。
+  登录页（hello 还没来）阶段就顶着一个不存在的项目名。改成与状态栏同一套中性占位 `…`，
+  并给 `_verify_pkg.js` 加一条"首页没有把项目名写死在壳里"——断的是**打包后的 exe 自己 serve 出来的 HTML**，
+  不是源码。最终随 3.2.3 出包：`verify:pkg` 19/19、`_verify_desktop.js` 14/14、`vitest` 637 通过 / 1 跳过。
 
 
 ---
