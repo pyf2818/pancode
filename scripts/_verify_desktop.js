@@ -85,7 +85,11 @@ async function waitHealth(maxMs) {
     env: Object.assign({}, process.env, {
       PORT: String(PORT), PANCODE_DATA_DIR: DATA_DIR, CURSORWEB_WORKSPACE: WS_DIR,
       CURSORWEB_ENGINE: "demo", AGENT_FAST: "1", NODE_NO_WARNINGS: "1",
-      PANCODE_PROBE_CLOSE_MS: "2500",        // 主进程到点自动关窗（electron/main.js 里的探针钩子）
+      PANCODE_PROBE_CLOSE_MS: "9000",        // 主进程到点自动关窗（electron/main.js 里的探针钩子）
+      /* 为什么是 9 秒而不是原来的 2.5 秒：后端启动 + 页面加载就要 2–3 秒，
+         2.5 秒那一刀砍在 loadURL 中间，窗口从没成功显示过——
+         这支探针过去 11 项全绿，其实一次也没证明过"界面弹得出来"。
+         现在关窗时机落在"任务正在跑"里面，"关窗前 / 关窗后"那对比对才真的是在比这两件事。 */
     }),
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -105,6 +109,25 @@ async function waitHealth(maxMs) {
     process.exit(1);
   }
   ok("Electron 实例能启动并把后端带起来", true);
+
+  /* 关键的一层：后端起来 ≠ 界面弹出来。3.2.1 第一次装机就是栽在这个洞上——
+     `electron/main.js` 里 `ipcMain.off("pc-win:minimize")` 少传 listener 抛 ERR_INVALID_ARG_TYPE，
+     createWindow 从那一行整段中断，`ready-to-show` 没挂上：health 全绿、任务照跑，
+     而窗口从头到尾没出现过（wsClients 恒 0）。所以这里等主进程自己喊"显形了"。 */
+  const waitForMarker = async (sub, ms) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) { if (out.includes(sub)) return true; await wait(120); }
+    return false;
+  };
+  ok("窗口真的显形（ready-to-show 一路跑到 show，没有被中途抛错打断）",
+    await waitForMarker("[pc] 窗口已显形", 20000), out.slice(-700));
+  /* 再要一层：页面（HTML + JS）真的加载完了，不只是画了第一帧。
+     不用"窗口连上 WS"当判据——全新数据根下应用先出登录页、不连 WS 是设计行为，
+     那条测的是登录态不是界面（我第一版写成它，沙箱里恒为 0）。 */
+  ok("页面真的加载完成（did-finish-load）",
+    await waitForMarker("[pc] 页面加载完成", 20000), out.slice(-500));
+  const crashes = (out.match(/(unhandledRejection|uncaughtException)[^\n]*/g) || []).slice(0, 2);
+  ok("主进程这一路没有未捕获的异步异常", crashes.length === 0, crashes.join(" | "));
 
   const reg = await post("/api/auth/register", { username: "_desk_" + Date.now(), password: "test1234" });
   const TOKEN = reg.json && reg.json.token;

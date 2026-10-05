@@ -86,9 +86,10 @@ function readArchive(archive) {
       PANCODE_PROBE_CLOSE_MS: "6000",       // 探针钩子：到点关窗（关窗 ≠ 退出，进程仍要自己收掉）
       NODE_NO_WARNINGS: "1",
     }),
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
   let errLog = "";
+  child.stdout.on("data", (d) => { errLog += d; });
   child.stderr.on("data", (d) => { errLog += d; });
 
   async function up(ms) {
@@ -101,6 +102,19 @@ function readArchive(archive) {
   }
   const bootMs = await up(60000);
   ok("打包后的 exe 能起来并且后端可访问（" + bootMs + "ms）", bootMs > 0, errLog.slice(-400));
+
+  /* ⚠ 这两条是这轮补上的真门槛。上一版只断到 health 通为止，结果放行了一个
+     "health 全绿、窗口从未出现"的包：`ipcMain.off(...)` 少传 listener 抛错，
+     createWindow 中断在 ready-to-show 之前，后端照跑、界面根本不弹。
+     所以要看主进程自己喊的"已显形"，还要看这路上没有未捕获的异步异常。 */
+  const tMark = Date.now();
+  const bothShown = () => errLog.includes("[pc] 窗口已显形") && errLog.includes("[pc] 页面加载完成");
+  while (Date.now() - tMark < 20000 && !bothShown()) await new Promise((r) => setTimeout(r, 150));
+  /* 两条心跳要**同时**在场才算过：只等"已显形"会放行一个"显形了但停在错误页"的包
+     （ready-to-show 只保证第一帧，那一帧可以是"后端启动失败"那块兜底页）。 */
+  ok("exe 的窗口真的显形、页面真的加载完成（两条心跳都在）", bothShown(), errLog.slice(-500));
+  const crashes = (errLog.match(/(unhandledRejection|uncaughtException)[^\n]*/g) || []).slice(0, 2);
+  ok("主进程这一路没有未捕获的异步异常", crashes.length === 0, crashes.join(" | "));
 
   if (bootMs > 0) {
     const html = await (await fetch(`http://127.0.0.1:${PORT}/`)).text();

@@ -27,6 +27,7 @@ let win = null;
 let tray = null;
 let trayOk = false;          // 托盘没建成时绝不能"关窗不退出"——那会变成看不见又关不掉的后台进程
 let quitting = false;        // 只有走「退出并终止所有任务」才置位
+let winIpcBound = false;     // ipcMain 是进程级单例：这个标志必须是模块级的，绑在 createWindow 里等于每次重建窗口都再叠一组监听
 let lastRows = [];
 let pollTimer = null;
 
@@ -82,17 +83,23 @@ async function createWindow() {
   });
 
   /* 红绿灯的三条指令。close 走 win.close()，让既有的"关窗 ≠ 退出"策略原样生效
-     （托盘在的时候藏窗口、后端继续跑任务；没托盘才真退）。 */
-  ipcMain.off("pc-win:minimize");
-  ipcMain.off("pc-win:toggle-max");
-  ipcMain.off("pc-win:close");
-  ipcMain.on("pc-win:minimize", () => { if (win && !win.isDestroyed()) win.minimize(); });
-  ipcMain.on("pc-win:toggle-max", () => {
-    if (!win || win.isDestroyed()) return;
-    if (win.isMaximized()) win.unmaximize(); else win.maximize();
-  });
-  ipcMain.on("pc-win:close", () => { if (win && !win.isDestroyed()) win.close(); });
-  ipcMain.handle("pc-win:is-max", () => !!(win && !win.isDestroyed() && win.isMaximized()));
+     （托盘在的时候藏窗口、后端继续跑任务；没托盘才真退）。
+     ⚠ 这里原先写的是 `ipcMain.off("pc-win:minimize")`，想防住重复注册——但
+     `off`/`removeListener` **必须传 listener**，不传就抛 ERR_INVALID_ARG_TYPE，
+     createWindow 从这一行整段中断：`ready-to-show` 没挂上，**窗口永远不显形**，
+     而后端已经起来了（health 正常、`wsClients` 恒 0），实测打包产物正是这个症状。
+     正确做法：`on` 只绑一次（下面的 flag），`handle` 用 `removeHandler`（它不需要 listener）。 */
+  if (!winIpcBound) {
+    winIpcBound = true;
+    ipcMain.on("pc-win:minimize", () => { if (win && !win.isDestroyed()) win.minimize(); });
+    ipcMain.on("pc-win:toggle-max", () => {
+      if (!win || win.isDestroyed()) return;
+      if (win.isMaximized()) win.unmaximize(); else win.maximize();
+    });
+    ipcMain.on("pc-win:close", () => { if (win && !win.isDestroyed()) win.close(); });
+    // ipcMain 是进程级单例：handler 也只注册一次，靠闭包动态读模块变量 win
+    ipcMain.handle("pc-win:is-max", () => !!(win && !win.isDestroyed() && win.isMaximized()));
+  }
   const pushMax = () => {
     if (win && !win.isDestroyed()) win.webContents.send("pc-win:max", win.isMaximized());
   };
@@ -102,7 +109,15 @@ async function createWindow() {
     if (!win || win.isDestroyed()) return;
     win.maximize();
     win.show();
+    /* 这一行是给验收用的心跳：后端能在窗口没显形的时候也回 health（3.2.1 第一次就这么漏掉了
+       一个 createWindow 中途抛错的缺陷——health 一切正常、界面根本没弹出来）。
+       探针断言"看到这行才算窗口真的显形"，顺带断这条链路里没有 unhandledRejection。 */
+    console.log("[pc] 窗口已显形 maximized=" + win.isMaximized());
   });
+  /* 比"显形"再往前一步：页面（HTML + JS）真的加载完了。
+     不用 WS 连接数当判据是因为全新数据根下应用会先出登录页，不连 WS 是设计行为，
+     那测的是登录态而不是"界面起没起来"。 */
+  win.webContents.once("did-finish-load", () => console.log("[pc] 页面加载完成"));
 
   /* 外部链接交给系统默认浏览器打开 */
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -119,14 +134,30 @@ async function createWindow() {
     setTimeout(() => { try { if (win && !win.isDestroyed()) win.close(); } catch (e) {} }, probeCloseMs);
   }
 
+  /* 窗口可能在后端就绪之前就被关掉（用户抢那 1–2 秒，或探针到点关窗）。
+     `isDestroyed()` 判活只挡得住"已经关掉"，挡得住检查那一瞬、挡不住紧随其后的销毁——
+     实测探针把窗关掉时 loadURL 仍会以 "Object has been destroyed" 拒绝。
+     所以每一次加载都要自己收口：被中断的加载不是崩溃，不该变成 unhandledRejection。 */
+  const winAlive = () => !!(win && !win.isDestroyed());
+  const loadOrFail = (u, why) => {
+    try {
+      return Promise.resolve(win.loadURL(u)).catch((e) => {
+        console.log("[pc] 页面加载中断（" + why + "）：" + (e && e.message ? e.message : e));
+      });
+    } catch (e) { console.log("[pc] 页面加载失败（" + why + "）：" + e.message); return Promise.resolve(); }
+  };
   try {
     await waitForServer();
-    await win.loadURL(`http://127.0.0.1:${PORT}/`);
+    if (winAlive()) await loadOrFail(`http://127.0.0.1:${PORT}/`, "主界面");
   } catch (e) {
-    await win.loadURL(
-      "data:text/html;charset=utf-8," +
-        encodeURIComponent(`<body style="background:${bgFor()};color:${nativeTheme.shouldUseDarkColors ? "#ccc" : "#333"};font-family:sans-serif;display:grid;place-items:center;height:100vh;margin:0"><div><h3>pancode 后端启动失败</h3><p>${e.message}</p></div></body>`)
-    );
+    console.log("[pc] 后端启动失败：" + (e && e.message ? e.message : e));
+    if (winAlive()) {
+      await loadOrFail(
+        "data:text/html;charset=utf-8," +
+          encodeURIComponent(`<body style="background:${bgFor()};color:${nativeTheme.shouldUseDarkColors ? "#ccc" : "#333"};font-family:sans-serif;display:grid;place-items:center;height:100vh;margin:0"><div><h3>pancode 后端启动失败</h3><p>${e.message}</p></div></body>`),
+        "错误页"
+      );
+    }
   }
 }
 

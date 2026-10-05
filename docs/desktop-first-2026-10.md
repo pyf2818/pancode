@@ -815,6 +815,41 @@ minimize / toggle-max / close，**close 仍走 `win.close()`**，让既有的"�
 **整段用户原话当主题**的长句——`isJunkPhrase` 的句式表按短句设计，长原话没进去。
 它们是被产品自己的 `prune()` 收掉的，不是这支脚本干的；写入端闸门（#31）已经不让新的一批进来了。
 
+**22′ 3.2.1 那个包其实一个窗口都没弹出来（用户"启动看看效果"当场抓到）—— 已修复并重建为 3.2.2**
+
+现象：`release/win-unpacked/pancode.exe` 起来后三个进程都在、`/api/health` 回 200 且版本 3.2.1，
+但**屏幕上什么都没有**，`wsClients` 恒 0。日志里一条 `unhandledRejection` 把根因摊开：
+
+```
+TypeError [ERR_INVALID_ARG_TYPE]: The "listener" argument must be of type function.
+    at IpcMainImpl.removeListener
+    at electron/main.js:86  createWindow
+```
+
+`ipcMain.off("pc-win:minimize")` 想防住重复注册，但 **`off`/`removeListener` 必须传 listener**，
+不传就抛。抛点在 `createWindow` 中间，于是它后面的 `ready-to-show` 挂载整段没执行——
+`show:false` 的窗口永远不显形；而 `startServer()` 在抛点之前就跑完了，所以后端、任务、health 全正常。
+
+- 为什么 17′/20′ 的验收没抓到：`_verify_desktop.js` 当时 11 项全绿，但它验的是"后端 + 关窗续跑"，
+  事件全部来自**探针自己那条 WS**；`_verify_pkg.js` 16 项也只断到 health 通 + asar 内容对。
+  **这一层从来没有人断过"窗口显形过、页面加载完了"**——`_verify_pkg.js` 当初把 `stdout` 设成 `ignore`，
+  连主进程的输出都没收。两个包（3.2.0 / 3.2.1）都是带着这个缺陷出厂的。
+- 修法：`ipcMain.on` 用模块级 `winIpcBound` 只注册一次（`ipcMain` 是进程级单例，
+  `createWindow` 会被 `second-instance` / `activate` 再调）；`handle` 一并放进同一个 flag 块里；
+  删掉那三行 `off`。顺带把 `loadURL` 都包上"失败只记日志"的收口——
+  窗口在后端就绪前被关掉时，被中断的加载会以 `Object has been destroyed` 拒绝，那不该是未捕获异常。
+- 新的验收层（**都做过负控**：把 `ipcMain.off(...)` 注回去，三条立刻红；还原后字节一致）：
+  `main.js` 在 `ready-to-show` 与 `did-finish-load` 各打一行心跳（`[pc] 窗口已显形` / `[pc] 页面加载完成`），
+  `_verify_desktop.js` 与 `_verify_pkg.js` 都等这两行，外加一条"主进程这路没有 unhandledRejection/uncaughtException"。
+  `_verify_desktop.js` 从 11 项变 14 项，`_verify_pkg.js` 从 16 项变 18 项（并把 stdout 也收进日志）。
+- 顺带修了一处**探针自己骗自己**：`PANCODE_PROBE_CLOSE_MS` 原来是 2500ms，而后端启动 + 页面加载
+  就要 2–3 秒——那一刀砍在 `loadURL` 中间，窗口从来没成功显示过，而"关窗前 / 关窗后"那对比对
+  其实两边都在关窗之后测。改成 9000ms 之后它才真的在比这两件事。
+- 别用 `wsClients` 判"界面起没起来"：全新数据根下应用先出登录页、不连 WS 是设计行为，
+  那条测的是登录态（我第一版就是这么写错的，沙箱里恒为 0）。
+- 截图复核时顺手抓到一处小谎：`public/index.html` 的标题栏项目名硬编码着 `todo-app`，
+  登录页（hello 还没来）阶段就顶着一个不存在的项目名。改成与状态栏同一套中性占位 `…`。
+
 
 ---
 
