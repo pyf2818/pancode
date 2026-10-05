@@ -65,6 +65,13 @@ const DEFAULTS = {
   rules: { enabled: true },        // 是否加载 .pancode/rules 作为强制约束
   context: { budgetTokens: 1000000, autoCompact: true }, // 上下文预算 1M tokens
   memory: { enabled: true },       // auto memory（会话中沉淀记忆）
+  // —— 桌面端（Electron）窗口行为 ——
+  desktop: {
+    // 点标题栏红点 / 系统关闭时要做什么：
+    //   ask = 每次问（默认，第一次用会问）| background = 直接挂到后台，任务继续跑 | quit = 直接退出
+    // 只有主进程读它（设置界面负责写）；非桌面态（浏览器 / npm start）完全不涉及。
+    closeAction: "ask",
+  },
   // —— 长任务时限（秒）——
   // 这些是"跑不完一次真实构建/测试"的直接来源，默认值按长任务设定，可在 设置 → Agent 行为 里调。
   timeouts: {
@@ -92,8 +99,24 @@ const DEFAULTS = {
   },
 };
 
+/* 读配置。⚠ 不能只读盘：`saveJson` 是排队异步落盘的（Windows 被杀软/句柄锁住时还要退避重试到 ~10s），
+   而每个 saveX 都是"读盘 → 只改自己那一段 → 整份写回"。于是同一秒里连着存两个段时，
+   第二次读到的是**还没落盘的旧内容**，会把第一次那段整段抹回去
+   （实测：先存 permissions 再存 desktop，permissions 就没了）。
+   解法：给"刚写出去、盘上还没追上"的内容做一层读回缓存，只在盘确实更旧时才用它——
+   外部改了文件（mtime 变新）时仍然以盘为准。 */
+const _recent = new Map();     // 绝对路径 -> { obj, at }
 function readJsonSafe(p) {
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return null; }
+  const key = path.resolve(p);
+  const r = _recent.get(key);
+  try {
+    const st = fs.statSync(p);
+    if (r && st.mtimeMs < r.at) return JSON.parse(JSON.stringify(r.obj));
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch (e) {
+    if (r) { try { return JSON.parse(JSON.stringify(r.obj)); } catch (e2) { return null; } }
+    return null;
+  }
 }
 
 /* 皮实的配置写入（W7 补漏 · P1）：
@@ -101,6 +124,7 @@ function readJsonSafe(p) {
    转发 safe-write 队列：按路径串行 + 异步指数退避重试 6 次（~10.9s），不阻塞事件循环、永不抛错。
    语义为 best-effort 持久化：进程内 cfg 对象仍是事实源（读盘仅在启动），调用点零改动。 */
 function writeJsonSafe(p, obj) {
+  try { _recent.set(path.resolve(p), { obj, at: Date.now() }); } catch (e) {}
   saveJson(p, obj);   // fire-and-forget：队列串行 + 退避重试，失败仅 safe-write 内部告警
   return true;
 }
@@ -294,6 +318,20 @@ function saveAgentSettings(cfg, patch) {
 }
 
 /* 持久化 Embedding 配置（代码向量索引用） */
+/* 桌面端窗口偏好。写它的有两个入口，都必须走这里，别开第二条落盘路径：
+   ① 设置界面（/api/config 的 section=desktop）；② 关窗对话框里勾了"记住我的选择"的主进程。
+   只认三个值，其它一律不改（防止把配置写成不可识别的状态）。 */
+function saveDesktop(cfg, patch) {
+  const v = String((patch && patch.closeAction) || "");
+  const ALLOWED = ["ask", "background", "quit"];
+  if (ALLOWED.indexOf(v) < 0) return cfg.desktop;
+  cfg.desktop = Object.assign({}, cfg.desktop, { closeAction: v });
+  const onDisk = readJsonSafe(CONFIG_PATH) || {};
+  onDisk.desktop = cfg.desktop;
+  writeJsonSafe(CONFIG_PATH, onDisk);
+  return cfg.desktop;
+}
+
 function saveEmbedding(cfg, patch) {
   const p = patch || {};
   if (typeof p.endpoint === "string") cfg.embedding.endpoint = p.endpoint.trim();
@@ -401,5 +439,5 @@ function progressionPath(cfg) {
   return wsShard(cfg).file(path.join(ROOT, ".pancode", "progression"));
 }
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveMcpServers, saveEmbedding, agentSettings, embeddingInfo, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH,
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveMcpServers, saveEmbedding, saveDesktop, agentSettings, embeddingInfo, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH,
   saveLlmProfiles, upsertLlmProfile, applyLlmProfile, removeLlmProfile, profilePublic, normalizeBaseURL };

@@ -8,6 +8,7 @@ const { app, BrowserWindow, shell, nativeTheme, Tray, nativeImage, Notification,
 const http = require("http");
 const path = require("path");
 const taskWatch = require("./task-watch");
+const closePolicy = require("./close-policy");
 
 /* 桌面版默认独立端口，避免与网页版(8766)冲突 */
 const PORT = Number(process.env.PORT || 8767);
@@ -33,6 +34,16 @@ let pollTimer = null;
 
 /* 启动底色跟随系统主题（对齐 styles.css --bg：dark #0a0e13 / light #fafdfb），避免开窗闪错色 */
 const bgFor = () => (nativeTheme.shouldUseDarkColors ? "#0a0e13" : "#fafdfb");
+
+/* 关窗偏好读的是同进程后端的 cfg（设置界面写的也是同一份），不走 HTTP——闸门后面主进程没 token */
+const desktopPref = () => {
+  try { return (backend && typeof backend.desktopPref === "function") ? backend.desktopPref() : "ask"; }
+  catch (e) { return "ask"; }
+};
+const setDesktopPref = (v) => {
+  try { return (backend && typeof backend.setDesktopPref === "function") ? backend.setDesktopPref(v) : ""; }
+  catch (e) { return ""; }
+};
 
 /* 在 Electron 主进程内直接拉起后端（同进程，无需额外 node） */
 let backend = null;      // server/index.js 导出的 { shutdown }：退出时要显式收口，而不是让进程带着未落盘的会话消失
@@ -127,6 +138,54 @@ async function createWindow() {
 
   win.on("closed", () => { win = null; });
 
+  /* 关窗去向：问 / 挂后台 / 直接退出。判据全在 electron/close-policy.js（那边有单测），这里只管执行。
+     - 挂后台用 hide() 而不是 destroy：渲染进程留着，任务流与系统通知不断线，从托盘唤回是瞬开。
+     - 没有托盘时绝不挂后台（decideClose 里 trayOk=false 一律放行关闭），
+       否则会留下一个"看不见又关不掉"的后台进程——这是以前"关窗 ≠ 退出"这条承诺唯一的破口。
+     - 对话框必须用**异步**版：`showMessageBoxSync` 会把 Electron 主循环整段卡住，
+       而后端就跑在同一个进程里——问一句话的功夫，正在跑的任务就停了。
+       异步版靠"先 preventDefault 按住这次关闭，答完再决定"来保证不会先把窗口关掉。 */
+  const applyClose = (dec) => {
+    if (dec.rememberPref) {
+      setDesktopPref(dec.rememberPref);
+      console.log("[pc] 关窗选择已记住：" + dec.rememberPref);
+    }
+    if (dec.action === "hide") {
+      if (win && !win.isDestroyed()) win.hide();
+      console.log("[pc] 已挂到后台，任务继续跑");
+      return;
+    }
+    if (dec.action === "quit") {
+      quitting = true;
+      console.log("[pc] 按选择直接退出");
+      app.quit();
+    }
+    // cancel：什么都不做，窗口留着
+  };
+  win.on("close", (e) => {
+    const pref = desktopPref();
+    if (quitting || !trayOk || pref !== "ask") {
+      const dec = closePolicy.decideClose({ pref, quitting, trayOk });
+      if (dec.action === "allow") return;         // 放行：窗口真关（无托盘时 window-all-closed 会带走进程）
+      e.preventDefault();
+      applyClose(dec);
+      return;
+    }
+    e.preventDefault();                            // 这次关闭先按住，等用户答完再决定
+    const box = closePolicy.closeDialog(taskWatch.countRunning(lastRows));
+    const host = win && !win.isDestroyed() ? win : undefined;
+    Promise.resolve(dialog.showMessageBox(host, box)).then((res) => {
+      if (!res) return;
+      const dec = closePolicy.decideClose({
+        pref, quitting, trayOk, choice: res.response, remember: res.checkboxValue,
+      });
+      if (dec.action === "allow") { if (win && !win.isDestroyed()) win.close(); return; }
+      applyClose(dec);
+    }).catch((err) => {
+      console.error("[electron] 关窗对话框没弹出来（" + (err && err.message) + "），这次不关，避免误杀后台任务");
+    });
+  });
+
   /* 探针专用：到点直接关窗，用来验「关窗 ≠ 退出」这条承诺（scripts/_verify_desktop.js）。
      只在环境变量存在时生效，正常启动路径完全不受影响。 */
   const probeCloseMs = Number(process.env.PANCODE_PROBE_CLOSE_MS || 0);
@@ -163,11 +222,23 @@ async function createWindow() {
 
 /* ---------- 托盘：窗口关掉后端继续跑（用户的决定：派出去的活不能因为关窗就死） ---------- */
 
-/* 托盘图标用 png 再缩到 16px：直接喂 ico 在部分 Windows 主题下会拿到空图，托盘静默消失 */
+/* 托盘图标用 png 再缩到 16px：直接喂 ico 在部分 Windows 主题下会拿到空图，托盘静默消失。
+   ⚠ 空图这件事以前**完全没有痕迹**：3.2.x 的包里根本没有 assets/（build.files 白名单漏了它），
+   托盘于是变成一个"点得到但看不见"的空图标，日志里一个字都没有，用户看到的就是"托盘没图标"。
+   读不到就大声记一行，并且打一行成功心跳给验收探针断言用。 */
 function trayIcon() {
-  const img = nativeImage.createFromPath(path.join(__dirname, "..", "assets", "icon-1024.png"));
-  if (img.isEmpty()) return img;
-  return img.resize({ width: 16, height: 16 });
+  const p = path.join(__dirname, "..", "assets", "icon-1024.png");
+  let img = null;
+  try { img = nativeImage.createFromPath(p); } catch (e) { img = null; }
+  if (!img || img.isEmpty()) {
+    console.error("[electron] 托盘图标读不到：" + p + " —— 托盘会变成看不见的空图标。"
+      + "打包态请检查 package.json 里 build.files 是否包含 assets/**。");
+    return img || nativeImage.createEmpty();
+  }
+  const small = img.resize({ width: 16, height: 16 });
+  const sz = small.getSize();
+  console.log("[pc] 托盘图标 ok " + sz.width + "x" + sz.height);
+  return small;
 }
 
 function showWindow() {
@@ -211,28 +282,27 @@ function quitWithTasks() {
   app.quit();
 }
 
-/* 轮询任务表：托盘那行要说真话，收口那一刻要弹通知。
-   有活时 3s，没事时 15s——窗口关了也得知道定时器（自动化）跑完了。 */
+/* 任务表读的是**同进程的后端**，不走 HTTP。
+   ⚠ 以前这里每 3 秒 `http.get("/api/tasks")` 一次，而那个端点在登录闸门后面、主进程手里没有
+   userToken → 恒 401 → `rows` 永远是空数组。后果是托盘状态行永远报"没有任务在跑"，
+   任务收口的系统通知也一次都没弹出来过——窗口挂后台的人恰恰是最需要这两样的人。
+   计数变化时打一行心跳，验收探针就断这一行（它能证明"真的数到了任务"，而不是"轮询没报错"）。 */
 function pollTasks() {
-  const req = http.get({ host: "127.0.0.1", port: PORT, path: "/api/tasks", timeout: 2000 }, (res) => {
-    let buf = "";
-    res.on("data", (c) => (buf += c));
-    res.on("end", () => {
-      let rows = [];
-      try { rows = (JSON.parse(buf || "{}").tasks) || []; } catch (e) {}
-      const settled = taskWatch.justSettled(lastRows, rows);
-      lastRows = rows;
-      refreshTray();
-      for (const r of settled) {
-        if (!Notification.isSupported()) break;
-        const t = taskWatch.notifyText(r);
-        new Notification({ title: t.title, body: t.body, silent: false }).show();
-      }
-      scheduleNext(taskWatch.countRunning(rows) ? 3000 : 15000);
-    });
-  });
-  req.on("error", () => scheduleNext(8000));           // 后端还没起来 / 正在重启，稍后再试
-  req.on("timeout", () => { req.destroy(); scheduleNext(8000); });
+  if (!backend || typeof backend.taskRows !== "function") { scheduleNext(1000); return; }
+  let rows = [];
+  try { rows = backend.taskRows() || []; } catch (e) { rows = []; }
+  const had = taskWatch.countRunning(lastRows);
+  const have = taskWatch.countRunning(rows);
+  const settled = taskWatch.justSettled(lastRows, rows);
+  lastRows = rows;
+  refreshTray();
+  if (had !== have) console.log("[pc] 托盘状态：" + taskWatch.trayStatusLine(rows) + "（在跑 " + have + "）");
+  for (const r of settled) {
+    if (!Notification.isSupported()) break;
+    const t = taskWatch.notifyText(r);
+    new Notification({ title: t.title, body: t.body, silent: false }).show();
+  }
+  scheduleNext(have ? 3000 : 15000);
 }
 
 function scheduleNext(ms) {
@@ -254,17 +324,23 @@ function createTray() {
   }
 }
 
+/* 打包态：server 的所有数据/配置都写入可写目录（asar 只读，__dirname 落在 app.asar 内会 EPERM 崩主进程），
+   默认取 userData。**显式给了 PANCODE_DATA_DIR 就听它的，并把 userData 一起搬过去**——
+   两件事都是实测逼出来的：① 不搬的话验收探针直接写在用户真实的 %AppData%\pancode 上，
+   "沙箱数据根"那句是假话；② userData 相同 ⇒ 单实例锁相同 ⇒ 探针想验第二个实例
+   （关窗偏好=quit 那条路）会被锁直接弹掉，永远验不到。必须在 whenReady 之前做。 */
+if (app.isPackaged) {
+  const given = process.env.PANCODE_DATA_DIR;
+  if (given) { try { app.setPath("userData", given); } catch (e) { console.error("[electron] userData 改不动：" + e.message); } }
+  else process.env.PANCODE_DATA_DIR = app.getPath("userData");
+}
+
 app.whenReady().then(() => {
   /* 单实例：托盘驻留后用户很可能再点一次桌面图标。不加这把锁，第二个实例会在同端口
      再起一个后端（EADDRINUSE），或直接出现两份互相看不见的工作状态。 */
   if (!app.requestSingleInstanceLock()) { app.quit(); return; }
   app.on("second-instance", () => { showWindow(); });
 
-  /* 打包态：server 的所有数据/配置都写入可写目录（asar 只读，__dirname 落在 app.asar 内会 EPERM 崩主进程）。
-     由桌面端注入 PANCODE_DATA_DIR = userData；开发态不注入，保持项目根（config.js 兜底到 __dirname 上级）。 */
-  if (app.isPackaged) {
-    process.env.PANCODE_DATA_DIR = app.getPath("userData");
-  }
   startServer();
   createWindow();
   createTray();

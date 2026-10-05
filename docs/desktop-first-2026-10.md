@@ -852,6 +852,42 @@ TypeError [ERR_INVALID_ARG_TYPE]: The "listener" argument must be of type functi
   并给 `_verify_pkg.js` 加一条"首页没有把项目名写死在壳里"——断的是**打包后的 exe 自己 serve 出来的 HTML**，
   不是源码。最终随 3.2.3 出包：`verify:pkg` 19/19、`_verify_desktop.js` 14/14、`vitest` 637 通过 / 1 跳过。
 
+**23′ 托盘没图标 + 关窗要选去向（用户 2026-10-05 提的三条）—— 已落地**
+
+用户报的是"安装包托盘没图标、关闭加个提醒（直接退出还是挂后台，能记住，设置里能调，挂后台任务照常跑）"。
+第一条往下挖又是一个**静默失效**，第二条往下挖牵出第三个：
+
+1. **托盘没图标的根因**：`package.json` 的 `build.files` 白名单里没有 `assets/**`，asar 里根本没有
+   `icon-1024.png` → `nativeImage.createFromPath` 拿到空图 → 托盘是个"点得到但看不见"的空图标，
+   而且**日志里一个字都没有**（3.2.0–3.2.5 全都这样出厂）。修：白名单补 `assets/**`；
+   `trayIcon()` 读不到就大声记 error、成功打 `[pc] 托盘图标 ok 16x16`；
+   `_verify_desktop.js` 断心跳，`_verify_pkg.js` 断包内真的有那张图（>1KB）。
+2. **顺带挖出来的更严重一条**：主进程每 3 秒 `http.get("/api/tasks")` 轮任务表，而那个端点在登录闸门后面、
+   主进程手里没有 userToken → **恒 401**（实测：不带 token `401 NO_AUTH`，带 token `200`）。
+   后果是托盘状态行永远报"没有任务在跑"、任务收口的**系统通知一次都没弹过**——
+   恰恰是"关窗挂后台"最需要的两样全哑。修：后端与主进程同进程，改走 `server/index.js` 导出的
+   `taskRows()`（另加 `desktopPref()` / `setDesktopPref()`），并打 `[pc] 托盘状态…（在跑 N）` 心跳供探针断。
+3. **关窗去向**：判据抽成纯函数 `electron/close-policy.js`（`pref × quitting × trayOk × choice × remember`），
+   主进程只管执行。三条硬规矩：没有托盘时**绝不挂后台**（否则留下看不见又关不掉的进程）；
+   配置里出现不认识的值退回"问"，不猜；挂后台用 `hide()` 不用 destroy（渲染进程留着，任务流与通知不断线）。
+   偏好落在 `cfg.desktop.closeAction`（ask/background/quit），写它的两个入口
+   （设置界面 `/api/config` 的 `section=desktop`、关窗对话框勾了"记住我的选择"）都走 `config.saveDesktop`。
+   设置项在「通用 · 关闭窗口」，**只在桌面端出现**——浏览器态没有驻留进程，摆个不生效的开关是骗人。
+   ⚠ 对话框必须用**异步** `dialog.showMessageBox`：`showMessageBoxSync` 会卡住 Electron 主循环，
+   而后端就跑在同一个进程里，问一句话的功夫正在跑的任务就停了。
+4. **新单测抓到的又一个真 bug**：`config.js` 每个 `saveX` 都是"读盘 → 只改自己那一段 → 整份写回"，
+   而落盘是异步排队的，于是同一秒连着存两段时第二次读到**还没落盘的旧内容**、把第一次那段整段抹回去
+   （实测：先存 `permissions` 再存 `desktop`，`permissions` 就没了）。
+   修：`readJsonSafe` 加一层"最近写出去的内容"读回缓存，只在盘确实更旧时才用（外部改文件仍以盘为准）。
+5. **打包态的数据根**：`app.isPackaged` 时主进程把 `PANCODE_DATA_DIR` 无条件改写成 `userData`，
+   于是探针那句"沙箱数据根"是假话——它写的是用户真实的 `%AppData%\pancode`；
+   而且 userData 相同 ⇒ 单实例锁相同 ⇒ 探针起第二个实例（验"直接退出"那条路）会被锁直接弹掉。
+   修：显式给了 `PANCODE_DATA_DIR` 就听它的，并把 `userData` 一起搬过去（必须在 `whenReady` 之前）。
+6. **门禁层面**：`vitest` 在这台 Windows 上并行会随机红（同一份代码并行红 10 个文件 / 串行 651 通过 0 失败），
+   已在 `vitest.config.js` 固定 `fileParallelism: false` + `testTimeout: 20000`——会随机红的门禁等于没有门禁。
+7. 探针新增：`_verify_pkg.js` 多了 C 段（偏好=quit 时**进程要自己退干净**，探针全程不 kill，
+   并断退出后端口不再应答）与包内 `assets/icon-1024.png`、`close-policy.js` 两条内容断言。
+
 
 ---
 

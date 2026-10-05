@@ -23,7 +23,7 @@ const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
     el.tabIndex = -1;
     el.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
   };
-  bind("t-red", () => w.close(), "关闭（任务会继续在后台跑）");
+  bind("t-red", () => w.close(), "关闭窗口（任务可以挂后台继续跑）");
   bind("t-yellow", () => w.minimize(), "最小化");
   bind("t-green", () => w.toggleMax(), "最大化");
   const setMax = (max) => {

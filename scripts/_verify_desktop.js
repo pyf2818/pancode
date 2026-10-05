@@ -77,7 +77,12 @@ async function waitHealth(maxMs) {
      所以沙箱工作区必须是那套夹具——直接复制仓库自带的 workspace/，不在这里重抄一遍。 */
   fs.cpSync(path.join(ROOT, "workspace"), WS_DIR, { recursive: true });
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(path.join(DATA_DIR, "pancode.config.json"), JSON.stringify({ workspace: WS_DIR }), "utf8");
+  /* desktop.closeAction=background：这一路验的是"挂到后台"。
+     不写这一行的话默认是 ask，主进程会弹一个**同步**模态框，探针没人点→整支卡死。
+     "问"那条判据由 test/p3-close-policy.test.js 单测覆盖（原生模态框没法自动化点选），
+     "直接退出"另起一个实例验（见本节末尾）。 */
+  fs.writeFileSync(path.join(DATA_DIR, "pancode.config.json"),
+    JSON.stringify({ workspace: WS_DIR, desktop: { closeAction: "background" } }), "utf8");
 
   section("启动 Electron 实例（独立端口 + 沙箱数据根）");
   const child = spawn(electronBin, ["."], {
@@ -126,6 +131,12 @@ async function waitHealth(maxMs) {
      那条测的是登录态不是界面（我第一版写成它，沙箱里恒为 0）。 */
   ok("页面真的加载完成（did-finish-load）",
     await waitForMarker("[pc] 页面加载完成", 20000), out.slice(-500));
+  /* 托盘图标：读不到图时主进程现在会大声记一行 error，成功也打一行心跳。
+     3.2.x 的包里 `build.files` 白名单漏了 `assets/**`，托盘一直是个"点得到但看不见"的空图标，
+     而日志里一个字都没有——用户看到的就是"托盘没图标"，排查全靠猜。 */
+  ok("托盘图标真的读到了（缩到 16px 的非空图）",
+    await waitForMarker("[pc] 托盘图标 ok", 15000), out.slice(-400));
+  ok("没有「托盘图标读不到」的告警", !/托盘图标读不到/.test(out), out.slice(-400));
   const crashes = (out.match(/(unhandledRejection|uncaughtException)[^\n]*/g) || []).slice(0, 2);
   ok("主进程这一路没有未捕获的异步异常", crashes.length === 0, crashes.join(" | "));
 
@@ -159,8 +170,16 @@ async function waitHealth(maxMs) {
   ok("关窗前 /api/tasks 能查到这条 running（这就是托盘那行的数据源）", runningBeforeClose === true,
     JSON.stringify((r.json || {}).tasks || r.json).slice(0, 200));
 
-  await wait(3500);                      // 越过 PANCODE_PROBE_CLOSE_MS=2500
+  await wait(3500);                      // 越过 PANCODE_PROBE_CLOSE_MS=9000，确认关掉之后还活着
   ok("关窗后 Electron 进程仍然存活", alive() === true, out.slice(-300));
+  /* 这两条是 #40/#41 的真验收：
+     · 「在跑 N」必须真的出现过——以前主进程走 HTTP 轮 /api/tasks，那个端点在登录闸门后面，
+       它手里没有 userToken，于是每 3 秒吃一次 401、rows 恒空，托盘状态行永远说没任务在跑，
+       收口的系统通知也一次都没弹过。换成同进程读任务表之后，这一行才是有内容的。
+     · 「已挂到后台」证明关窗判据走的是 hide 分支（渲染进程留着，任务流不断线）。 */
+  ok("托盘状态行真的数到了在跑的任务", /（在跑 [1-9]\d*）/.test(out), out.slice(-400));
+  ok("按偏好挂到后台（hide，不是销毁窗口）",
+    await waitForMarker("[pc] 已挂到后台", 15000), out.slice(-400));
   let stillHealthy = false;
   try { const h = await get("/api/health"); stillHealthy = !!(h.json && h.json.ok); } catch (e) {}
   ok("关窗后后端仍在应答 /api/health", stillHealthy === true);

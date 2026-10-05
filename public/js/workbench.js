@@ -281,6 +281,22 @@ function wbRenderGeneral(box) {
   }, "language lang 语言"));
   box.appendChild(g1);
 
+  /* 只有桌面端才谈得上"关窗之后进程去哪"：浏览器里关标签页没有驻留进程这回事，
+     这一行在网页态直接不出现，免得摆一个改了没作用的开关骗人。
+     写的是 cfg.desktop.closeAction，主进程关窗时读的是同一份（判据在 electron/close-policy.js）。 */
+  if (window.pancodeDesktop) {
+    const gd = wbGroup("关闭窗口", "点标题栏红叉或系统关闭时怎么办。挂到后台 = 窗口隐藏、进程与任务继续跑，收口时弹系统通知，从托盘可唤回窗口。");
+    const NAMES = { ask: "每次询问", background: "挂到后台", quit: "直接退出" };
+    gd.appendChild(wbSeg("关闭窗口时", "选错了随时能改回来；勾了「记住我的选择」之后就是这里的设置在说话", [
+      { v: "ask", t: NAMES.ask }, { v: "background", t: NAMES.background }, { v: "quit", t: NAMES.quit },
+    ], (c.desktop && c.desktop.closeAction) || "ask", (v) => {
+      Promise.resolve(wbSave("desktop", { closeAction: v }))
+        .then(() => wbSaved("已保存：关闭窗口时" + (NAMES[v] || v)))
+        .catch(() => wbSaved("保存失败", true));
+    }, "close 关闭 退出 后台 托盘 tray 窗口 desktop 驻留"));
+    box.appendChild(gd);
+  }
+
   const g2 = wbGroup("工作区", "当前工作区会自动出现在「权限与安全 · 授权目录」里；Agent 能进哪几扇门全部由那份清单说了算。");
   g2.appendChild(wbKV("当前工作区", (c.workspace && c.workspace.dir) || "—", true));
   const wsDir = (c.workspace && c.workspace.dir) || "";

@@ -170,10 +170,70 @@ function readArchive(archive) {
     const pkg = src("package.json");
     ok("包内 package.json 版本 = 仓库版本 " + repoVersion,
       !!pkg && JSON.parse(pkg).version === repoVersion, pkg && JSON.parse(pkg).version);
+    /* 托盘图标的根因就在这条上：3.2.x 的 build.files 白名单里没有 assets/**，
+       asar 里根本没有 icon-1024.png，`nativeImage.createFromPath` 拿到空图，
+       托盘变成一个"点得到但看不见"的空图标，而且日志里一个字都没有。 */
+    const icon = src("assets/icon-1024.png");
+    ok("包内有 assets/icon-1024.png（托盘图标）", !!icon && icon.length > 1000, icon ? icon.length + " 字节" : "不在包里");
+    const cp = src("electron/close-policy.js");
+    ok("包内有关窗判据模块 close-policy.js（#41）",
+      !!cp && cp.toString("utf8").includes("decideClose"), "");
     ok("包内**没有**探针与沙箱残骸（scripts/ 不在 files 白名单里）",
       src("scripts/_verify_bootperf.js") === null, "");
     ar.close();
   }
+
+  section("C 关窗偏好=quit 时，进程要真的自己退干净（不留看不见又关不掉的后台）");
+  /* A 段那个实例必须先收掉：Electron 的单实例锁按 userData 算，两个实例并存时第二个会被锁
+     直接弹掉（连后端都不起），C 段就什么都验不到——第一次跑就是这么红两条的。 */
+  try {
+    if (process.platform === "win32" && child.pid) {
+      execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    } else child.kill();
+  } catch (e) { /* 已经自己退了 */ }
+  await new Promise((r) => setTimeout(r, 1500));
+  /* 这条只能对打包产物验：它测的是"close → 判据 → app.quit → before-quit 收口 → 进程结束"
+     整条链能不能走通。before-quit 里那句 preventDefault + 1.2s 定时器一旦收不了尾，
+     用户点「直接退出」就会看到一个退不掉的进程——而且没有任何报错。 */
+  const data2 = fs.mkdtempSync(path.join(os.tmpdir(), "pc-pkgquit-"));
+  const ws2 = path.join(data2, "workspace");
+  fs.mkdirSync(ws2, { recursive: true });
+  fs.writeFileSync(path.join(data2, "pancode.config.json"),
+    JSON.stringify({ workspace: ws2, desktop: { closeAction: "quit" } }), "utf8");
+  const PORT2 = PORT + 1;
+  const child2 = spawn(EXE, [], {
+    cwd: UNPACKED,
+    env: Object.assign({}, process.env, {
+      PANCODE_DATA_DIR: data2, CURSORWEB_WORKSPACE: ws2, PORT: String(PORT2),
+      PANCODE_PROBE_CLOSE_MS: "5000",     // 到点等价于用户点红叉：偏好已写死 quit，不该弹框
+      NODE_NO_WARNINGS: "1",
+    }),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out2 = "";
+  child2.stdout.on("data", (d) => { out2 += d; });
+  child2.stderr.on("data", (d) => { out2 += d; });
+  let exited = false;
+  child2.on("exit", () => { exited = true; });
+  const up2 = async (ms) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      try { if ((await fetch(`http://127.0.0.1:${PORT2}/api/health`)).ok) return true; } catch (e) {}
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  };
+  const booted2 = await up2(60000);
+  ok("第二个实例起来了（closeAction=quit）", booted2, out2.slice(-300));
+  const tExit = Date.now();
+  while (Date.now() - tExit < 45000 && !exited) await new Promise((r) => setTimeout(r, 250));
+  ok("关窗之后进程自己结束（探针全程没有 kill 它）", exited === true, out2.slice(-500));
+  ok("退出走的是「按选择直接退出」那条分支，没有被模态框卡住",
+    /按选择直接退出/.test(out2) && !/关窗选择已记住/.test(out2), out2.slice(-300));
+  let stillUp = false;
+  try { stillUp = (await fetch(`http://127.0.0.1:${PORT2}/api/health`)).ok; } catch (e) {}
+  ok("退出后端口不再应答（后端与子进程一起收干净）", stillUp === false);
+  try { fs.rmSync(data2, { recursive: true, force: true }); } catch (e) {}
 
   /* 收尾：关窗不等于退出（这是产品承诺），所以进程树要显式收掉，别留一个驻留托盘的实例。 */
   try {

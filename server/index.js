@@ -1078,6 +1078,7 @@ function configSnapshot() {
     embedding: configMod.embeddingInfo(cfg),
     mcp: { configured: (cfg.mcp && Array.isArray(cfg.mcp.servers)) ? cfg.mcp.servers : [], running: mcpManager.statusList() },
     workspace: { dir: WS_DIR, recent: cfg.recentWorkspaces || [] },
+    desktop: cfg.desktop || { closeAction: "ask" },   // 桌面端关窗行为（设置里那一行读写的就是它）
     assets: { memory: memCount, rules: ruleCount, skills: engine && engine.skills ? engine.skills.stats : null, experts: expertRecords().length },
     paths: { root: configMod.ROOT, configFile: configMod.CONFIG_PATH, rulesWorkspace: ".pancode/rules（工作区内，Agent 实际读取处）", rulesApp: configMod.rulesDir() },
     version: VERSION,
@@ -1096,6 +1097,7 @@ app.post("/api/config", (req, res) => {
     if (section === "llm") { configMod.saveLlm(cfg, p); buildEngine(); out = { engine: configMod.publicInfo(cfg) }; broadcast({ type: "engine.info", engine: out.engine }); }
     else if (section === "agent") { configMod.saveAgentSettings(cfg, p); out = { agent: configMod.agentSettings(cfg) }; broadcast({ type: "agent.settings", agent: out.agent }); }
     else if (section === "embedding") { configMod.saveEmbedding(cfg, p); out = { embedding: configMod.embeddingInfo(cfg) }; }
+    else if (section === "desktop") { configMod.saveDesktop(cfg, p); out = { desktop: cfg.desktop }; }
     else if (section === "mcp") {
       if (!Array.isArray(p.servers)) return res.json({ ok: false, error: "servers 必须是数组" });
       configMod.saveMcpServers(cfg, { servers: p.servers });
@@ -2364,4 +2366,13 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 /* 桌面端在同一进程里 require 本文件（electron/main.js），托盘菜单的「退出并终止所有任务」
    需要一个能显式收口的入口：中止各用户引擎、刷盘会话、杀终端/MCP 子进程，再退出。
    没有它，app.quit() 只是让进程消失，落盘全凭运气。 */
-module.exports = { shutdown, getTaskBoard: () => taskBoard };
+/* 桌面主进程（electron/main.js）与后端同进程，这几个入口是给它直接调的，别改回 HTTP：
+   /api/tasks 在登录闸门后面，而主进程手里没有 userToken——以前它每 3 秒轮一次一直吃 401，
+   结果是托盘状态行永远报"没有任务在跑"、任务收口的系统通知从来没弹出来过（窗口挂着后台也没用）。 */
+module.exports = {
+  shutdown,
+  getTaskBoard: () => taskBoard,
+  taskRows: () => { try { return taskBoard ? taskBoard.snapshot(null) : []; } catch (e) { return []; } },
+  desktopPref: () => (cfg.desktop && cfg.desktop.closeAction) || "ask",
+  setDesktopPref: (v) => { try { return configMod.saveDesktop(cfg, { closeAction: v }).closeAction; } catch (e) { return ""; } },
+};
