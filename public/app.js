@@ -4353,9 +4353,18 @@ $("agExport").onclick = exportConversation;
     if (!title || !title.trim()) return;
     const tasksStr = prompt(t("newPlanTasksPrompt"), t("newPlanTasksDefault"));
     if (!tasksStr || !tasksStr.trim()) return;
-    const tasks = tasksStr.split("\n").filter((s) => s.trim()).map((s) => ({ text: s.trim(), status: "pending" }));
-    if (!tasks.length) return;
-    send({ type: "tool_call", tool: "create_plan", args: { title: title.trim(), tasks: tasks.map((k) => k.text) } });
+    const lines = tasksStr.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (!lines.length) return;
+    /* 原先发的是 {type:"tool_call"} —— 服务端 WS 分支里从没接这个类型，
+       点"+"只会在控制台留下一条没人理的广播。改走已有的 POST /api/plans：
+       它落 PlanStore 并把 plan.created 推回来，界面按同一条路径渲染。 */
+    fetch("/api/plans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ convId: convId, title: title.trim(), tasks: lines }),
+    }).then((x) => x.json()).then((r) => {
+      if (!r || !r.ok) toast((r && r.error) || t("newPlanFailed"));
+    }).catch(() => toast(t("newPlanFailed")));
   };
 
   const tog = $("btnToggleOrchHist");

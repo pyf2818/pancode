@@ -20,6 +20,7 @@ const fs = require("fs");
 const http = require("http");
 const { spawn } = require("child_process");
 const { chromium } = require("playwright");
+const WebSocket = require("ws");
 
 const ROOT = path.resolve(__dirname, "..");
 const PORT = Number(process.env.PD_PORT || 8846);
@@ -393,6 +394,34 @@ window.__cjk = function (rootSel) {
     }));
     ok("切回中文后计划条文案跟着回来（onLang 重绘有效）",
       zhBack.cjkBar >= 1 && /任务计划/.test(zhBack.barTxt), J(zhBack));
+
+    section("⑦ 演示引擎下计划真的能用 + 勾选状态落盘（本轮补的两个洞）");
+    /* 沙箱没配 API Key → 起的就是内置演示引擎。this.plan 原先只挂在 LlmAgent 上，
+       于是 /api/plans 恒回"引擎未就绪"、面板永远空白；update_plan_task 则是前端发了
+       但服务端 WS 分支从没接。这两条都不打桩，走真 HTTP + 真 WS。 */
+    const mk = await req("POST", "/api/plans", { convId: "probe-demo", title: "演示引擎计划", tasks: ["步骤一", "步骤二"] }, token);
+    ok("演示引擎下 POST /api/plans 不再回「引擎未就绪」",
+      mk.status === 200 && !!mk.json.ok && !!mk.json.plan && mk.json.plan.tasks.length === 2, J(mk.json).slice(0, 180));
+    const back1 = await req("GET", "/api/plans?convId=probe-demo", null, token);
+    ok("GET /api/plans 按会话读回同一个计划", !!back1.json.active && back1.json.active.id === (mk.json.plan && mk.json.plan.id),
+      J(back1.json.active && { id: back1.json.active.id, t: back1.json.active.title }));
+    const planId = mk.json.plan && mk.json.plan.id;
+    const got = [];
+    const sock = new WebSocket("ws://127.0.0.1:" + PORT + "/", ["bearer." + encodeURIComponent(token)]);
+    await new Promise((res, rej) => { sock.on("open", res); sock.on("error", rej); setTimeout(() => rej(new Error("ws 连接超时")), 8000); });
+    sock.on("message", (raw) => { try { got.push(JSON.parse(raw.toString())); } catch (e) {} });
+    sock.send(JSON.stringify({ type: "update_plan_task", convId: "probe-demo", planId: planId, taskIdx: 0, status: "done" }));
+    const t0 = Date.now();
+    while (Date.now() - t0 < 6000 && !got.some((e) => e.type === "plan.updated")) await wait(100);
+    const pushed = got.find((e) => e.type === "plan.updated");
+    ok("update_plan_task 服务端接住了（推回 plan.updated，且只回本会话）",
+      !!pushed && pushed.convId === "probe-demo" && pushed.plan && pushed.plan.tasks[0].status === "done",
+      "事件：" + got.map((e) => e.type).slice(0, 8).join(","));
+    const back2 = await req("GET", "/api/plans?convId=probe-demo", null, token);
+    ok("勾掉的那一步真的落进服务端状态（刷新不会弹回，另一条仍 pending）",
+      !!back2.json.active && back2.json.active.tasks[0].status === "done" && back2.json.active.tasks[1].status === "pending",
+      J(back2.json.active && back2.json.active.tasks.map((x) => x.status)));
+    sock.close();
 
     ok("全程无 JS 报错", realErrors().length === 0, realErrors().slice(0, 3).join(" | "));
   } catch (e) {

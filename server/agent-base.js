@@ -9,8 +9,12 @@ const FAST = process.env.AGENT_FAST === "1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, FAST ? 0 : ms));
 
 function diffStat(oldStr, newStr) {
+  /* 两侧都先归一成 LF 再切行：base 是从磁盘/Git 读回来的原文（Windows 上是 CRLF），
+     编辑器与 Agent 写的是 LF —— 直接 split("\n") 会让每一行都不相等，
+     实测 4 行真改动被算成 +1287 −1287。前端 public/js/utils.js 里那份是同一把尺子，同步过。 */
+  const cut = (s) => String(s).replace(/\r\n/g, "\n").split("\n");
   const cnt = (arr) => { const m = {}; arr.forEach((l) => (m[l] = (m[l] || 0) + 1)); return m; };
-  const A = cnt(String(oldStr).split("\n")), B = cnt(String(newStr).split("\n"));
+  const A = cnt(cut(oldStr)), B = cnt(cut(newStr));
   let add = 0, del = 0;
   for (const l in B) { const d = B[l] - (A[l] || 0); if (d > 0) add += d; }
   for (const l in A) { const d = A[l] - (B[l] || 0); if (d > 0) del += d; }
@@ -24,6 +28,10 @@ class AgentBase {
     this.roots = ctx.roots || null;  // 多根解析：路径属于哪个已授权根（老 ctx 没有就是 null，退回单根行为）
     this.git = ctx.git;          // GitLayer
     this.term = ctx.term;        // TerminalLayer
+    /* 任务计划原先只挂在 LlmAgent 上，于是没配 API Key 的装机（开箱就是演示引擎）里
+       engine.plan 是 undefined：/api/plans 恒回"引擎未就绪"、计划面板永远空白。
+       计划是"项目级"资产（index.js 按工作区建一份跨用户共享），跟引擎是不是真 LLM 无关。 */
+    this.plan = ctx.sharedPlan || null;
     this.running = false;
     this.round = 0;
     this.seq = 0;

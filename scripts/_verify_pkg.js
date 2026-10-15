@@ -21,7 +21,17 @@ const path = require("path");
 const { spawn, execFileSync } = require("child_process");
 
 const REPO = path.resolve(__dirname, "..");
-const UNPACKED = process.argv[2] ? path.resolve(process.argv[2]) : path.join(REPO, "release", "win-unpacked");
+/* 解包目录默认在 release/win-unpacked；npm run dist 现在把中间产物放工作区外
+   （IDE 的文件监听会握着 release 里的句柄，改名/删除就 EPERM/EBUSY，见 scripts/dist.js），
+   并在 release/.unpacked-path 留个记号。没记号才回落到老路径。 */
+function defaultUnpacked() {
+  try {
+    const p = fs.readFileSync(path.join(REPO, "release", ".unpacked-path"), "utf8").trim();
+    if (p && fs.existsSync(p)) return path.resolve(p);
+  } catch (e) {}
+  return path.join(REPO, "release", "win-unpacked");
+}
+const UNPACKED = process.argv[2] ? path.resolve(process.argv[2]) : defaultUnpacked();
 const EXE = path.join(UNPACKED, "pancode.exe");
 const ASAR = path.join(UNPACKED, "resources", "app.asar");
 const PORT = Number(process.env.PORT || 8877);

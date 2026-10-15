@@ -719,7 +719,8 @@ app.post("/api/plans", (req, res) => {
   try {
     if (!engine || !engine.plan) return res.status(503).json({ ok: false, error: "引擎未就绪" });
     const plan = engine.plan.create(req.body.convId || (engine._currentConv) || "default", req.body.title, req.body.tasks);
-    broadcast({ type: "plan.created", plan, convId: plan.convId });
+    // 按请求者的 userKey 收窄：不带 key 的 broadcast 会发给所有连接（别人的计划会串进你的窗口）
+    broadcast({ type: "plan.created", plan, convId: plan.convId }, tokenUserKey(tokenOf(req)));
     res.json({ ok: true, plan });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
@@ -728,7 +729,7 @@ app.post("/api/plans/:id/complete", (req, res) => {
     if (!engine || !engine.plan) return res.status(503).json({ ok: false, error: "引擎未就绪" });
     const plan = engine.plan.complete(req.params.id);
     if (!plan) return res.status(404).json({ ok: false, error: "计划不存在" });
-    broadcast({ type: "plan.updated", plan, convId: plan.convId });
+    broadcast({ type: "plan.updated", plan, convId: plan.convId }, tokenUserKey(tokenOf(req)));
     res.json({ ok: true, plan });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
@@ -2780,6 +2781,20 @@ wss.on("connection", (ws) => {
           const paths = Array.isArray(m.paths) ? m.paths : [];
           if (typeof uEng.rejectPatch === "function") uEng.rejectPatch(convId, paths);
           broadcast({ type: "patch.rejected", paths, convId, all: !paths.length }, msgKey);
+        }, ws, m.type);
+        break;
+
+      /* 点计划条目打勾：前端一直发这条，但服务端从没接 —— 于是勾是画上去的，
+         刷新后按服务端为准又弹回未勾。落到 PlanStore 再把新状态推回去（同一份 plan 引用）。 */
+      case "update_plan_task":
+        safe(() => {
+          if (!uEng.plan || typeof uEng.plan.updateTask !== "function") return;
+          const idx = Number(m.taskIdx);
+          const status = String(m.status || "");
+          if (!Number.isInteger(idx) || ["pending", "in_progress", "done", "skipped"].indexOf(status) < 0) return;
+          const convId = m.convId || uEng._currentConv;
+          const plan = uEng.plan.updateTask(m.planId, idx, status, m.note);
+          if (plan) broadcast({ type: "plan.updated", plan, convId }, msgKey);
         }, ws, m.type);
         break;
     }
