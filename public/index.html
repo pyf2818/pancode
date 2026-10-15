@@ -49,12 +49,12 @@
       </span>
       <b class="tb-word"><span class="bw-pan">pan</span><span class="bw-code">code</span></b>
     </div>
-    <button id="btnOpenFolder" class="tb-open" title="打开任意本地文件夹作为工作区"><i data-ico="folder"></i><span class="tb-project">…</span><i data-ico="chevD"></i></button>
+    <button id="btnOpenFolder" class="tb-open" data-i18n-title="wsOpenAnyFolderTip" title="打开任意本地文件夹作为工作区"><i data-ico="folder"></i><span class="tb-project">…</span><i data-ico="chevD"></i></button>
   </div>
   <div class="tb-center">
     <div class="mode-switch">
-      <button id="btnModeEditor" class="mode-btn active" title="代码编辑器模式"><i data-ico="editorWin"></i>CODE</button>
-      <button id="btnModeAgents" class="mode-btn" title="AI 对话工作台模式"><i data-ico="robot"></i>AGENT</button>
+      <button id="btnModeEditor" class="mode-btn active" data-i18n-title="modeEditorTip" title="代码编辑器模式"><i data-ico="editorWin"></i>CODE</button>
+      <button id="btnModeAgents" class="mode-btn" data-i18n-title="modeAgentsTip" title="AI 对话工作台模式"><i data-ico="robot"></i>AGENT</button>
     </div>
   </div>
   <div class="tb-right">
@@ -69,16 +69,16 @@
       <button id="btnReset" class="tb-icon-btn" data-i18n-title="resetWorkspace" title="还原工作区"><i data-ico="reset"></i></button>
     </div>
     <div id="goalWrap" class="goal-wrap">
-      <button id="btnGoal" class="goal-btn" title="Goal 模式：设定目标，Agent 持续执行直到完成"><i data-ico="play"></i><span>Goal</span></button>
+      <button id="btnGoal" class="goal-btn" data-i18n-title="goalTip" title="Goal 模式：设定目标，Agent 持续执行直到完成"><i data-ico="play"></i><span>Goal</span></button>
       <div id="goalPop" class="goal-pop" style="display:none">
-        <div class="goal-pop-title">设定目标</div>
-        <textarea id="goalInput" rows="3" placeholder="描述你的目标，如：实现完整的用户登录注册功能，包括前后端、测试"></textarea>
-        <button id="goalStart" class="set-btn" style="background:var(--ok);color:#000;width:100%">启动 Goal</button>
+        <div class="goal-pop-title" data-i18n="setGoal">设定目标</div>
+        <textarea id="goalInput" rows="3" data-i18n-ph="goalPlaceholder" placeholder="描述你的目标，如：实现完整的用户登录注册功能，包括前后端、测试"></textarea>
+        <button id="goalStart" class="set-btn" style="background:var(--ok);color:#000;width:100%" data-i18n="startGoal">启动 Goal</button>
       </div>
     </div>
     <span id="tbAgentState" class="agent-state idle"><span class="dot"></span><span data-i18n="aiIdle">AI 空闲</span></span>
     <button id="btnLangToggle" class="tb-lang" title="Switch language"><span data-i18n="langToggle">EN</span></button>
-    <span id="tbUserBtn" class="tb-user" title="点击登录/注册"><i data-ico="robot"></i><span id="tbUserTxt">未登录</span></span>
+    <span id="tbUserBtn" class="tb-user" data-i18n-title="clickToAuth" title="点击登录/注册"><i data-ico="robot"></i><span id="tbUserTxt" data-i18n="notLoggedIn">未登录</span></span>
   </div>
 </div>
 
@@ -88,10 +88,10 @@
     <button class="ab-btn active" data-view="explorer" data-i18n-title="explorer" title="资源管理器"><i data-ico="files"></i></button>
     <button class="ab-btn" data-view="search" data-i18n-title="search" title="搜索"><i data-ico="search"></i></button>
     <button class="ab-btn" data-view="scm" data-i18n-title="scm" title="源代码管理"><i data-ico="scm"></i><span id="scmBadge" class="ab-badge" style="display:none">0</span></button>
-    <button class="ab-btn" data-view="skills" data-i18n-title="skills" title="Skills 市场"><i data-ico="sparkle"></i></button>
-    <button class="ab-btn" data-view="evolution" title="进化树"><i data-ico="tree"></i></button>
-    <button class="ab-btn" data-view="ai" title="Agents Window"><i data-ico="robot"></i></button>
-    <button class="ab-btn ab-bottom" id="btnGlobalSettings" title="全局设置"><i data-ico="gear"></i></button>
+    <button class="ab-btn" data-view="skills" data-i18n-title="skillMarket" title="Skills 市场"><i data-ico="sparkle"></i></button>
+    <button class="ab-btn" data-view="evolution" data-i18n-title="evolutionTree" title="进化树"><i data-ico="tree"></i></button>
+    <button class="ab-btn" data-view="ai" data-i18n-title="agentsWindowTip" title="Agents Window"><i data-ico="robot"></i></button>
+    <button class="ab-btn ab-bottom" id="btnGlobalSettings" data-i18n-title="globalSettings" title="全局设置"><i data-ico="gear"></i></button>
   </div>
 
   <div id="sidebar">
@@ -99,11 +99,11 @@
       <div class="side-title" data-i18n="explorer">资源管理器</div>
       <div class="side-section-head"><span id="projName">WORKSPACE</span>
         <span class="side-actions">
-          <button id="btnNewFile" title="新建文件"><i data-ico="filePlus"></i></button>
-          <button id="btnNewFolder" title="新建文件夹"><i data-ico="folderPlus"></i></button>
+          <button id="btnNewFile" data-i18n-title="newFile" title="新建文件"><i data-ico="filePlus"></i></button>
+          <button id="btnNewFolder" data-i18n-title="newFolder" title="新建文件夹"><i data-ico="folderPlus"></i></button>
         </span>
       </div>
-      <div id="fileTree"></div>
+      <div id="fileTree" data-i18n-skip></div>
     </div>
     <div class="side-view" id="view-search" style="display:none">
       <div class="side-title" data-i18n="search">搜索</div>
@@ -116,7 +116,7 @@
         <button id="btnBuildIndex" class="sem-build"><i data-ico="memory"></i><span data-i18n="buildIndex">构建索引</span></button>
         <span id="semStatus" class="sem-status"></span>
       </div>
-      <div id="searchResults"></div>
+      <div id="searchResults" data-i18n-skip></div>
     </div>
     <div class="side-view" id="view-scm" style="display:none">
       <div class="side-title" data-i18n="scm">源代码管理</div>
@@ -127,36 +127,46 @@
       <div class="side-title" data-i18n="skillMarket">Skills 市场</div>
       <div class="side-section-head"><span id="skillsCount">0 个 Skill</span>
         <span class="side-actions">
-          <button id="btnNewSkill" title="创建新 Skill"><i data-ico="filePlus"></i></button>
-          <button id="btnImportSkill" title="导入 Skill JSON"><i data-ico="save"></i></button>
+          <button id="btnNewSkill" data-i18n-title="newSkillTip" title="创建新 Skill"><i data-ico="filePlus"></i></button>
+          <button id="btnImportSkill" data-i18n-title="importSkillTip" title="导入 Skill JSON"><i data-ico="save"></i></button>
         </span>
       </div>
-      <div id="skillsList" class="skills-list"></div>
-      <div class="side-section-head" style="margin-top:12px"><span>工作区 Skills</span></div>
-      <div id="localSkillsList" class="skills-list"></div>
+      <div class="skm-toolbar">
+        <input id="skillSearch" type="text" placeholder="搜索技能" data-i18n-ph="skillSearchPh" data-i18n-title="skillSearchTip" title="按名称 / 描述 / 标签 / 分类筛选" autocomplete="off" spellcheck="false">
+        <div class="skm-sort" id="skillSort">
+          <button data-sort="usage" class="on" data-i18n="sortUsage" data-i18n-title="sortUsageTip" title="按累计使用次数">用量</button>
+          <button data-sort="rating" data-i18n="sortRating" data-i18n-title="sortRatingTip" title="按本机评分">评分</button>
+          <button data-sort="recent" data-i18n="sortRecent" data-i18n-title="sortRecentTip" title="按最近改动">最新</button>
+          <button data-sort="name" data-i18n="sortName" data-i18n-title="sortNameTip" title="按名称">名称</button>
+        </div>
+      </div>
+      <div id="skillCatChips" class="skm-cats"></div>
+      <div id="skillsList" class="skills-list" data-i18n-skip></div>
+      <div class="side-section-head" style="margin-top:12px"><span data-i18n="workspaceSkills">工作区 Skills</span></div>
+      <div id="localSkillsList" class="skills-list" data-i18n-skip></div>
     </div>
   </div>
 
-  <div id="sidebarResizer" class="resizer resizer-v" title="拖动调整侧边栏宽度"></div>
+  <div id="sidebarResizer" class="resizer resizer-v" data-i18n-title="resizerSidebarTip" title="拖动调整侧边栏宽度"></div>
 
   <div id="editorMain">
     <div id="tabbar"></div>
     <div id="breadcrumb"></div>
     <div id="editorRow">
-      <div id="monacoHost"></div>
-      <div id="previewResizer" class="resizer resizer-v" title="拖动调整预览面板宽度（双击重置）"></div>
+      <div id="monacoHost" data-i18n-skip></div>
+      <div id="previewResizer" class="resizer resizer-v" data-i18n-title="resizerPreviewTip" title="拖动调整预览面板宽度（双击重置）"></div>
       <div id="htmlPreview">
         <div class="hp-head">
-          <span class="hp-title"><i data-ico="eye"></i>预览</span>
+          <span class="hp-title"><i data-ico="eye"></i><span data-i18n="preview">预览</span></span>
           <span class="hp-hint" id="hpHint" data-i18n="autoRefresh">编辑时实时刷新</span>
           <span class="hp-zoom">
-            <button id="hpZoomOut" class="hp-btn" title="缩小 (Ctrl -)"><i data-ico="minus"></i></button>
+            <button id="hpZoomOut" class="hp-btn" data-i18n-title="zoomOutTip" title="缩小 (Ctrl -)"><i data-ico="minus"></i></button>
             <span id="hpZoomTxt" class="hp-zoom-txt">100%</span>
-            <button id="hpZoomIn" class="hp-btn" title="放大 (Ctrl +)"><i data-ico="plus"></i></button>
-            <button id="hpZoomReset" class="hp-btn" title="重置缩放"><i data-ico="reset"></i></button>
+            <button id="hpZoomIn" class="hp-btn" data-i18n-title="zoomInTip" title="放大 (Ctrl +)"><i data-ico="plus"></i></button>
+            <button id="hpZoomReset" class="hp-btn" data-i18n-title="zoomResetTip" title="重置缩放"><i data-ico="reset"></i></button>
           </span>
-          <button id="hpRefresh" class="hp-btn" title="刷新预览"><i data-ico="reset"></i></button>
-          <button id="hpClose" class="hp-btn" title="关闭预览"><i data-ico="close"></i></button>
+          <button id="hpRefresh" class="hp-btn" data-i18n-title="refreshPreviewTip" title="刷新预览"><i data-ico="reset"></i></button>
+          <button id="hpClose" class="hp-btn" data-i18n-title="closePreviewTip" title="关闭预览"><i data-ico="close"></i></button>
         </div>
         <div id="hpScroll" class="hp-scroll">
           <iframe id="hpFrame" class="hp-frame" sandbox="allow-scripts"></iframe>
@@ -164,33 +174,33 @@
       </div>
     </div>
     <div id="binPreview" style="display:none"><div id="binPreviewBody"></div></div>
-    <div id="panelResizer" class="resizer resizer-h" title="拖动调整终端高度"></div>
+    <div id="panelResizer" class="resizer resizer-h" data-i18n-title="resizerTerminalTip" title="拖动调整终端高度"></div>
     <div id="bottomPanel">
       <div class="bp-tabs">
-        <span class="bp-tab" data-i18n="terminal"><i data-ico="terminal"></i>终端</span>
-        <span class="bp-tab-hint" data-i18n="terminalHint">真实执行 — AI 与你都可以在这里运行命令</span>
-        <button id="bpToggle" title="折叠/展开面板"><i data-ico="chevD"></i></button>
+        <span class="bp-tab"><i data-ico="terminal"></i><span data-i18n="terminal">终端</span></span>
+        <span class="bp-tab-hint" id="bpHint" data-i18n="terminalHint">真实执行 — AI 与你都可以在这里运行命令</span>
+        <button id="bpToggle" data-i18n-title="collapsePanelTip" title="折叠/展开面板"><i data-ico="chevD"></i></button>
       </div>
       <div id="terminalSlotEditor" class="terminal-slot"></div>
     </div>
   </div>
 
-  <div id="chatResizer" class="resizer resizer-v" title="拖动调整 AI 聊天栏宽度（双击收起/展开）"></div>
+  <div id="chatResizer" class="resizer resizer-v" data-i18n-title="resizerChatTip" title="拖动调整 AI 聊天栏宽度（双击收起/展开）"></div>
 
   <div id="chatPanel">
     <div class="cp-head">
-      <span class="cp-title"><i data-ico="sparkle" data-cls="ico-accent"></i>AI 助手</span>
+      <span class="cp-title"><i data-ico="sparkle" data-cls="ico-accent"></i><span data-i18n="aiAssistant">AI 助手</span></span>
       <span class="cp-model" id="cpModelEditor">…</span>
     </div>
     <div id="planSticky" class="plan-sticky" hidden></div>
-    <div id="chatSlotEditor" class="chat-slot"></div>
+    <div id="chatSlotEditor" class="chat-slot" data-i18n-skip></div>
     <div class="chat-input-wrap" id="chatInputEditor"></div>
   </div>
 
   <div id="statusbar">
     <div class="sb-left">
       <span class="sb-item sb-branch"><i data-ico="branch"></i><span id="sbBranch">…</span></span>
-      <span class="sb-item" id="sbProblems"><i data-ico="check"></i>0 错误</span>
+      <span class="sb-item" id="sbProblems"><i data-ico="check"></i><span id="sbProblemsTxt">0 错误</span></span>
       <span class="sb-item" id="sbChanges"><i data-ico="diff"></i><span id="sbChangesTxt">0 处改动</span></span>
       <span class="sb-item sb-procs" id="sbProcs" style="display:none"><i data-ico="pulse"></i><span id="sbProcsTxt">0 进程</span></span>
     </div>
@@ -198,9 +208,9 @@
       <span class="sb-item" id="sbCursor">行 1, 列 1</span>
       <span class="sb-item" id="sbLang">JavaScript</span>
       <span class="sb-item">UTF-8</span>
-      <span class="sb-item" id="sbEld" style="display:none" title="事件循环延迟（ELD）：主进程繁忙程度"><i data-ico="gauge"></i> <span id="sbEldTxt">—</span></span>
-      <span class="sb-item" id="sbAgent"><i data-ico="sparkle"></i><span id="sbAgentTxt">AI 空闲</span></span>
-      <button class="sb-item" id="sbPatchReview" style="display:none;cursor:pointer;background:color-mix(in srgb, var(--warn) 13%, transparent);color:var(--warn);border-radius:5px;padding:2px 8px" title="点击重新打开审阅面板"><i data-ico="robot"></i> 待审阅</button>
+      <span class="sb-item" id="sbEld" style="display:none" data-i18n-title="sbEldTip" title="事件循环延迟（ELD）：主进程繁忙程度"><i data-ico="gauge"></i> <span id="sbEldTxt">—</span></span>
+      <span class="sb-item" id="sbAgent"><i data-ico="sparkle"></i><span id="sbAgentTxt" data-i18n="aiIdle">AI 空闲</span></span>
+      <button class="sb-item" id="sbPatchReview" style="display:none;cursor:pointer;background:color-mix(in srgb, var(--warn) 13%, transparent);color:var(--warn);border-radius:5px;padding:2px 8px" data-i18n-title="pendingReviewTip" title="点击重新打开审阅面板"><i data-ico="robot"></i> <span data-i18n="pendingReview">待审阅</span></button>
     </div>
   </div>
 </div>
@@ -209,27 +219,19 @@
 <div id="agentsWindow" class="window" style="display:none">
   <aside id="agSessions">
     <div class="ag-side-row">
-      <div class="ag-side-title">会话</div>
-      <button id="btnNewConv" class="ag-side-btn" title="新建会话"><i data-ico="plus"></i></button>
+      <div class="ag-side-title" data-i18n="sessions">会话</div>
+      <button id="btnNewConv" class="ag-side-btn" data-i18n-title="newSessionTip" title="新建会话"><i data-ico="plus"></i></button>
     </div>
-    <input id="convSearch" class="conv-search" placeholder="搜索会话…" />
-    <div id="agSessionList" class="ag-sess-scroll"></div>
+    <input id="convSearch" class="conv-search" data-i18n-ph="searchSessionsPh" placeholder="搜索会话…" />
+    <div id="agSessionList" class="ag-sess-scroll" data-i18n-skip></div>
     <div class="ag-side-row ag-side-sep">
-      <div class="ag-side-title" data-i18n="taskPlan">任务计划</div>
-      <button id="btnNewPlan" class="ag-side-btn" title="手动创建计划"><i data-ico="plus"></i></button>
+      <div class="ag-side-title" data-i18n="orchHistory">编排历史</div>
+      <button id="btnToggleOrchHist" class="ag-side-btn" data-i18n-title="expandCollapseTip" title="展开/折叠"><i data-ico="chevD"></i></button>
     </div>
-    <div id="agPlanBox" class="ag-plan-box ag-plan-scroll">
-      <div id="agPlanEmpty" class="scm-empty" data-i18n="planEmpty">Agent 面对复杂任务时会自动创建计划，实时跟进进度。</div>
-      <div id="agPlanActive" style="display:none"></div>
-    </div>
-    <div class="ag-side-row ag-side-sep">
-      <div class="ag-side-title">编排历史</div>
-      <button id="btnToggleOrchHist" class="ag-side-btn" title="展开/折叠"><i data-ico="chevD"></i></button>
-    </div>
-    <div id="agOrchHistory" class="ag-orch-hist ag-orch-scroll"></div>
+    <div id="agOrchHistory" class="ag-orch-hist ag-orch-scroll" data-i18n-skip></div>
   </aside>
 
-  <div id="agSessionsResizer" class="resizer resizer-v" title="拖动调整会话栏宽度（双击收起/展开）"></div>
+  <div id="agSessionsResizer" class="resizer resizer-v" data-i18n-title="resizerSessionsTip" title="拖动调整会话栏宽度（双击收起/展开）"></div>
 
   <main id="agCenter">
     <header class="ag-chat-head">
@@ -249,82 +251,99 @@
           </svg>
         </div>
         <div class="ag-head-txt">
-          <div class="ag-head-name">Agent 会话</div>
-          <div class="ag-head-sub"><span class="ag-live-dot"></span><span id="agLiveTxt">AI 空闲</span> · <span class="cp-model" id="cpModelAgents">…</span></div>
+          <div class="ag-head-name" data-i18n="agentSessions">Agent 会话</div>
+          <div class="ag-head-sub"><span class="ag-live-dot"></span><span id="agLiveTxt" data-i18n="aiIdle">AI 空闲</span> · <span class="cp-model" id="cpModelAgents">…</span></div>
         </div>
       </div>
 
-      <button id="agExport" class="ag-new-btn ghost" title="将当前对话导出为 Markdown 文件"><i data-ico="save"></i>导出</button>
+      <button id="agExport" class="ag-new-btn ghost" data-i18n-title="exportChatTip" title="将当前对话导出为 Markdown 文件"><i data-ico="save"></i><span data-i18n="exportChat">导出</span></button>
     </header>
-    <div id="chatSlotAgents" class="chat-slot"></div>
+    <div id="chatSlotAgents" class="chat-slot" data-i18n-skip></div>
+    <!-- 任务计划从左侧栏挪到这里：常驻一条胶囊显示进度，点开才摊出清单，侧栏省出一整段 -->
+    <div id="planBar" class="plan-bar" hidden>
+      <div id="planPop" class="plan-pop hidden" role="dialog" data-i18n-aria="taskPlan" aria-label="任务计划">
+        <div id="agPlanBox" class="ag-plan-box ag-plan-scroll">
+          <div id="agPlanEmpty" class="scm-empty" data-i18n="planEmpty">Agent 面对复杂任务时会自动创建计划，实时跟进进度。</div>
+          <div id="agPlanActive" style="display:none"></div>
+        </div>
+      </div>
+      <button id="btnPlanToggle" class="plan-bar-btn" aria-expanded="false" aria-controls="planPop">
+        <i data-ico="tasklist"></i><span class="pb-label" data-i18n="taskPlan">任务计划</span>
+        <span class="pb-count" id="planBarCount">0/0</span>
+        <span class="pb-bar"><i id="planBarFill"></i></span>
+        <span class="pb-pct" id="planBarPct">0%</span>
+        <i data-ico="chevD" class="pb-chev"></i>
+      </button>
+      <button id="btnNewPlan" class="plan-bar-new" data-i18n-title="newPlanTip" title="手动创建计划"><i data-ico="plus"></i></button>
+    </div>
     <div class="chat-input-wrap" id="chatInputAgents"></div>
   </main>
 
-  <div id="agRightResizer" class="resizer resizer-v" title="拖动调整右侧面板宽度（双击收起/展开）"></div>
+  <div id="agRightResizer" class="resizer resizer-v" data-i18n-title="resizerRightTip" title="拖动调整右侧面板宽度（双击收起/展开）"></div>
 
   <aside id="agRight">
     <section class="ag-panel ag-env" id="agEnv">
       <div class="ag-env-head">
-        <span class="ag-env-title"><i data-ico="gauge"></i>环境信息</span>
-        <button class="ag-env-collapse" id="agEnvToggle" title="折叠/展开"><i data-ico="chevD"></i></button>
+        <span class="ag-env-title"><i data-ico="gauge"></i><span data-i18n="envInfo">环境信息</span></span>
+        <button class="ag-env-collapse" id="agEnvToggle" data-i18n-title="collapseExpandTip" title="折叠/展开"><i data-ico="chevD"></i></button>
       </div>
       <div class="ag-env-body" id="agEnvBody">
         <div class="ag-env-row ag-env-diff">
-          <span class="ag-env-k">本次改动</span>
+          <span class="ag-env-k" data-i18n="changesPanel">本次改动</span>
           <span class="ag-env-v"><b class="add" id="envAdd">+0</b><b class="del" id="envDel">−0</b><span id="envFiles">0 个文件</span></span>
         </div>
         <div class="ag-env-row">
-          <span class="ag-env-k">上下文</span>
+          <span class="ag-env-k" data-i18n="ctxLabel">上下文</span>
           <span class="ag-env-v"><span class="ag-env-bar"><i id="envCtxFill"></i></span><em id="envCtxTxt">—</em></span>
         </div>
         <div class="ag-env-row ag-risk-row" id="envRiskRow" style="display:none">
-          <span class="ag-env-k">改动风险</span>
+          <span class="ag-env-k" data-i18n="changeRisk">改动风险</span>
           <span class="ag-env-v"><span class="risk-pill" id="envRiskPill">—</span><em id="envRiskTxt"></em></span>
         </div>
         <div class="ag-risk-focus" id="envRiskFocus"></div>
         <div class="ag-env-row">
-          <span class="ag-env-k">仓库</span>
+          <span class="ag-env-k" data-i18n="repoLabel">仓库</span>
           <span class="ag-env-v"><i data-ico="branch"></i><span id="envBranch">…</span><span class="ag-env-tag" id="envVcs">本地</span></span>
         </div>
         <div class="ag-env-row">
-          <span class="ag-env-k">引擎</span>
+          <span class="ag-env-k" data-i18n="engineLabel">引擎</span>
           <span class="ag-env-v"><i data-ico="sparkle"></i><span id="envEngine">—</span></span>
         </div>
         <div class="ag-env-acts">
-          <button id="envCommit" class="ag-env-btn"><i data-ico="branch"></i>提交或推送</button>
-          <button id="envSediment" class="ag-env-btn ghost" title="把本次会话的有效决策沉淀为规则 / 记忆"><i data-ico="save"></i>沉淀</button>
+          <button id="envCommit" class="ag-env-btn"><i data-ico="branch"></i><span data-i18n="commitOrPush">提交或推送</span></button>
+          <button id="envSediment" class="ag-env-btn ghost" data-i18n-title="sedimentTip" title="把本次会话的有效决策沉淀为规则 / 记忆"><i data-ico="save"></i><span data-i18n="sediment">沉淀</span></button>
         </div>
         <div class="ag-env-updated" id="envUpdated">更新于 —</div>
       </div>
     </section>
     <section class="ag-panel">
-      <div class="ag-panel-title"><span class="cp-title"><i data-ico="terminal"></i>实时终端</span><span class="ag-panel-hint">真实执行</span></div>
+      <div class="ag-panel-title"><span class="cp-title"><i data-ico="terminal"></i><span data-i18n="liveTerminal">实时终端</span></span><span class="ag-panel-hint" data-i18n="terminalHint">真实执行</span></div>
       <div id="terminalSlotAgents" class="terminal-slot"></div>
     </section>
-    <div class="resizer-h" id="agResize1" title="拖动调整终端高度"></div>
+    <div class="resizer-h" id="agResize1" data-i18n-title="resizerTerminalTip" title="拖动调整终端高度"></div>
     <section class="ag-panel ag-panel-grow" id="agChangedPanel">
       <div class="ag-panel-title">
         <span class="cp-title ag-out-tabs">
-          <button class="ag-out-tab active" id="agTabChanges" title="本次任务的文件改动与 Diff"><i data-ico="diff"></i>变更</button>
-          <button class="ag-out-tab" id="agTabArtifacts" title="本会话产出的可交付文件，点击预览"><i data-ico="save"></i>产物<span id="agArtifactBadge" class="ag-art-badge" style="display:none">0</span></button>
+          <button class="ag-out-tab active" id="agTabChanges" data-i18n-title="tabChangesTip" title="本次任务的文件改动与 Diff"><i data-ico="diff"></i><span data-i18n="tabChanges">变更</span></button>
+          <button class="ag-out-tab" id="agTabArtifacts" data-i18n-title="tabArtifactsTip" title="本会话产出的可交付文件，点击预览"><i data-ico="save"></i><span data-i18n="tabArtifacts">产物</span><span id="agArtifactBadge" class="ag-art-badge" style="display:none">0</span></button>
         </span>
         <span id="agChangeCount" class="ag-panel-hint">0 个文件</span>
       </div>
-      <div id="agArtifacts" style="display:none"><div class="scm-empty">本会话暂无产物。</div></div>
+      <div id="agArtifacts" style="display:none"><div class="scm-empty" data-i18n="noArtifacts">本会话暂无产物。</div></div>
       <div id="agChangedFiles"><div class="scm-empty" data-i18n="noChangesAgent">Agent 修改代码后，文件与 Diff 会显示在这里。</div></div>
     </section>
-    <div class="resizer-h" id="agResize2" title="拖动调整本次改动高度"></div>
+    <div class="resizer-h" id="agResize2" data-i18n-title="resizerChangesTip" title="拖动调整本次改动高度"></div>
     <section class="ag-panel ag-panel-grow" id="agTracePanel">
       <div class="ag-panel-title"><span class="cp-title"><i data-ico="tasklist"></i>Agent Trace</span><span id="agTraceCount" class="ag-panel-hint">0 事件</span></div>
       <div id="traceStats" class="trace-stats">
         <div class="ts-item"><b id="traceRounds">0</b><span>rounds</span></div>
         <div class="ts-item"><b id="traceTools">0</b><span>tools</span></div>
-        <div class="ts-item" title="本会话累计发出去的 token（每次请求都含全量上下文，所以它必然远大于窗口占用，别读成「用了多少内存」）"><b id="traceTokens">0</b><span>累计</span></div>
-        <div class="ts-item" title="当前上下文占自动压缩水位线的百分比，与输入框旁的环形进度同源"><b id="traceCtx">0%</b><span>水位</span></div>
+        <div class="ts-item" data-i18n-title="traceTokensTip" title="本会话累计发出去的 token（每次请求都含全量上下文，所以它必然远大于窗口占用，别读成「用了多少内存」）"><b id="traceTokens">0</b><span data-i18n="traceTotal">累计</span></div>
+        <div class="ts-item" data-i18n-title="traceCtxTip" title="当前上下文占自动压缩水位线的百分比，与输入框旁的环形进度同源"><b id="traceCtx">0%</b><span data-i18n="traceWater">水位</span></div>
         <div class="ts-item"><b id="traceLoops">0</b><span>loops</span></div>
         <div class="ts-item"><b id="traceErrors">0</b><span>errors</span></div>
       </div>
-      <div id="traceList" class="trace-list"></div>
+      <div id="traceList" class="trace-list" data-i18n-skip></div>
     </section>
   </aside>
 </div>
@@ -333,14 +352,14 @@
 <!-- ======================= 后台进程面板 ======================= -->
 <div id="procsModal" style="display:none">
   <div class="set-box pm-box">
-    <div class="set-head"><span><i data-ico="pulse"></i> 后台进程 — Agent 启动的长驻服务</span><button id="pmClose"><i data-ico="close"></i></button></div>
+    <div class="set-head"><span><i data-ico="pulse"></i> <span data-i18n="procsTitle">后台进程 — Agent 启动的长驻服务</span></span><button id="pmClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
-      <div class="pm-tip">这里列出 Agent 通过 <code>start_process</code> 启动的长驻进程（dev server / watcher / build…）。可查看实时日志、一键停止。</div>
+      <div class="pm-tip" data-i18n="procsTip">这里列出 Agent 通过 start_process 启动的长驻进程（dev server / watcher / build…）。可查看实时日志、一键停止。</div>
       <div class="pm-toolbar">
-        <button id="pmRefresh" class="btn-sub"><i data-ico="reset"></i> 刷新</button>
+        <button id="pmRefresh" class="btn-sub"><i data-ico="reset"></i> <span data-i18n="refresh">刷新</span></button>
         <span id="pmCount" class="pm-count"></span>
       </div>
-      <div id="pmList" class="pm-list"></div>
+      <div id="pmList" class="pm-list" data-i18n-skip></div>
     </div>
   </div>
 </div>
@@ -348,9 +367,9 @@
 <!-- ======================= 多 Agent 编排面板 ======================= -->
 <div id="orchOverlay" style="display:none">
   <div class="set-box orch-box">
-    <div class="set-head"><span><i data-ico="sparkle"></i> <span id="orchTitle">多 Agent 编排</span></span><button id="orchClose"><i data-ico="close"></i></button></div>
+    <div class="set-head"><span><i data-ico="sparkle"></i> <span id="orchTitle" data-i18n="orchTitle">多 Agent 编排</span></span><button id="orchClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
-      <div id="orchSteps" class="orch-steps"></div>
+      <div id="orchSteps" class="orch-steps" data-i18n-skip></div>
       <div id="orchSummary" class="orch-summary" style="display:none"></div>
     </div>
   </div>
@@ -359,20 +378,20 @@
 <!-- ======================= 打开文件夹弹窗 ======================= -->
 <div id="folderModal" style="display:none">
   <div class="set-box fm-box">
-    <div class="set-head"><span><i data-ico="folder"></i> 打开文件夹 — 任意本地目录都可以成为工作区</span><button id="fmClose"><i data-ico="close"></i></button></div>
+    <div class="set-head"><span><i data-ico="folder"></i> <span data-i18n="folderTitle">打开文件夹 — 任意本地目录都可以成为工作区</span></span><button id="fmClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
       <div class="fm-pathrow">
-        <button id="fmUp" class="btn-sub" title="上一级">↑</button>
-        <button id="fmHome" class="btn-sub" title="用户主目录"><i data-ico="home"></i></button>
-        <input id="fmPath" type="text" placeholder="输入或粘贴文件夹路径，如 D:\my-project" spellcheck="false">
-        <button id="fmGo" class="btn-sub">转到</button>
+        <button id="fmUp" class="btn-sub" data-i18n-title="folderUpTip" title="上一级">↑</button>
+        <button id="fmHome" class="btn-sub" data-i18n-title="folderHomeTip" title="用户主目录"><i data-ico="home"></i></button>
+        <input id="fmPath" type="text" data-i18n-ph="folderPathPh" placeholder="输入或粘贴文件夹路径，如 D:\my-project" spellcheck="false">
+        <button id="fmGo" class="btn-sub" data-i18n="folderGo">转到</button>
       </div>
       <div id="fmRecent" class="fm-recent"></div>
-      <div id="fmList" class="fm-list"></div>
+      <div id="fmList" class="fm-list" data-i18n-skip></div>
       <div class="set-status" id="fmStatus"></div>
       <div class="set-actions">
         <span class="fm-current" id="fmCurrent"></span>
-        <button id="fmOpen" class="btn-main">打开此文件夹</button>
+        <button id="fmOpen" class="btn-main" data-i18n="folderOpenBtn">打开此文件夹</button>
       </div>
     </div>
   </div>
@@ -381,22 +400,22 @@
 
 <!-- ======================= 工作流模板弹出层 ======================= -->
 <div id="wfPop" class="wf-pop" style="display:none">
-  <div class="wf-pop-head"><i data-ico="tasklist"></i> 工作流模板（目标驱动）</div>
-  <div id="wfList" class="wf-list"></div>
-  <div class="wf-pop-tip">点击模板会自动填入输入框，补充 <b>&lt;…&gt;</b> 占位后发送</div>
+  <div class="wf-pop-head"><i data-ico="tasklist"></i> <span data-i18n="wfPopTitle">工作流模板（目标驱动）</span></div>
+  <div id="wfList" class="wf-list" data-i18n-skip></div>
+  <div class="wf-pop-tip"><span data-i18n="wfPopTip">点击模板会自动填入输入框，补充 <b>&lt;…&gt;</b> 占位后发送</span></div>
 </div>
 
 
 <!-- ======================= 右键菜单 ======================= -->
-<div id="ctxMenu" style="display:none"></div>
+<div id="ctxMenu" style="display:none" data-i18n-skip></div>
 
 <!-- ======================= Diff 弹窗 ======================= -->
 <div id="diffModal" style="display:none">
   <div class="diff-box">
     <div class="diff-head">
       <span id="diffTitle">Diff</span>
-      <span class="diff-legend"><i class="lg-del"></i>修改前 <i class="lg-add"></i>修改后</span>
-      <button id="diffClose"><i data-ico="close"></i>关闭</button>
+      <span class="diff-legend"><i class="lg-del"></i><span data-i18n="diffBefore">修改前</span> <i class="lg-add"></i><span data-i18n="diffAfter">修改后</span></span>
+      <button id="diffClose"><i data-ico="close"></i><span data-i18n="close">关闭</span></button>
     </div>
     <div id="diffHost"></div>
   </div>
@@ -406,23 +425,23 @@
 <div id="patchModal" style="display:none">
   <div class="patch-box">
     <div class="patch-head">
-      <span class="patch-title"><i data-ico="robot" data-cls="ico-accent"></i>AI 提议的改动 — 审阅</span>
+      <span class="patch-title"><i data-ico="robot" data-cls="ico-accent"></i><span data-i18n="patchTitle">AI 提议的改动 — 审阅</span></span>
       <span class="patch-count" id="patchCount">0 个文件</span>
-      <span class="patch-legend"><i class="lg-del"></i>原文 <i class="lg-add"></i>改动后</span>
+      <span class="patch-legend"><i class="lg-del"></i><span data-i18n="patchOrigin">原文</span> <i class="lg-add"></i><span data-i18n="patchAfter">改动后</span></span>
       <span class="patch-actions">
-        <button id="patchAcceptAll" class="patch-btn ok"><i data-ico="check"></i>全部接受</button>
-        <button id="patchRejectAll" class="patch-btn danger"><i data-ico="close"></i>全部拒绝</button>
-        <button id="patchClose" class="patch-btn"><i data-ico="close"></i>稍后审阅</button>
+        <button id="patchAcceptAll" class="patch-btn ok"><i data-ico="check"></i><span data-i18n="patchAcceptAll">全部接受</span></button>
+        <button id="patchRejectAll" class="patch-btn danger"><i data-ico="close"></i><span data-i18n="patchRejectAll">全部拒绝</span></button>
+        <button id="patchClose" class="patch-btn"><i data-ico="close"></i><span data-i18n="patchLater">稍后审阅</span></button>
       </span>
     </div>
     <div class="patch-body">
-      <div class="patch-files" id="patchFiles"></div>
+      <div class="patch-files" id="patchFiles" data-i18n-skip></div>
       <div class="patch-diff-wrap">
         <div class="patch-hunk-bar">
-          <span class="phb-title">片段（hunk）— 勾选要接受的改动</span>
-          <button id="patchApplySelected" class="patch-btn ok"><i data-ico="check"></i>应用选中</button>
+          <span class="phb-title" data-i18n="patchHunkTitle">片段（hunk）— 勾选要接受的改动</span>
+          <button id="patchApplySelected" class="patch-btn ok"><i data-ico="check"></i><span data-i18n="patchApplySelected">应用选中</span></button>
         </div>
-        <div id="patchHunks" class="patch-hunks"></div>
+        <div id="patchHunks" class="patch-hunks" data-i18n-skip></div>
         <div id="patchHost"></div>
       </div>
     </div>
@@ -432,33 +451,33 @@
 <!-- ======================= 登录/注册弹窗 ======================= -->
 <div id="authModal" style="display:none">
   <div class="auth-card">
-    <button id="authClose" class="auth-close" title="关闭"><i data-ico="close"></i></button>
+    <button id="authClose" class="auth-close" data-i18n-title="close" title="关闭"><i data-ico="close"></i></button>
     <div class="auth-brand">
       <div class="auth-logo">P</div>
       <div class="auth-brand-text">
         <div class="auth-brand-name">pancode</div>
-        <div class="auth-brand-sub">Web AI 编程工作台</div>
+        <div class="auth-brand-sub" data-i18n="authBrandSub">Web AI 编程工作台</div>
       </div>
     </div>
-    <div class="auth-title" id="authTitle">欢迎回来</div>
-    <div class="auth-sub" id="authSub">登录以进入你的工作区</div>
+    <div class="auth-title" id="authTitle" data-i18n="authWelcome">欢迎回来</div>
+    <div class="auth-sub" id="authSub" data-i18n="authSub">登录以进入你的工作区</div>
     <div class="auth-field">
       <i data-ico="user" class="auth-field-ico"></i>
-      <input id="authUser" type="text" placeholder="用户名" autocomplete="username">
+      <input id="authUser" type="text" data-i18n-ph="authUserPh" placeholder="用户名" autocomplete="username">
     </div>
     <div class="auth-field">
       <i data-ico="lock" class="auth-field-ico"></i>
-      <input id="authPass" type="password" placeholder="密码" autocomplete="current-password">
-      <button id="authTogglePass" class="auth-eye" title="显示/隐藏密码"><i data-ico="eye"></i></button>
+      <input id="authPass" type="password" data-i18n-ph="authPassPh" placeholder="密码" autocomplete="current-password">
+      <button id="authTogglePass" class="auth-eye" data-i18n-title="authEyeTip" title="显示/隐藏密码"><i data-ico="eye"></i></button>
     </div>
     <div class="auth-extra">
-      <label class="auth-remember"><input id="authRemember" type="checkbox" checked> 记住我（本机保持登录）</label>
+      <label class="auth-remember"><input id="authRemember" type="checkbox" checked> <span data-i18n="authRemember">记住我（本机保持登录）</span></label>
     </div>
     <div id="authStatus" class="auth-status"></div>
-    <button id="authSubmit" class="auth-submit">登录</button>
+    <button id="authSubmit" class="auth-submit" data-i18n="authLogin">登录</button>
     <div class="auth-switch">
-      <span id="authSwitchLabel">还没有账号？</span>
-      <button id="authSwitch" class="auth-switch-btn">注册新账号</button>
+      <span id="authSwitchLabel" data-i18n="authNoAccount">还没有账号？</span>
+      <button id="authSwitch" class="auth-switch-btn" data-i18n="authMakeAccount">注册新账号</button>
     </div>
   </div>
 </div>
@@ -466,30 +485,30 @@
 <!-- ======================= W4 自动化任务弹窗 ======================= -->
 <div id="automationsModal" style="display:none">
   <div class="set-box" style="max-width:680px">
-    <div class="set-head"><span><i data-ico="clock"></i> 自动化任务</span><button id="automationsClose"><i data-ico="close"></i></button></div>
+    <div class="set-head"><span><i data-ico="clock"></i> <span data-i18n="autoTitle">自动化任务</span></span><button id="automationsClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-        <button id="btnAutoNew" class="set-btn" style="background:var(--accent);color:#fff">＋ 新建任务</button>
-        <button class="set-btn auto-tpl" data-tpl="0"><i data-ico="clock"></i> 定时跑测试</button>
-        <button class="set-btn auto-tpl" data-tpl="1"><i data-ico="shield"></i> 夜间依赖审计</button>
-        <button class="set-btn auto-tpl" data-tpl="2"><i data-ico="pulse"></i> 每周代码健康</button>
+        <button id="btnAutoNew" class="set-btn" style="background:var(--accent);color:#fff" data-i18n="autoNew">＋ 新建任务</button>
+        <button class="set-btn auto-tpl" data-tpl="0"><i data-ico="clock"></i> <span data-i18n="autoTplTest">定时跑测试</span></button>
+        <button class="set-btn auto-tpl" data-tpl="1"><i data-ico="shield"></i> <span data-i18n="autoTplAudit">夜间依赖审计</span></button>
+        <button class="set-btn auto-tpl" data-tpl="2"><i data-ico="pulse"></i> <span data-i18n="autoTplHealth">每周代码健康</span></button>
       </div>
       <div id="autoForm" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
-        <div class="set-row"><label>任务名称 *</label><input id="autoName" type="text" placeholder="如：定时跑测试"></div>
-        <div class="set-row"><label>任务提示词（到点交给子智能体执行）*</label><textarea id="autoPrompt" rows="3" placeholder="如：运行 npm test 并汇总失败用例，不要修复"></textarea></div>
+        <div class="set-row"><label data-i18n="autoNameLabel">任务名称 *</label><input id="autoName" type="text" data-i18n-ph="autoNamePh" placeholder="如：定时跑测试"></div>
+        <div class="set-row"><label data-i18n="autoPromptLabel">任务提示词（到点交给子智能体执行）*</label><textarea id="autoPrompt" rows="3" data-i18n-ph="autoPromptPh" placeholder="如：运行 npm test 并汇总失败用例，不要修复"></textarea></div>
         <div class="set-row" style="display:flex;gap:8px">
-          <div style="flex:1"><label>调度类型</label>
+          <div style="flex:1"><label data-i18n="autoTypeLabel">调度类型</label>
             <select id="autoType" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
-              <option value="cron">周期（cron 表达式）</option>
-              <option value="once">一次性（指定时间）</option>
+              <option value="cron" data-i18n="autoTypeCron">周期（cron 表达式）</option>
+              <option value="once" data-i18n="autoTypeOnce">一次性（指定时间）</option>
             </select></div>
-          <div id="autoCronRow" style="flex:1"><label>Cron 表达式（分 时 日 月 周）</label><input id="autoCron" type="text" placeholder="0 */2 * * *"></div>
-          <div id="autoAtRow" style="flex:1;display:none"><label>执行时间</label><input id="autoAt" type="datetime-local"></div>
+          <div id="autoCronRow" style="flex:1"><label data-i18n="autoCronLabel">Cron 表达式（分 时 日 月 周）</label><input id="autoCron" type="text" placeholder="0 */2 * * *"></div>
+          <div id="autoAtRow" style="flex:1;display:none"><label data-i18n="autoAtLabel">执行时间</label><input id="autoAt" type="datetime-local"></div>
         </div>
         <div id="autoStatus" class="set-status"></div>
-        <div class="set-row" style="display:flex;justify-content:flex-end"><button id="btnAutoSave" class="set-btn" style="background:var(--accent);color:#fff">创建任务</button></div>
+        <div class="set-row" style="display:flex;justify-content:flex-end"><button id="btnAutoSave" class="set-btn" style="background:var(--accent);color:#fff" data-i18n="autoCreate">创建任务</button></div>
       </div>
-      <div id="autoList"></div>
+      <div id="autoList" data-i18n-skip></div>
     </div>
   </div>
 </div>
@@ -497,24 +516,24 @@
 <!-- ======================= Skill 创建弹窗 ======================= -->
 <div id="skillModal" style="display:none">
   <div class="set-box" style="max-width:600px">
-    <div class="set-head"><span><i data-ico="sparkle"></i> 创建 Skill</span><button id="skillClose"><i data-ico="close"></i></button></div>
+    <div class="set-head"><span><i data-ico="sparkle"></i> <span data-i18n="skillModalTitle">创建 Skill</span></span><button id="skillClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
       <div class="set-row" style="display:flex;gap:8px">
-        <div style="flex:2"><label>Skill 名称 *</label><input id="skillName" type="text" placeholder="如：React 组件性能优化"></div>
-        <div style="flex:1"><label>分类</label><select id="skillCategory" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
-          <option value="frontend">前端</option><option value="backend">后端</option><option value="test">测试</option>
-          <option value="refactor">重构</option><option value="debug">调试</option><option value="devops">运维</option>
-          <option value="perf">性能</option><option value="security">安全</option><option value="config">配置</option>
-          <option value="workflow">流程</option><option value="other">其他</option>
+        <div style="flex:2"><label data-i18n="skillNameLabel">Skill 名称 *</label><input id="skillName" type="text" data-i18n-ph="skillNamePh" placeholder="如：React 组件性能优化"></div>
+        <div style="flex:1"><label data-i18n="skillCatLabel">分类</label><select id="skillCategory" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+          <option value="frontend" data-i18n="catFrontend">前端</option><option value="backend" data-i18n="catBackend">后端</option><option value="test" data-i18n="catTest">测试</option>
+          <option value="refactor" data-i18n="catRefactor">重构</option><option value="debug" data-i18n="catDebug">调试</option><option value="devops" data-i18n="catDevops">运维</option>
+          <option value="perf" data-i18n="catPerf">性能</option><option value="security" data-i18n="catSecurity">安全</option><option value="config" data-i18n="catConfig">配置</option>
+          <option value="workflow" data-i18n="catWorkflow">流程</option><option value="other" data-i18n="catOther">其他</option>
         </select></div>
       </div>
-      <div class="set-row"><label>描述</label><input id="skillDesc" type="text" placeholder="一句话描述用途"></div>
-      <div class="set-row"><label>触发关键词（逗号分隔）</label><input id="skillTrigger" type="text" placeholder="如：性能,慢,卡顿,react"></div>
-      <div class="set-row"><label>Skill 内容（Markdown）*</label>
-        <textarea id="skillBody" rows="8" style="font-family:var(--mono);font-size:12px" placeholder="## 解决方案&#10;1. 分析重渲染组件&#10;2. 用 React.memo 包裹纯展示组件&#10;3. 用 useMemo 缓存计算值&#10;4. 用 useCallback 缓存回调&#10;&#10;## 验证&#10;npm test && npm run build"></textarea></div>
+      <div class="set-row"><label data-i18n="skillDescLabel">描述</label><input id="skillDesc" type="text" data-i18n-ph="skillDescPh" placeholder="一句话描述用途"></div>
+      <div class="set-row"><label data-i18n="skillTriggerLabel">触发关键词（逗号分隔）</label><input id="skillTrigger" type="text" data-i18n-ph="skillTriggerPh" placeholder="如：性能,慢,卡顿,react"></div>
+      <div class="set-row"><label data-i18n="skillBodyLabel">Skill 内容（Markdown）*</label>
+        <textarea id="skillBody" rows="8" style="font-family:var(--mono);font-size:12px" data-i18n-ph="skillBodyPh" placeholder="## 解决方案&#10;1. 分析重渲染组件&#10;2. 用 React.memo 包裹纯展示组件&#10;3. 用 useMemo 缓存计算值&#10;4. 用 useCallback 缓存回调&#10;&#10;## 验证&#10;npm test && npm run build"></textarea></div>
       <div id="skillStatus" class="set-status"></div>
       <div class="set-row" style="display:flex;gap:8px;justify-content:flex-end">
-        <button id="skillSave" class="set-btn" style="background:var(--accent);color:#fff">保存到市场</button>
+        <button id="skillSave" class="set-btn" style="background:var(--accent);color:#fff" data-i18n="skillSaveBtn">保存到市场</button>
       </div>
     </div>
   </div>
@@ -542,22 +561,22 @@
       </svg>
     </div>
     <div class="boot-word"><span class="bw-pan">pan</span><span class="bw-code">code</span></div>
-    <div class="boot-tagline">本地优先 · AI 编程工作台</div>
+    <div class="boot-tagline" data-i18n="bootTagline">本地优先 · AI 编程工作台</div>
     <div class="boot-progress"><i></i></div>
-    <div class="boot-tip">正在启动工作台…</div>
+    <div class="boot-tip" data-i18n="bootTip">正在启动工作台…</div>
   </div>
 </div>
 
 <!-- ======================= 首次引导 (C4) ======================= -->
 <div id="onboardModal" style="display:none">
   <div class="onboard-box">
-    <div class="onboard-head"><span><i data-ico="sparkle"></i> 欢迎使用 pancode</span><button id="onboardSkip" aria-label="跳过引导"><i data-ico="close"></i></button></div>
-    <div class="onboard-body" id="onboardBody"></div>
+    <div class="onboard-head"><span><i data-ico="sparkle"></i> <span data-i18n="onboardTitle">欢迎使用 pancode</span></span><button id="onboardSkip" data-i18n-aria="onboardSkipAria" aria-label="跳过引导"><i data-ico="close"></i></button></div>
+    <div class="onboard-body" id="onboardBody" data-i18n-skip></div>
     <div class="onboard-foot">
       <div class="onboard-dots" id="onboardDots"></div>
       <div style="display:flex;gap:8px;margin-left:auto">
-        <button id="onboardPrev" class="set-btn" style="background:var(--bg4)">上一步</button>
-        <button id="onboardNext" class="set-btn" style="background:var(--accent);color:#fff">下一步</button>
+        <button id="onboardPrev" class="set-btn" style="background:var(--bg4)" data-i18n="onboardPrev">上一步</button>
+        <button id="onboardNext" class="set-btn" style="background:var(--accent);color:#fff" data-i18n="onboardNext">下一步</button>
       </div>
     </div>
   </div>
@@ -565,36 +584,36 @@
 
 <!-- ======================= 命令面板 (C3) ======================= -->
 <div id="cmdk" class="hidden">
-  <div class="cmdk-box" role="dialog" aria-label="命令面板">
+  <div class="cmdk-box" role="dialog" data-i18n-aria="cmdkAria" aria-label="命令面板">
     <div class="cmdk-input-row">
       <i data-ico="search" class="cmdk-search-ico"></i>
-      <input id="cmdkInput" class="cmdk-input" placeholder="输入命令或文件名…  (↑↓ 选择 · Enter 执行 · Esc 关闭)" autocomplete="off" aria-label="命令搜索">
+      <input id="cmdkInput" class="cmdk-input" data-i18n-ph="cmdkPh" data-i18n-aria="cmdkInputAria" placeholder="输入命令或文件名…  (↑↓ 选择 · Enter 执行 · Esc 关闭)" autocomplete="off" aria-label="命令搜索">
     </div>
-    <div class="cmdk-list" id="cmdkList" role="listbox"></div>
-    <div class="cmdk-foot"><span><b>Ctrl/Cmd + Shift + P</b> 随时唤起命令面板</span><span class="cmdk-foot-hint">提示：输入「全流程」「主题」「文件」可快速过滤</span></div>
+    <div class="cmdk-list" id="cmdkList" role="listbox" data-i18n-skip></div>
+    <div class="cmdk-foot"><span><b>Ctrl/Cmd + Shift + P</b> <span data-i18n="cmdkFoot">随时唤起命令面板</span></span><span class="cmdk-foot-hint" data-i18n="cmdkFootHint">提示：输入「全流程」「主题」「文件」可快速过滤</span></div>
   </div>
 </div>
 
 <!-- ======================= 键盘快捷键帮助弹窗 ======================= -->
 <div id="shortcutsModal" style="display:none">
   <div class="set-box sc-box">
-    <div class="set-head"><span><i data-ico="keyboard"></i> 键盘快捷键</span><button id="scClose"><i data-ico="close"></i></button></div>
+    <div class="set-head"><span><i data-ico="keyboard"></i> <span data-i18n="scTitle">键盘快捷键</span></span><button id="scClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
-      <div class="sc-group">通用</div>
-      <div class="sc-row"><span class="sc-desc">打开命令面板</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">文件跳转面板</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>P</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">保存当前文件</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>S</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">切换 Editor / Agents 窗口</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>.</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">关闭当前标签页</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>W</kbd></span></div>
-      <div class="sc-group">聊天 / 输入框</div>
-      <div class="sc-row"><span class="sc-desc">发送消息 / 执行</span><span class="sc-key"><kbd>Enter</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">输入框内换行</span><span class="sc-key"><kbd>Shift</kbd> + <kbd>Enter</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">浏览已发消息（单行时）</span><span class="sc-key"><kbd>↑</kbd> / <kbd>↓</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">引用文件 / 文件夹</span><span class="sc-key"><kbd>@</kbd> 后输入路径</span></div>
-      <div class="sc-group">终端 / 预览</div>
-      <div class="sc-row"><span class="sc-desc">终端中断（Ctrl+C）</span><span class="sc-key"><kbd>Ctrl</kbd> + <kbd>C</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">预览缩放</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd></span></div>
-      <div class="sc-row"><span class="sc-desc">关闭弹窗</span><span class="sc-key"><kbd>Esc</kbd></span></div>
+      <div class="sc-group" data-i18n="scGroupGeneral">通用</div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scOpenCmdk">打开命令面板</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scGotoFile">文件跳转面板</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>P</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scSave">保存当前文件</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>S</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scSwitchWin">切换 Editor / Agents 窗口</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>.</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scCloseTab">关闭当前标签页</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>W</kbd></span></div>
+      <div class="sc-group" data-i18n="scGroupChat">聊天 / 输入框</div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scSend">发送消息 / 执行</span><span class="sc-key"><kbd>Enter</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scNewline">输入框内换行</span><span class="sc-key"><kbd>Shift</kbd> + <kbd>Enter</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scHistory">浏览已发消息（单行时）</span><span class="sc-key"><kbd>↑</kbd> / <kbd>↓</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scAtFile">引用文件 / 文件夹</span><span class="sc-key"><kbd>@</kbd> <span data-i18n="scAtFileKey">后输入路径</span></span></div>
+      <div class="sc-group" data-i18n="scGroupTerminal">终端 / 预览</div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scInterrupt">终端中断（Ctrl+C）</span><span class="sc-key"><kbd>Ctrl</kbd> + <kbd>C</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scZoom">预览缩放</span><span class="sc-key"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd></span></div>
+      <div class="sc-row"><span class="sc-desc" data-i18n="scCloseModal">关闭弹窗</span><span class="sc-key"><kbd>Esc</kbd></span></div>
     </div>
   </div>
 </div>
@@ -602,33 +621,33 @@
 <!-- ======================= 一键提交改动弹窗 ======================= -->
 <div id="commitModal" style="display:none">
   <div class="set-box cm-box">
-    <div class="set-head"><span><i data-ico="branch"></i> 提交改动（Git）</span><button id="cmClose"><i data-ico="close"></i></button></div>
+    <div class="set-head"><span><i data-ico="branch"></i> <span data-i18n="commitTitle">提交改动（Git）</span></span><button id="cmClose"><i data-ico="close"></i></button></div>
     <div class="set-body">
       <div class="cm-branch" id="cmBranch"></div>
-      <div class="cm-selall"><label><input type="checkbox" id="cmSelAll" checked> 全选</label><span class="cm-count" id="cmCount"></span></div>
-      <div class="cm-list" id="cmChanges"></div>
+      <div class="cm-selall"><label><input type="checkbox" id="cmSelAll" checked> <span data-i18n="commitSelAll">全选</span></label><span class="cm-count" id="cmCount"></span></div>
+      <div class="cm-list" id="cmChanges" data-i18n-skip></div>
       <div class="cm-summary" id="cmSummaryWrap" style="display:none">
         <div class="cm-summary-head">
-          <span class="cm-summary-title">智能摘要</span>
+          <span class="cm-summary-title" data-i18n="commitSummary">智能摘要</span>
           <div class="cm-summary-tabs">
-            <button type="button" class="cm-tab active" id="cmViewLog">变更摘要</button>
-            <button type="button" class="cm-tab" id="cmViewDoc">文档草稿</button>
+            <button type="button" class="cm-tab active" id="cmViewLog" data-i18n="commitViewLog">变更摘要</button>
+            <button type="button" class="cm-tab" id="cmViewDoc" data-i18n="commitViewDoc">文档草稿</button>
           </div>
         </div>
         <pre class="cm-summary-body" id="cmSummary"></pre>
         <div class="cm-summary-actions">
-          <button type="button" class="set-btn" id="cmApplyMsg">用作提交信息</button>
-          <button type="button" class="set-btn" id="cmCopy">复制</button>
+          <button type="button" class="set-btn" id="cmApplyMsg" data-i18n="commitUseAsMsg">用作提交信息</button>
+          <button type="button" class="set-btn" id="cmCopy" data-i18n="commitCopy">复制</button>
         </div>
       </div>
-      <label class="cm-label">提交信息
-        <textarea id="cmMsg" rows="3" placeholder="例如：实现一站式交付流程"></textarea>
+      <label class="cm-label"><span data-i18n="commitMsgLabel">提交信息</span>
+        <textarea id="cmMsg" rows="3" data-i18n-ph="commitMsgPh" placeholder="例如：实现一站式交付流程"></textarea>
       </label>
       <div class="cm-result" id="cmResult"></div>
       <div class="cm-actions">
-        <button id="cmCancel" class="set-btn" style="background:var(--bg4)">取消</button>
-        <button id="cmPush" class="set-btn" title="提交完成后把当前分支推到远端">提交并推送</button>
-        <button id="cmSubmit" class="btn-main">仅提交</button>
+        <button id="cmCancel" class="set-btn" style="background:var(--bg4)" data-i18n="cancel">取消</button>
+        <button id="cmPush" class="set-btn" data-i18n="commitPush" data-i18n-title="commitPushTip" title="提交完成后把当前分支推到远端">提交并推送</button>
+        <button id="cmSubmit" class="btn-main" data-i18n="commitOnly">仅提交</button>
       </div>
     </div>
   </div>
@@ -641,8 +660,8 @@
     <div class="confirm-title" id="confirmTitle"></div>
     <div class="confirm-msg" id="confirmMsg"></div>
     <div class="confirm-actions">
-      <button id="confirmCancel" class="set-btn" style="background:var(--bg4)">取消</button>
-      <button id="confirmOk" class="set-btn danger" style="background:var(--err);color:#fff">确认还原</button>
+      <button id="confirmCancel" class="set-btn" style="background:var(--bg4)" data-i18n="cancel">取消</button>
+      <button id="confirmOk" class="set-btn danger" style="background:var(--err);color:#fff" data-i18n="confirmRestore">确认还原</button>
     </div>
   </div>
 </div>
@@ -666,11 +685,14 @@
   <script src="js/trace.js"></script>
   <script src="js/patch-review.js"></script>
   <script src="js/visualizer.js"></script>
+  <script src="js/dep-graph.js"></script>
+  <script src="js/diagnostics.js"></script>
 
 
   <script src="app.js"></script>
   <script src="js/global-settings.js"></script>
   <script src="js/workbench.js"></script>
   <script src="js/assets-center.js"></script>
+  <script src="js/gear-menu.js"></script>
 </body>
 </html>

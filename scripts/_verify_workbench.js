@@ -117,6 +117,10 @@ async function main() {
   const errors = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
+  /* Playwright 默认把 confirm() 当"取消"处理，而删除/恢复都先问一句：
+     不设这个处理器，界面点恢复永远是静默无反应，探针会误判成功。 */
+  const dialogs = [];
+  page.on("dialog", async (d) => { dialogs.push(d.message()); await d.accept(); });
   await page.addInitScript((t) => {
     // 预览 iframe 是 sandbox="allow-scripts"（无 allow-same-origin），读 localStorage 会抛，故 try 包一层
     try {
@@ -174,6 +178,144 @@ async function main() {
       if (bad || real.length) console.log("      ↳ 文本：" + info.text.slice(0, 160).replace(/\n/g, " / "));
       shots[id] = info;
     }
+
+    section("单价与用量（P1-B4）：设置里配价 → 界面出现金额口径");
+    await page.evaluate(() => window.openWorkbench("model"));
+    await wait(320);
+    const p1 = await req("POST", "/api/config", { section: "agent", patch: { pricing: { enabled: true, currency: "CNY", rates: [{ match: "sandbox-model", input: 1, output: 2 }] } } }, token);
+    ok("单价能保存并回读（1 条）", p1.ok === true && p1.agent && p1.agent.pricing && p1.agent.pricing.rates.length === 1,
+      JSON.stringify((p1.agent || {}).pricing));
+    await page.evaluate(() => window.openWorkbench("model"));
+    await wait(500);
+    const pg = await page.evaluate(() => {
+      const g = [...document.querySelectorAll("#wbBody .wb-group")]
+        .find((x) => /单价与用量/.test((x.querySelector(".wb-group-title") || {}).textContent || ""));
+      return g ? { text: g.innerText, rows: g.querySelectorAll(".wb-list-item").length, inputs: g.querySelectorAll(".wb-mcp-form input").length } : null;
+    });
+    ok("模型分区渲染出「单价与用量」分组", !!pg, pg ? "" : "分组没找到");
+    ok("已配置的单价列成行（不是只存在配置里）", pg && /sandbox-model/.test(pg.text) && pg.rows >= 1, pg && pg.rows);
+    ok("配了价但账本还空：说「尚无用量」而不是「未配置单价」",
+      pg && /尚无用量/.test(pg.text) && !/未配置单价/.test(pg.text), pg && pg.text.replace(/\n/g, " / ").slice(0, 110));
+    ok("添加表单是三个框（匹配 / 输入价 / 输出价）", pg && pg.inputs === 3, pg && pg.inputs);
+    // 界面上点「添加」要真的写进配置（不是只改了内存里的表）
+    const grp = page.locator("#wbBody .wb-group", { hasText: "单价与用量" });
+    await grp.locator(".wb-mcp-form input").nth(0).fill("glm-4-plus");
+    await grp.locator(".wb-mcp-form input").nth(1).fill("2");
+    await grp.locator(".wb-mcp-form input").nth(2).fill("6");
+    await grp.locator(".wb-mcp-form button").click();
+    await wait(700);
+    const p2 = await req("GET", "/api/config", null, token);
+    const rates2 = ((p2.agent || {}).pricing || {}).rates || [];
+    ok("点「添加」后配置里真的是两条（界面写通了服务端）", rates2.length === 2 && rates2.some((r) => r.match === "glm-4-plus"), JSON.stringify(rates2));
+    const bad = await req("POST", "/api/config", { section: "agent", patch: { pricing: { rates: [{ match: "ok", input: -5, output: 3 }, { match: "   ", input: 1 }] } } }, token);
+    const rates3 = ((bad.agent || {}).pricing || {}).rates || [];
+    ok("负数那一侧被丢、空 match 的整行被丢（不会算出 NaN 打在面板上）",
+      rates3.length === 1 && rates3[0].match === "ok" && rates3[0].input === undefined, JSON.stringify(rates3));
+    const p3 = await req("POST", "/api/config", { section: "agent", patch: { pricing: { rates: [{ match: "sandbox-model", input: 1, output: 2 }] } } }, token);
+    ok("坏输入没有把原表带歪（清洗后仍能存回一条正常的）", ((p3.agent || {}).pricing || {}).rates.length === 1);
+    await page.screenshot({ path: path.join(OUT, "wb_pricing.png") }).catch(() => {});
+
+    // trace 面板那一格：有成本才出现金额，没成本绝不出现 ¥
+    const withCost = await page.evaluate(() => {
+      window.onUsageEvent({ total_tokens: 5000, prompt_tokens: 4000, completion_tokens: 1000, cost: 0.42, costCurrency: "CNY" });
+      return (document.getElementById("traceTokens") || {}).textContent || "";
+    });
+    ok("本会话累计格里金额跟成本一起出现（不足 1 元留 4 位）", /¥0\.4200/.test(withCost) && /k/.test(withCost), withCost);
+    const noCost = await page.evaluate(() => {
+      window.clearTrace();
+      window.onUsageEvent({ total_tokens: 8000, prompt_tokens: 7000, completion_tokens: 1000 });
+      return (document.getElementById("traceTokens") || {}).textContent || "";
+    });
+    ok("正向对照的反面：没配单价时那一格绝不显示 ¥", !/¥|\$/.test(noCost), noCost);
+    await page.evaluate(() => window.clearTrace());
+
+    section("压缩断路器（P1-B6）：停手要在聊天区说，不能只躺在终端页");
+    const brk = await page.evaluate(() => {
+      window.handleEvent({ type: "context.compact_breaker", streak: 2, why: "摘要不比原文短" });
+      const t = document.getElementById("toast");
+      return t ? { text: t.textContent, shown: t.classList.contains("show") } : null;
+    });
+    ok("断路器提示当场可见（toast 处于 show 态）", !!brk && brk.shown === true, brk && brk.text);
+    ok("提示说清了后果与手动出路（会丢最旧轮次 / 可输 /compact）",
+      !!brk && /压缩已暂停/.test(brk.text) && /丢弃最旧/.test(brk.text) && /\/compact/.test(brk.text), brk && brk.text);
+
+    section("规则历史（P1-B5）：界面能看差异、能滚回去");
+    /* 用一条自建的探针规则，不拿种子里的 style.md 开刀：本页后面的断言要靠
+       「中文汇报」那条始终生效规则去校验生效预览，改了它就是把前面测过的东西踩坏。 */
+    const mk = await req("POST", "/api/rules", { title: "历史探针", content: "SAND-BODY-V0 初版正文。" }, token);
+    ok("探针规则创建成功", mk.ok === true && !!mk.file, JSON.stringify(mk).slice(0, 90));
+    const RF = mk.file;
+    const putA = await req("PUT", "/api/rules", { file: RF, content: "SAND-BODY-V1 每条结论都要给可核对的数字。" }, token);
+    const putB = await req("PUT", "/api/rules", { file: RF, content: "SAND-BODY-V2 先给结论再给依据。" }, token);
+    ok("两次保存都成功（历史要有料才能测）", putA.ok === true && putB.ok === true, JSON.stringify([putA.error, putB.error]));
+    const histBefore = await req("GET", "/api/rules/history?file=" + encodeURIComponent(RF), null, token);
+    ok("服务端已存到 2 版（V1 在最新那版里）",
+      histBefore.ok === true && histBefore.versions.length === 2 && histBefore.versions[0].op === "update",
+      JSON.stringify((histBefore.versions || []).map((v) => v.op)));
+
+    errors.length = 0;
+    await page.evaluate(() => window.openWorkbench("rules"));
+    await wait(340);
+    await page.locator(".wb-side-item", { hasText: "历史探针" }).first().click();
+    await wait(420);
+    ok("规则详情动作行有「历史」入口", await page.locator(".wb-detail-actions .wb-btn", { hasText: "历史" }).count() === 1);
+    await page.locator(".wb-detail-actions .wb-btn", { hasText: "历史" }).first().click();
+    await wait(500);
+    const panel = await page.evaluate(() => {
+      const h = document.querySelector(".wb-rulehist");
+      if (!h) return null;
+      const items = [...h.querySelectorAll(".wb-list-item")];
+      return {
+        shown: h.offsetParent !== null,
+        text: (h.innerText || "").replace(/\n+/g, " / "),
+        rows: items.length,
+        first: items[0] ? items[0].innerText.replace(/\n+/g, " / ") : "",
+        diffLines: [...h.querySelectorAll(".wb-diff-line")].map((l) => ({ cls: l.className, text: l.textContent })),
+        toggleText: [...document.querySelectorAll(".wb-detail-actions .wb-btn")].map((b) => b.textContent),
+      };
+    });
+    ok("点「历史」展开面板（不是空框）", !!panel && panel.shown === true && panel.rows >= 2, panel && panel.rows);
+    ok("每版标出是哪次动作的前一版 + 按钮都在",
+      !!panel && /改写/.test(panel.first) && /看差异/.test(panel.first) && /恢复这一版/.test(panel.first), panel && panel.first);
+    ok("面板说清历史存在 rules-history、不会被注入", !!panel && /rules-history/.test(panel.text), panel && panel.text.slice(0, 120));
+    ok("按钮文案随展开改成「收起历史」", !!panel && panel.toggleText.some((t) => /收起历史/.test(t)), panel && panel.toggleText.join("|"));
+    ok("首屏自动渲染最新那版的行级差异（−V1 / +V2）",
+      !!panel && panel.diffLines.some((l) => /wb-diff-del/.test(l.cls) && /SAND-BODY-V1/.test(l.text))
+        && panel.diffLines.some((l) => /wb-diff-add/.test(l.cls) && /SAND-BODY-V2/.test(l.text)),
+      panel && JSON.stringify(panel.diffLines.slice(0, 3)));
+    await page.screenshot({ path: path.join(OUT, "wb_rule_history.png") }).catch(() => {});
+
+    const dialogsBefore = dialogs.length;
+    const rows = page.locator(".wb-rulehist .wb-list-item");
+    await rows.first().locator(".wb-btn", { hasText: "恢复这一版" }).click();
+    await wait(700);
+    ok("点恢复会先问一句（不是无声覆盖）", dialogs.length > dialogsBefore && /覆盖当前规则/.test(dialogs[dialogsBefore]), dialogs[dialogsBefore]);
+    const restored = await req("GET", "/api/rules/content?file=" + encodeURIComponent(RF), null, token);
+    ok("恢复真的写回文件：正文回到 V1", restored.ok === true && /SAND-BODY-V1/.test(restored.body || "") && !/SAND-BODY-V2/.test(restored.body || ""),
+      String((restored.body || "").slice(0, 80)));
+    const histAfter = await req("GET", "/api/rules/history?file=" + encodeURIComponent(RF), null, token);
+    ok("回滚自己也留了版（pre-restore），链条没断",
+      histAfter.versions.length === 3 && histAfter.versions[0].op === "pre-restore",
+      JSON.stringify((histAfter.versions || []).map((v) => v.op)));
+    const taVal = await page.evaluate(() => {
+      const ta = document.querySelector(".wb-detail textarea");
+      return ta ? ta.value : null;
+    });
+    ok("界面重画后正文框显示的就是恢复后的内容", typeof taVal === "string" && /SAND-BODY-V1/.test(taVal), String(taVal).slice(0, 60));
+    // 反向对照：从没改过的规则不能显示成"坏了的空框"
+    await page.locator(".wb-side-item", { hasText: "后端约定" }).first().click();
+    await wait(420);
+    await page.locator(".wb-detail-actions .wb-btn", { hasText: "历史" }).first().click();
+    await wait(500);
+    const empty = await page.evaluate(() => {
+      const h = document.querySelector(".wb-rulehist");
+      return h ? { text: h.innerText, items: h.querySelectorAll(".wb-list-item").length } : null;
+    });
+    ok("无历史的规则给出解释而不是空框", !!empty && empty.items === 0 && /还没有历史版本/.test(empty.text), empty && empty.text.slice(0, 90));
+    const histErr = errors.filter((e) => !/favicon|net::ERR|Failed to load resource|is sandboxed|allow-same-origin/i.test(e));
+    ok("规则历史整段交互无 JS 报错", histErr.length === 0, histErr.slice(0, 2).join(" | "));
+    const delProbe = await req("DELETE", "/api/rules", { file: RF }, token);
+    ok("探针规则清掉了（不留一条始终生效的测试规则给后面的断言）", delProbe.ok === true, JSON.stringify(delProbe).slice(0, 80));
 
     section("长任务时限：设置面板 + 审批倒计时");
     await page.evaluate(() => window.openWorkbench("agent"));
@@ -334,12 +476,32 @@ async function main() {
     ok("灵魂分区三张清单可见", await page.locator(".wb-chip").count() >= 3, "chip " + await page.locator(".wb-chip").count());
 
     section("入口改接");
-    const entryChecks = [["btnGlobalSettings", "appearance", "click"], ["btnSettings", "model", "click"], ["btnAgentSettings", "agent", "click"], ["envSediment", "sediment", "dom"]];
+    const entryChecks = [["btnGlobalSettings", "appearance", "click"], ["btnSettings", "model", "gear"], ["btnAgentSettings", "agent", "click"], ["envSediment", "sediment", "dom"]];
     for (const [id, expected, mode] of entryChecks) {
       const exists = await page.evaluate((eid) => !!document.getElementById(eid), id);
       if (!exists) { ok("入口 #" + id + " 存在", false, "元素不在 DOM 里"); continue; }
       await page.evaluate(() => window.closeWorkbench());
       await wait(150);
+      if (mode === "gear") {
+        /* §3.11 改了契约：齿轮先出小抽屉，全屏工作台改由抽屉底部「全部设置」进。
+           这里两条都要断言 —— 只测"抽屉出来了"会漏掉"全部设置进不去"，
+           只测"能进 model"又会漏掉"齿轮又变回直接开工作台"这个回退。 */
+        await page.evaluate(() => { const el = document.getElementById("gearMenu"); if (el) el.classList.add("hidden"); });
+        await page.click("#" + id, { timeout: 3000 }).catch(() => {});
+        await wait(320);
+        const gear = await page.evaluate(() => {
+          const el = document.getElementById("gearMenu");
+          const wb = document.getElementById("workbench");
+          return { drawer: !!el && !el.classList.contains("hidden") && el.getBoundingClientRect().height > 0,
+            wbOpen: !!wb && wb.style.display !== "none" };
+        });
+        ok("入口 #btnSettings → 先出小抽屉、不直接开工作台", gear.drawer && !gear.wbOpen, JSON.stringify(gear));
+        await page.click(".gm-all", { timeout: 3000 }).catch(() => {});
+        await wait(450);
+        const sec2 = await page.evaluate(() => ({ s: (window.WB || {}).section, open: (document.getElementById("workbench") || {}).style ? document.getElementById("workbench").style.display : "?" }));
+        ok("抽屉底部「全部设置」→ " + expected, sec2.s === expected && sec2.open !== "none", JSON.stringify(sec2));
+        continue;
+      }
       let clickErr = "";
       if (mode === "click") await page.click("#" + id, { timeout: 3000 }).catch((e) => { clickErr = e.message.split("\n")[0]; });
       else await page.evaluate((eid) => { const el = document.getElementById(eid); if (el) el.click(); }, id);

@@ -1,9 +1,10 @@
 "use strict";
-/* 文件工具：list_files / read_file / write_file / apply_edit / delete_file / search_code */
+/* 文件工具：list_files / read_file / write_file / apply_edit / edit_files / delete_file / search_code */
 const path = require("path");
 const codeIndex = require("../code-index");
 const { getActiveManager } = require("../lsp-bridge");
 const { computeDiffLines, fmtDiag } = require("./util");
+const { applyEditsToString } = require("../patch");
 
 /* 路径归属交给 root-store 判：不带 root 的相对路径就是当前工作区，与单根时代逐字一致。
    ctx 里没有 roots（假 agent / 老路径）就退回 agent.files —— 这条改造不许打断任何既有调用。 */
@@ -27,6 +28,35 @@ function showPath(args, res) {
   if (!res.root || res.root.active) return rel;
   const who = res.root.label || path.basename(res.root.dir || "");
   return who + ":" + rel;
+}
+
+/* 写完把 LSP 诊断拼进工具回执（P1-B1）。
+   为什么要拼：波浪线只有人看得见，模型看不见——它写完就接着往下推，
+   直到 run_command 撞车才发现语法错了。回灌之后错误在下一轮就回到它眼前。
+   等 400ms 是给 LSP 发布的时间；读不到就当没有（诊断失败不许影响写入本身）。
+   多个文件只等一次，不是每个文件各等一次。 */
+async function diagBlock(agent, rels) {
+  const list = (rels || []).filter(Boolean);
+  if (!list.length) return "";
+  try {
+    const mgr = getActiveManager();
+    if (!mgr) return "";
+    await new Promise((r) => setTimeout(r, 400));
+    let errs = 0, warns = 0;
+    const lines = [];
+    for (const rel of list) {
+      const d = mgr.getDiagnostics(agent.files.dir, rel);
+      if (!d || d.scope !== "file" || !d.items || !d.items.length) continue;
+      const e = d.items.filter((x) => x.severity === 1);
+      const w = d.items.filter((x) => x.severity === 2);
+      errs += e.length; warns += w.length;
+      for (const it of d.items.slice(0, 10)) lines.push(rel + " · " + fmtDiag(it));
+    }
+    if (!errs && !warns) return "";
+    const files = new Set(lines.map((l) => l.split(" · ")[0])).size;
+    return "\n\n【LSP 诊断】" + errs + " 个错误、" + warns + " 个警告（涉及 " + files + " 个文件）：\n" +
+      lines.slice(0, 14).join("\n") + (errs ? "\n建议修复上述错误后再继续。" : "");
+  } catch (e) { return ""; }
 }
 
 module.exports = {
@@ -125,21 +155,7 @@ module.exports = {
         if (_diffLines.length) agent.emit({ type: "editor.diff", path: rel, added: _diffLines });
       }
       let _result = "写入成功: " + rel;
-      try {
-        const _mgr = getActiveManager();
-        if (_mgr) {
-          await new Promise((r) => setTimeout(r, 400));
-          const _d = _mgr.getDiagnostics(agent.files.dir, rel);
-          if (_d.scope === "file" && _d.items && _d.items.length) {
-            const _errs = _d.items.filter((x) => x.severity === 1);
-            const _warns = _d.items.filter((x) => x.severity === 2);
-            if (_errs.length || _warns.length) {
-              _result += "\n\n【LSP 诊断】" + _errs.length + " 个错误、" + _warns.length + " 个警告：\n" + _d.items.slice(0, 10).map(fmtDiag).join("\n");
-              if (_errs.length) _result += "\n建议修复上述错误后再继续。";
-            }
-          }
-        }
-      } catch (e) { /* LSP 诊断失败不影响写入 */ }
+      _result += await diagBlock(agent, [rel]);
       return _result;
     } catch (e) { t.done(false, "写入失败"); return "错误: " + e.message; }
   },
@@ -246,5 +262,161 @@ module.exports = {
     t.body(txt);
     t.done(true, "检索完成");
     return txt;
+  },
+
+  /* P0-A3: 多文件原子编辑 —— 一次调用改动多个文件（每项 {path, old_string, new_string} 或 {path, edits:[...]}）
+     语义：
+       - 全部文件先逐个走 locate/gate，任何一处失败就整体回滚（已写入的文件还原快照）；
+       - 全部成功才提交一个检查点（原子性）；
+       - 相比 apply_edit：apply_edit 是「暂存到审阅队列，由用户逐文件接受/拒绝」，适合人工把关；
+         edit_files 是「全或无」批量落盘，适合机械性批量改动（rename、import 替换等）。
+     参数（args）:
+       ops: 数组，每项:
+         { path, old_string, new_string }  单处替换
+         { path, edits: [{old_string,new_string}, ...] }  同文件多处替换
+     返回：
+       成功: "已原子写入 N 个文件 (M 处修改): path1, path2, ..."
+       失败: "编辑回滚: <file>: <reason>；已还原 X 个已写入文件"
+  */
+  edit_files: async (agent, args) => {
+    const ops = args && args.ops;
+    if (!Array.isArray(ops) || !ops.length) {
+      const t = agent.tool("edit", "原子编辑被拒", String(args && args.path));
+      t.done(false, "参数无效", false);
+      return "错误: edit_files 需要 ops 参数（数组），每项 {path, old_string, new_string} 或 {path, edits:[{old_string,new_string}...]}。";
+    }
+    /* 展开成 per-file edits: fileEdits = [ { path, edits: [{old_string,new_string}], isNew } ]
+       同一文件多次出现则合并到同一组（避免同一文件被两次写盘）。 */
+    const byPath = new Map();
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      if (!op || typeof op.path !== "string" || !op.path) {
+        const t = agent.tool("edit", "原子编辑被拒", "ops[" + i + "]");
+        t.done(false, "ops[" + i + "] 缺少 path", false);
+        return "错误: ops[" + i + "] 缺少 path（必须是字符串）。";
+      }
+      let fileEdits;
+      if (Array.isArray(op.edits)) fileEdits = op.edits;
+      else if (typeof op.old_string === "string") fileEdits = [{ old_string: op.old_string, new_string: op.new_string == null ? "" : String(op.new_string) }];
+      else if (op.new_string != null || op.old_string != null) {
+        const t = agent.tool("edit", "原子编辑被拒", op.path);
+        t.done(false, "old_string/new_string 不完整", false);
+        return "错误: ops[" + i + "] 提供 old_string/new_string 时必须成对给出；或改用 edits 数组。";
+      } else {
+        const t = agent.tool("edit", "原子编辑被拒", op.path);
+        t.done(false, "缺少编辑内容", false);
+        return "错误: ops[" + i + "]（" + op.path + "）既没有 edits 数组，也没有 old_string/new_string。";
+      }
+      if (byPath.has(op.path)) byPath.get(op.path).edits = byPath.get(op.path).edits.concat(fileEdits);
+      else byPath.set(op.path, { path: op.path, root: op.root, edits: fileEdits });
+    }
+    const files = Array.from(byPath.values());
+
+    /* 先判门（授权）：任何一个文件没有权限就整体拒绝，不写任何东西 */
+    for (const f of files) {
+      const res = locate(agent, { path: f.path, root: f.root }, true);
+      if (!res.ok) {
+        const t = agent.tool("edit", "原子编辑被拒", f.path);
+        t.done(false, "没有授权", false);
+        return "错误: " + res.error + "（" + f.path + " 没有写权限，整个 edit_files 调用已拒绝，未写入任何文件）";
+      }
+      f.store = res.root.active ? agent.files : res.store;
+      f.rel = res.rel;
+      f.shown = showPath({ path: f.path, root: f.root }, res);
+      f.isNew = !f.store.exists(f.rel);
+    }
+
+    /* 再走 gate：按每个文件的 isNew 决定风险级别；任何一个被 gate 拦截/用户拒绝就整体回滚 */
+    for (const f of files) {
+      const gate = await agent._gate("edit_files", { path: f.path, root: f.root }, f.isNew ? "high" : "medium");
+      if (gate.blocked) {
+        const t = agent.tool("edit", "原子编辑被拒", f.shown);
+        t.done(false, "被拒绝规则拦截", false);
+        return "命令被拒绝规则拦截：" + f.shown + "（整个 edit_files 调用已拒绝，未写入任何文件）";
+      }
+      if (!gate.approved) {
+        const t = agent.tool("edit", "原子编辑被拒", f.shown);
+        t.done(false, "用户拒绝", false);
+        return "用户拒绝了编辑文件：" + f.shown + "（整个 edit_files 调用已拒绝，未写入任何文件）";
+      }
+    }
+
+    /* 应用前统一打一个检查点（原子性：全部成功才提交；部分失败则把已写入的文件还原） */
+    const t = agent.tool("edit", "原子编辑", files.map((f) => f.shown).join(", "));
+    /* 每个文件一份"落盘前快照"，和它自己的 store/rel 绑在同一个对象上。
+       原先 written 里 push 的是 files 的元素，而快照存在另一个平行数组里 ——
+       w.snap 因此恒为 undefined，回滚整段被 try/catch 咽掉，"全或无"其实是"改了一半也没事"。 */
+    const jobs = files.map((f) => ({ f, snap: agent._snapshotBefore(f.rel, f.store) }));
+    const written = [];
+    /* 回滚：把已写入的文件还原为快照，还原口径与 _undoLast 逐字一致 ——
+       snap.store 对当前工作区的文件**按设计是 null**（检查点靠 store||files 回到本工作区），
+       判"原来有没有这个文件"要用 beforeExisted，不能用 beforeContent == null
+       （一个原本内容为空字符串的文件会被当成"新建"而删掉）。
+       还原失败绝不能静默：这是用户唯一知道"某次编辑只落了一半"的机会。 */
+    const restoreFail = [];
+    const rollback = () => {
+      for (const w of written) {
+        const store = w.snap.store || agent.files;
+        try {
+          if (w.snap.beforeExisted) {
+            store.write(w.snap.path, w.snap.beforeContent);
+            codeIndex.queueFileUpdate(store.dir, w.snap.path);
+          } else {
+            store.remove(w.snap.path);
+            codeIndex.removeFile(store.dir, w.snap.path);
+          }
+          if (store === agent.files) agent.fileChanged(w.snap.path);
+        } catch (e) { restoreFail.push(w.f.shown + "（" + e.message + "）"); }
+      }
+      if (restoreFail.length) agent.emit({ type: "term.line", text: "[原子编辑回滚失败] 这些文件没能动回来，需人工检查：" + restoreFail.join("、"), cls: "tl-err" });
+      else if (written.some((w) => (w.snap.store || agent.files) === agent.files)) agent.pushChanges(false);
+    };
+    let totalEdits = 0;
+    try {
+      for (const j of jobs) {
+        const f = j.f;
+        const current = f.isNew ? "" : f.store.read(f.rel);
+        const res2 = applyEditsToString(current, f.edits);
+        const failed = (res2.edits || []).filter((r) => !r.ok);
+        if (failed.length) {
+          rollback();
+          // 工具卡上要点名是哪个文件把整批打回来的，只说"编辑匹配失败"等于让人再猜一遍
+          t.done(false, "编辑匹配失败 · " + f.shown, false);
+          const first = failed[0];
+          return "编辑回滚: " + f.path + " 处 old_string 不匹配（" + (first.error || "逐字且唯一") + "）。已还原 " + written.length + " 个已写入文件" +
+            (restoreFail.length ? "，但有 " + restoreFail.length + " 个还原失败：" + restoreFail.join("、") : "") + "。请修正后重试。";
+        }
+        totalEdits += (res2.edits || []).length;
+        try {
+          f.store.write(f.rel, res2.modified);
+          written.push(j);
+          agent._recordWrite(f.rel);
+          codeIndex.queueFileUpdate(f.store.dir, f.rel);
+        } catch (e) {
+          rollback();
+          t.done(false, "写入失败 · " + f.shown, false);
+          return "编辑回滚: " + f.path + " 写入失败（" + e.message + "）。已还原 " + written.length + " 个已写入文件" +
+            (restoreFail.length ? "，但有 " + restoreFail.length + " 个还原失败：" + restoreFail.join("、") : "") + "。";
+        }
+      }
+      /* 全部成功：提交检查点 */
+      agent._pushCheckpoint(jobs.map((j) => j.snap), "原子编辑 " + files.length + " 个文件");
+      const inWs = files.filter((f) => f.store === agent.files);
+      for (const f of inWs) {
+        agent.fileChanged(f.rel);
+        agent.emit({ type: "editor.open", path: f.rel });
+      }
+      if (inWs.length) agent.pushChanges(false);
+      t.done(true, "已写入 " + files.length + " 个文件，共 " + totalEdits + " 处修改", false);
+      /* 与 write_file 同一条回灌路径：一批改完，把有诊断的那些文件一起报给模型，
+         而不是等它下一轮 run_command 撞车才想起看错误。 */
+      const diag = await diagBlock(agent, inWs.map((f) => f.rel));
+      return "已原子写入 " + files.length + " 个文件（共 " + totalEdits + " 处修改）: " + files.map((f) => f.shown).join(", ") +
+        "。/undo 可一键回滚本次全部改动。" + diag;
+    } catch (e) {
+      rollback();
+      t.done(false, "原子编辑失败", false);
+      return "编辑回滚: " + e.message + "。已还原 " + written.length + " 个已写入文件。";
+    }
   },
 };

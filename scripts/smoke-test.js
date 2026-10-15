@@ -109,7 +109,7 @@ assert(filterTodos(todos, "done").length === 0, "done 筛选返回已完成项")
   }).then((r) => r.json());
   const token = tokRes && tokRes.token;
   if (!token) fail("注册测试用户失败: " + JSON.stringify(tokRes));
-  const ws = new WebSocket("ws://localhost:" + PORT + "?token=" + encodeURIComponent(token));
+  const ws = new WebSocket("ws://localhost:" + PORT + "/", ["bearer." + encodeURIComponent(token)]);
 
   /* demo 引擎语义：读 bug → 写修复 → 跑测试验证通过（不要求「首次执行失败」）。
      CURSORWEB_ENGINE=demo 下复现完整工具闭环：read → edit(修复/新建/补测试) → terminal(验证) */

@@ -57,6 +57,7 @@ function histAppend(rec) {
 function histList() {
   return histLoad().map((r) => ({
     id: r.id, title: r.title, ok: r.ok, elapsed: r.elapsed, ts: r.ts,
+    conv: r.conv || "",
     counts: r.counts, summary: r.summary || "",
     steps: (r.steps || []).map((s) => ({
       id: s.id, name: s.name, status: s.status, layer: s.layer,
@@ -115,10 +116,19 @@ class Orchestrator {
     const startTime = Date.now();
     const stepMeta = [];          // 落盘用的完整步骤明细（含耗时与输出，供历史回放）
 
+    /* layer 随步骤一起发：前端要按「第几批」分泳道画依赖图。
+       让它自己从 depends_on 再推一遍分层，就等于允许它推出和真正执行顺序不同的图 ——
+       分层只有一个真相源，就是上面那次 _topoLayers。 */
     this.agent.emit({
       type: "orch.start",
       title: plan.title || "多 Agent 编排",
-      steps: steps.map((s) => ({ id: s.id, name: s.name, depends_on: s.depends_on || [] })),
+      steps: layers.reduce((acc, layer, li) => {
+        layer.forEach((s) => {
+          const meta = steps.find((x) => x.id === s.id) || s;
+          acc.push({ id: s.id, name: s.name, layer: li, parallel: layer.length > 1, depends_on: meta.depends_on || [] });
+        });
+        return acc;
+      }, []),
     });
 
     for (let li = 0; li < layers.length; li++) {
@@ -130,7 +140,7 @@ class Orchestrator {
         const t0 = Date.now();
         // task 必须随明细落盘：历史回放要让用户看到"这个子 agent 被派了什么活"，
         // 只有 name 的话（"分析"“实现"）等于什么都没说。
-        stepMeta.push({ id: step.id, name: step.name, layer: li, parallel, agent_type: step.agent_type || "general", task: String(step.task || ""), status: "running", output: "", elapsed: 0 });
+        stepMeta.push({ id: step.id, name: step.name, layer: li, parallel, depends_on: (step.depends_on || []).slice(), agent_type: step.agent_type || "general", task: String(step.task || ""), status: "running", output: "", elapsed: 0 });
         this.agent.emit({
           type: "orch.step.start",
           stepId: step.id,
@@ -208,6 +218,9 @@ class Orchestrator {
       histAppend({
         id: runId, title: plan.title || "多 Agent 编排", ok: failCount === 0,
         elapsed: +elapsed, ts: Date.now(),
+        /* 归属会话：历史文件按工作区分，以前整份直接摊给侧栏，
+           于是换个对话看到的编排历史一模一样，分不清哪次是自己刚跑的。 */
+        conv: (this.agent && this.agent.currentConv) ? this.agent.currentConv() : "default",
         counts: { done: okCount, fail: failCount, total: steps.length },
         steps: stepMeta, summary,
       });

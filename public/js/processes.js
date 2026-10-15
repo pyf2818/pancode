@@ -39,7 +39,7 @@ function updateSbProcs(procs) {
   } else {
     el.style.display = procs.length ? "" : "none";
     if (procs.length) {
-      $("sbProcsTxt").textContent = "0 进程";
+      $("sbProcsTxt").textContent = t("prUpdateSbProcstextContentT136");
       el.classList.remove("sb-procs-alive");
     }
   }
@@ -49,7 +49,7 @@ function renderProcsList(procs) {
   const list = $("pmList");
   $("pmCount").textContent = procs.length ? (procs.length + " 个进程") : "";
   if (!procs.length) {
-    list.innerHTML = '<div class="pm-empty"><i data-ico="pulse"></i><p>暂无后台进程</p><span>Agent 通过 <code>start_process</code> 启动的长驻服务会显示在这里</span></div>';
+    list.innerHTML = '<div class="pm-empty"><i data-ico="pulse"></i><p>' + t("prRenderProcsListH90") + '</p><span>' + t("prRenderProcsListH91") + '<code>start_process</code>' + t("prRenderProcsListH92") + '</span></div>';
     if (typeof replaceIcons === "function") replaceIcons(list);
     return;
   }
@@ -73,12 +73,12 @@ function renderProcCard(p) {
       '<span class="pm-pid">pid ' + esc(p.pid || "?") + '</span>' +
       (dur ? '<span class="pm-dur">' + dur + '</span>' : '') +
       '<span class="pm-actions">' +
-        (p.alive ? '<button class="pm-btn-stop" data-name="' + esc(p.name) + '"><i data-ico="stop"></i> 停止</button>' : '') +
-        '<button class="pm-btn-log" data-name="' + esc(p.name) + '"><i data-ico="' + (expanded ? "chevD" : "chevR") + '"></i> 日志</button>' +
+        (p.alive ? '<button class="pm-btn-stop" data-name="' + esc(p.name) + '"><i data-ico="stop"></i>' + t("apHandleEventInnerH23") + '</button>' : '') +
+        '<button class="pm-btn-log" data-name="' + esc(p.name) + '"><i data-ico="' + (expanded ? "chevD" : "chevR") + '"></i>' + t("prRenderProcCardH93") + '</button>' +
       '</span>' +
     '</div>' +
     '<div class="pm-cmd"><code>' + esc(p.command) + '</code></div>' +
-    (expanded ? '<div class="pm-log" data-name="' + esc(p.name) + '"><div class="pm-log-loading">加载中…</div></div>' : '');
+    (expanded ? '<div class="pm-log" data-name="' + esc(p.name) + '"><div class="pm-log-loading">' + t("cmOpenCommittextContentT124") + '</div></div>' : '');
   const stopBtn = card.querySelector(".pm-btn-stop");
   if (stopBtn) stopBtn.onclick = (e) => { e.stopPropagation(); stopProc(p.name); };
   const logBtn = card.querySelector(".pm-btn-log");
@@ -88,7 +88,7 @@ function renderProcCard(p) {
 }
 
 async function stopProc(name) {
-  if (!confirm("停止进程 " + name + "？")) return;
+  if (!confirm(t("prRenderProcCardconfirmT111") + name + "？")) return;
   try {
     const r = await fetch("/api/processes/stop", {
       method: "POST",
@@ -96,12 +96,12 @@ async function stopProc(name) {
       body: JSON.stringify({ name }),
     }).then((x) => x.json());
     if (r && r.ok) {
-      toast("已停止 " + name);
+      toast(t("prRenderProcCardtoastT112") + name);
       refreshProcs();
     } else {
-      toast((r && r.error) || "停止失败");
+      toast((r && r.error) || t("prRenderProcCardtoastT113"));
     }
-  } catch (e) { toast("停止失败: " + e); }
+  } catch (e) { toast(t("prRenderProcCardtoastT114") + e); }
 }
 
 function toggleProcLog(name) {
@@ -119,7 +119,7 @@ async function loadProcLog(name) {
     const lines = String(r.output || "").split("\n");
     box.innerHTML = '<pre class="pm-log-pre">' + lines.map((l) => esc(l)).join("\n") + '</pre>';
     box.scrollTop = box.scrollHeight;
-  } catch (e) { box.innerHTML = '<div class="pm-log-err">读取失败</div>'; }
+  } catch (e) { box.innerHTML = '<div class="pm-log-err">' + t("acRuleFormwbNoteT306") + '</div>'; }
 }
 
 function fmtDur(ms) {

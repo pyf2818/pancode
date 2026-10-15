@@ -9,6 +9,7 @@
 const net = require("net");
 const { spawn } = require("child_process");
 const { _sanitizeEnv, classify, AI_TERM_TAB } = require("./terminal");
+const { check } = require("./security");
 
 const MAX_BUFFER_LINES = 800;   // 每进程环形缓冲行数
 const MAX_LINE_LEN = 2000;
@@ -53,6 +54,17 @@ class ProcessLayer {
     command = String(command || "").trim();
     if (!name || !command) return { ok: false, error: "name 与 command 必填" };
     if (!/^[a-zA-Z0-9_-]{1,40}$/.test(name)) return { ok: false, error: "name 仅允许字母/数字/下划线/连字符（≤40 字符）" };
+    /* 命令黑名单检查：与 terminal.run 同源同语义层（security._check）。
+       原来这里只校验了进程名的字符集，command 原样 spawn —— 于是 run_command
+       拦得住的 `rm -rf /` 换成 start_process 就畅通无阻。守卫放在真正 spawn 的
+       这一层，而不是只放在工具层：将来任何新的调用方都自动受管。
+       strict=true —— start_process 目前只由 AI 触发（index.js 的 HTTP 侧只有
+       list/read/stop），按 AI 命令的严档处理。 */
+    const sec = check(command, true);
+    if (sec.blocked) {
+      this.emit({ type: "term.line", tabId: AI_TERM_TAB, text: "[已拒绝启动] " + sec.reason + "： " + command.slice(0, 200), cls: "tl-err" });
+      return { ok: false, error: "命令被安全策略拦截，未启动：" + sec.reason, blocked: true };
+    }
     if (this.procs.has(name)) { try { this.stop(name); } catch (e) {} }
     // Windows：显式 cmd.exe /c 替代 shell:true，规避 cmd 窗口闪现
     const child = process.platform === "win32"

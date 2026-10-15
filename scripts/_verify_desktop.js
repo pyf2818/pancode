@@ -120,8 +120,10 @@ async function waitHealth(maxMs) {
      createWindow 从那一行整段中断，`ready-to-show` 没挂上：health 全绿、任务照跑，
      而窗口从头到尾没出现过（wsClients 恒 0）。所以这里等主进程自己喊"显形了"。 */
   const waitForMarker = async (sub, ms) => {
+    /* 传 RegExp 时按模式匹配：托盘那行的数字会变，只能按「（在跑 N）」这个形状等。 */
+    const hit = () => (typeof sub === "string" ? out.includes(sub) : sub.test(out));
     const t0 = Date.now();
-    while (Date.now() - t0 < ms) { if (out.includes(sub)) return true; await wait(120); }
+    while (Date.now() - t0 < ms) { if (hit()) return true; await wait(120); }
     return false;
   };
   ok("窗口真的显形（ready-to-show 一路跑到 show，没有被中途抛错打断）",
@@ -147,7 +149,10 @@ async function waitHealth(maxMs) {
   /* 用 WS 派一个活：demo 引擎会跑一串工具，耗时足够跨过"关窗"这个时刻 */
   const WebSocket = require("ws");
   const conv = "c-desk-" + Date.now();
-  const ws = new WebSocket("ws://localhost:" + PORT + "?token=" + encodeURIComponent(TOKEN));
+  /* 令牌走 Sec-WebSocket-Protocol，与真实前端同一个路径（C-B2）。
+     这里原先挂的是 ?token=，只有 _sandbox 起的服务端会为了兼容老脚本临时收它，
+     Electron 起的正式服务端直接 socket.destroy() —— 探针读出来就是 socket hang up。 */
+  const ws = new WebSocket("ws://localhost:" + PORT + "/", ["bearer." + encodeURIComponent(TOKEN)]);
   const events = [];
   ws.on("message", (raw) => events.push(JSON.parse(raw.toString())));
   await new Promise((res, rej) => { ws.on("open", res); ws.on("error", rej); setTimeout(() => rej(new Error("WS 连接超时")), 10000); });
@@ -177,7 +182,7 @@ async function waitHealth(maxMs) {
        它手里没有 userToken，于是每 3 秒吃一次 401、rows 恒空，托盘状态行永远说没任务在跑，
        收口的系统通知也一次都没弹过。换成同进程读任务表之后，这一行才是有内容的。
      · 「已挂到后台」证明关窗判据走的是 hide 分支（渲染进程留着，任务流不断线）。 */
-  ok("托盘状态行真的数到了在跑的任务", /（在跑 [1-9]\d*）/.test(out), out.slice(-400));
+  ok("托盘状态行真的数到了在跑的任务", await waitForMarker(/（在跑 [1-9]\d*）/, 20000), out.slice(-400));
   ok("按偏好挂到后台（hide，不是销毁窗口）",
     await waitForMarker("[pc] 已挂到后台", 15000), out.slice(-400));
   let stillHealthy = false;

@@ -96,6 +96,9 @@ function boot(gatewayBase) {
     env: Object.assign({}, process.env, {
       PORT: String(PORT), PANCODE_DATA_DIR: DATA_DIR, CURSORWEB_WORKSPACE: WS_DIR,
       AGENT_FAST: "1", NODE_NO_WARNINGS: "1",
+      /* 探针要注册第二个用户来验「会话行按用户隔离」（⑧），而服务端默认在已有用户后
+         关闭自助注册（修 C-B1）。沙箱数据根是本目录下的临时目录，开注册窗不涉及真实账号。 */
+      PANCODE_ALLOW_SIGNUP: "1",
     }),
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -118,7 +121,8 @@ const WebSocket = require("ws");
 async function connect() {
   const c = await new Promise((resolve, reject) => {
     // 注意：upgrade 有登录闸门，无 token 的连接会被服务端直接 destroy socket（探针因此必须带 token）
-    const ws = new WebSocket("ws://localhost:" + PORT + "?token=" + encodeURIComponent(TOKEN));
+    // 令牌走 Sec-WebSocket-Protocol（服务端已不再收 ?token=，除非显式开 PANCODE_ALLOW_TOKEN_QUERY）
+    const ws = new WebSocket("ws://localhost:" + PORT + "/", ["bearer." + encodeURIComponent(TOKEN)]);
     const events = [];
     const waiters = [];
     ws.on("message", (raw) => {

@@ -8,6 +8,11 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const os = require("os");
+const crypto = require("crypto");
+/* sessions.json 的 key 是 token 的 sha256（见 server/auth.js 的 tokenKey）。
+   这里独立算一遍，而不是从 server/auth 里 require —— 这个脚本要验证的是
+   "盘上确实是这个哈希"，用被测模块自己的函数算等于自己给自己作证。 */
+const sha256 = (v) => crypto.createHash("sha256").update(String(v)).digest("hex");
 
 const ROOT = path.resolve(__dirname, "..");
 const SB = fs.mkdtempSync(path.join(os.tmpdir(), "pancode-auth-live-"));
@@ -76,7 +81,7 @@ function wsOpen(token) {
   return new Promise((resolve) => {
     let done = false;
     const fin = (v) => { if (!done) { done = true; resolve(v); } };
-    const s = new WebSocket("ws://127.0.0.1:" + PORT + "/?token=" + encodeURIComponent(token));
+    const s = new WebSocket("ws://127.0.0.1:" + PORT + "/", ["bearer." + encodeURIComponent(token)]);
     const t = setTimeout(() => { fin({ ok: false, why: "超时" }); try { s.terminate(); } catch (e) {} }, 6000);
     s.on("open", () => { clearTimeout(t); fin({ ok: true }); try { s.close(); } catch (e) {} });
     s.on("error", (e) => { clearTimeout(t); fin({ ok: false, why: String(e && e.message || e) }); });
@@ -99,12 +104,18 @@ function wsOpen(token) {
   r = await req("POST", "/api/auth/register", { username: USER, password: PASSW });
   const token = r.json && r.json.token;
   ok("注册成功返回 token", r.json.ok === true && !!token, JSON.stringify(r.json));
-  r = await req("GET", "/api/auth/status?userToken=" + encodeURIComponent(token || ""));
+  r = await req("GET", "/api/auth/status", null, token);
   ok("status 认得该 token 并回用户名", r.json.loggedIn === true && r.json.username === USER, JSON.stringify(r.json));
   r = await req("GET", "/api/config", null, token);
   ok("带 token 的受保护接口放行（HTTP 200）", r.status === 200 && r.json.ok === true, "status " + r.status);
   r = await req("GET", "/api/config");
   ok("不带 token 的受保护接口被拒（401 且是 JSON，不是 HTML 登录页）", r.status === 401, "status " + r.status + " " + String(r.raw || "").slice(0, 40));
+  /* P1-B4 的新端点必须落在同一个闸门后面：花销与"用了哪些模型"是本机隐私。
+     这条断言防的是"以后有人图省事把它加进 NO_AUTH 白名单"。 */
+  r = await req("GET", "/api/usage");
+  ok("/api/usage 匿名被拒（新端点没有绕过鉴权）", r.status === 401, "status " + r.status);
+  r = await req("GET", "/api/usage", null, token);
+  ok("/api/usage 带 token 放行且形状可用", r.status === 200 && r.json.ok === true && Array.isArray(r.json.days) && typeof r.json.priced === "boolean", JSON.stringify(r.json).slice(0, 90));
   r = await req("POST", "/api/auth/register", { username: "x", password: "pass1234" });
   ok("用户名过短被拒", r.json.ok === false, JSON.stringify(r.json));
   r = await req("POST", "/api/auth/register", { username: "../etc/passwd", password: "pass1234" });
@@ -119,7 +130,7 @@ function wsOpen(token) {
   ok("旧服务确实已停（端口无人响应）", up1 === true);
   b = boot();
   if (!(await untilUp())) { b.child.kill(); throw new Error("重启后服务未就绪\n" + b.tail()); }
-  r = await req("GET", "/api/auth/status?userToken=" + encodeURIComponent(token));
+  r = await req("GET", "/api/auth/status", null, token);
   ok("重启后 status 仍认得旧 token（「重启就要重新登录」的根因）",
     r.json.loggedIn === true && r.json.username === USER, JSON.stringify(r.json));
   r = await req("GET", "/api/config", null, token);
@@ -127,16 +138,20 @@ function wsOpen(token) {
   const w = await wsOpen(token);
   ok("重启后 WebSocket 用旧 token 能握手成功（前端不再掉线）", w.ok === true, w.why || "");
   const sessFile = path.join(DATA, ".pancode", "sessions.json");
-  ok("会话已落盘（sessions.json 存在且含该 token）",
-    fs.existsSync(sessFile) && JSON.parse(fs.readFileSync(sessFile, "utf8"))[token] != null,
+  ok("会话已落盘（sessions.json 存在，且该 token 的哈希在里面）",
+    fs.existsSync(sessFile)
+      && JSON.parse(fs.readFileSync(sessFile, "utf8"))[sha256(token)] != null,
     fs.existsSync(sessFile) ? Object.keys(JSON.parse(fs.readFileSync(sessFile, "utf8"))).length + " 条" : "文件不存在");
+  const sessRaw = fs.existsSync(sessFile) ? fs.readFileSync(sessFile, "utf8") : "";
+  ok("sessions.json 里没有明文 token", sessRaw.indexOf(token) < 0,
+    sessRaw.indexOf(token) >= 0 ? "明文 token 仍在盘上" : "");
   const usersRaw = fs.readFileSync(path.join(DATA, ".pancode", "users.json"), "utf8");
   ok("users.json 里没有明文密码", usersRaw.indexOf(PASSW) < 0);
 
   section("登出与过期");
   r = await req("POST", "/api/auth/logout", null, token);
   ok("登出接口放行", r.json.ok === true, JSON.stringify(r.json));
-  r = await req("GET", "/api/auth/status?userToken=" + encodeURIComponent(token));
+  r = await req("GET", "/api/auth/status", null, token);
   ok("登出后同一 token 立即失效", r.json.loggedIn === false, JSON.stringify(r.json));
   r = await req("GET", "/api/config", null, token);
   ok("登出后受保护接口回到 401", r.status === 401, "status " + r.status);
@@ -149,7 +164,7 @@ function wsOpen(token) {
   await kill(b.child);
   b = boot();
   if (!(await untilUp())) { b.child.kill(); throw new Error("二次重启未就绪\n" + b.tail()); }
-  r = await req("GET", "/api/auth/status?userToken=" + encodeURIComponent(t2));
+  r = await req("GET", "/api/auth/status", null, t2);
   ok("超过 30 天未活动的会话判死", r.json.loggedIn === false, JSON.stringify(r.json));
   b.child.kill();
   await wait(200);

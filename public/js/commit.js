@@ -15,22 +15,22 @@ function openCommit() {
     pushBtn.disabled = !enabled;
     pushBtn.title = why || "";
   };
-  branch.textContent = "加载中…"; box.innerHTML = "";
+  branch.textContent = t("cmOpenCommittextContentT124"); box.innerHTML = "";
   setPush(false, "加载中…");
   if ($("cmSummaryWrap")) $("cmSummaryWrap").style.display = "none";
   fetch("/api/git/status").then((r) => r.json()).then((d) => {
     if (!d.available) {
-      branch.textContent = "当前工作区不是 Git 仓库（快照模式），无法提交";
-      box.innerHTML = '<div class="cm-empty">未检测到 Git 仓库</div>';
+      branch.textContent = t("cmOpenCommittextContentT125");
+      box.innerHTML = '<div class="cm-empty">' + t("cmOpenCommitH41") + '</div>';
       $("cmSubmit").disabled = true; setPush(false, "不是 Git 仓库"); return;
     }
-    branch.textContent = "分支：" + d.branch + (d.remote ? " · 远端：" + d.remote : " · 无远端") +
+    branch.textContent = t("cmOpenCommittextContentT143") + d.branch + (d.remote ? t("coopenCommitC33") + d.remote : t("coopenCommitC34")) +
       /* 打开的是仓库的子目录（monorepo 里只开 web/app）时，这里列的、提交的都只是这个子树，
          不说清楚就会让人以为"提交怎么漏了别的文件"。 */
       (d.sub ? " · 只含 " + d.sub + " 子目录" : "");
     setPush(!!d.remote, d.remote ? "提交后推送到 " + d.remote + "/" + d.branch : "这个仓库还没有远端（git remote 为空），只能本地提交");
     if (!d.changes || !d.changes.length) {
-      box.innerHTML = '<div class="cm-empty">没有未提交的改动</div>';
+      box.innerHTML = '<div class="cm-empty">' + t("cmOpenCommitH42") + '</div>';
       $("cmSubmit").disabled = true; return;
     }
     $("cmSubmit").disabled = false;
@@ -52,7 +52,7 @@ function openCommit() {
     if (selAll) selAll.checked = true;
     updateCmCount();
     $("cmMsg").value = "更新 " + d.changes.length + " 个文件";
-  }).catch(() => { branch.textContent = "状态获取失败"; box.innerHTML = ""; });
+  }).catch(() => { branch.textContent = t("cmOpenCommittextContentT127"); box.innerHTML = ""; });
 }
 /* 已选文件数 → 提交按钮可用性 + 计数 */
 function updateCmCount() {
@@ -119,7 +119,7 @@ if ($("cmCopy")) $("cmCopy").onclick = () => {
   const done = () => { if (btn) btn.textContent = old; };
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(cmCurrentText)
-      .then(() => { if (btn) { btn.textContent = "已复制 ✓"; setTimeout(done, 1200); } })
+      .then(() => { if (btn) { btn.textContent = t("cmSetCmTabtextContentT128"); setTimeout(done, 1200); } })
       .catch(done);
   }
 };
@@ -139,23 +139,23 @@ function doCommit() {
   const msg = $("cmMsg").value.trim();
   const files = Array.from(document.querySelectorAll("#cmChanges .cm-chk"))
     .filter((c) => c.checked).map((c) => c.dataset.path);
-  res.textContent = "提交中…"; res.className = "cm-result";
+  res.textContent = t("cmDoCommittextContentT129"); res.className = "cm-result";
   return fetch("/api/git/commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: msg, files }) })
     .then((r) => r.json()).then((d) => {
-      if (d.ok) { res.textContent = "已提交（" + d.committed + " 个文件）"; res.className = "cm-result ok"; return true; }
-      if (d.nothing) { res.textContent = "没有可提交的改动"; res.className = "cm-result"; return "nothing"; }
-      res.textContent = "提交失败：" + (d.error || ""); res.className = "cm-result err"; return false;
-    }).catch((e) => { res.textContent = "提交失败：" + e.message; res.className = "cm-result err"; return false; });
+      if (d.ok) { res.textContent = t("cmDoCommittextContentT144") + d.committed + t("codoCommitC35"); res.className = "cm-result ok"; return true; }
+      if (d.nothing) { res.textContent = t("cmDoCommittextContentT131"); res.className = "cm-result"; return "nothing"; }
+      res.textContent = t("cmDoCommittextContentT145") + (d.error || ""); res.className = "cm-result err"; return false;
+    }).catch((e) => { res.textContent = t("cmDoCommittextContentT145") + e.message; res.className = "cm-result err"; return false; });
 }
 function closeCommitLater(ms) { setTimeout(() => { const m = $("commitModal"); if (m) m.style.display = "none"; }, ms); }
 function doPush() {
   const res = $("cmResult");
-  res.textContent = "推送中…"; res.className = "cm-result";
+  res.textContent = t("cmDoPushtextContentT133"); res.className = "cm-result";
   return fetch("/api/git/push", { method: "POST" }).then((r) => r.json()).then((d) => {
-    if (d.ok) { res.textContent = "已推送到 " + d.remote + "/" + d.branch; res.className = "cm-result ok"; closeCommitLater(1400); return; }
-    res.textContent = "推送失败：" + (d.error || "");
+    if (d.ok) { res.textContent = t("cmDoPushtextContentT146") + d.remote + "/" + d.branch; res.className = "cm-result ok"; closeCommitLater(1400); return; }
+    res.textContent = t("cmDoPushtextContentT147") + (d.error || "");
     res.className = "cm-result" + (d.noRemote ? "" : " err");
-  }).catch((e) => { res.textContent = "推送失败：" + e.message; res.className = "cm-result err"; });
+  }).catch((e) => { res.textContent = t("cmDoPushtextContentT147") + e.message; res.className = "cm-result err"; });
 }
 if ($("cmSubmit")) $("cmSubmit").onclick = () => { doCommit().then((ok) => { if (ok === true) closeCommitLater(1200); }); };
 if ($("cmPush")) $("cmPush").onclick = () => {

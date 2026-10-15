@@ -8,6 +8,7 @@
    ============================================================ */
 "use strict";
 const fs = require("fs");
+const log = require("./logger");
 const path = require("path");
 
 const TYPES = new Set(["preference", "lesson", "pattern", "decision", "error", "skill"]);
@@ -77,7 +78,7 @@ class MemoryStore {
     try {
       const bak = this._path + ".corrupt-" + Date.now() + ".bak";
       fs.writeFileSync(bak, raw, "utf8");
-      console.warn("[memory-store] 记忆库 JSON 损坏，已备份为", bak);
+      log.tag("memory").warn("记忆库 JSON 损坏，已备份为 " + bak);
     } catch (e) {}
     const out = [];
     for (const line of raw.split("\n")) {

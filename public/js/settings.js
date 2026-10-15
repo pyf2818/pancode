@@ -61,16 +61,16 @@ function wfGroupEl(label) {
 
 /* 兜底：引擎未就绪 / 接口不可用时，退回本地提示词模板，保证面板始终可用 */
 function renderWorkflowsFallback(box) {
-  box.appendChild(wfGroupEl("快捷提示词"));
+  box.appendChild(wfGroupEl(t("wfGroupQuickPrompts")));
   WORKFLOWS.forEach((w) => {
-    box.appendChild(wfItemEl(w.icon, w.name, w.tmpl.split("\n")[0].slice(0, 30), "", () => wfFill(w.tmpl), false));
+    box.appendChild(wfItemEl(w.icon, tr(w.name), w.tmpl.split("\n")[0].slice(0, 30), "", () => wfFill(w.tmpl), false));
   });
 }
 
 /* 渲染真实模板（内置 + 用户自定义），ship 置顶作为一站式交付入口 */
 async function renderWorkflows() {
   const box = $("wfList");
-  box.innerHTML = '<div class="wf-group">加载模板…</div>';
+  box.innerHTML = '<div class="wf-group">' + t("seRenderWorkflowsH87") + '</div>';
   let templates = [];
   try {
     const r = await fetch("/api/templates");
@@ -81,20 +81,21 @@ async function renderWorkflows() {
   box.innerHTML = "";
   if (!templates.length) { renderWorkflowsFallback(box); return; }
 
-  const addTpl = (t, hi) => box.appendChild(wfItemEl(
-    WF_ICONS[t.name] || "toolbox",
-    WF_LABELS[t.name] || t.name,
-    t.description || (t.steps + " 步流程"),
-    t.steps + " 步",
-    () => wfFill(wfTemplatePrompt(t)),
+  /* 形参不能叫 t：全局翻译函数就叫 t，同名形参会把它遮掉（这一版踩过，改成 tpl） */
+  const addTpl = (tpl, hi) => box.appendChild(wfItemEl(
+    WF_ICONS[tpl.name] || "toolbox",
+    tr(WF_LABELS[tpl.name] || tpl.name),
+    tr(tpl.description || t("wfStepsFlow", { n: tpl.steps })),
+    t("wfStepsN", { n: tpl.steps }),
+    () => wfFill(wfTemplatePrompt(tpl)),
     hi
   ));
 
-  const ship = templates.find((t) => t.name === "ship" && t.builtin);
-  if (ship) { box.appendChild(wfGroupEl("一站式交付")); addTpl(ship, true); }
+  const ship = templates.find((x) => x.name === "ship" && x.builtin);
+  if (ship) { box.appendChild(wfGroupEl(t("wfGroupShip"))); addTpl(ship, true); }
 
-  const rest = templates.filter((t) => t.builtin && t.name !== "ship");
-  if (rest.length) { box.appendChild(wfGroupEl("流程模板")); rest.forEach((t) => addTpl(t, false)); }
+  const rest = templates.filter((x) => x.builtin && x.name !== "ship");
+  if (rest.length) { box.appendChild(wfGroupEl(t("wfGroupFlows"))); rest.forEach((x) => addTpl(x, false)); }
 
   const custom = templates.filter((t) => !t.builtin);
   if (custom.length) { box.appendChild(wfGroupEl("我的模板")); custom.forEach((t) => addTpl(t, false)); }
@@ -163,7 +164,7 @@ async function fmBrowse(dir) {
   const list = $("fmList");
   list.innerHTML = "";
   if (!r.dirs || !r.dirs.length) {
-    list.innerHTML = '<div class="scm-empty">此目录下没有子文件夹（可以直接点「打开此文件夹」）</div>';
+    list.innerHTML = '<div class="scm-empty">' + t("seFmBrowseH88") + '</div>';
     return;
   }
   r.dirs.forEach((d) => {
@@ -184,7 +185,7 @@ async function fmRenderRecent() {
     if (!r.recent || !r.recent.length) return;
     const title = document.createElement("div");
     title.className = "fm-recent-title";
-    title.textContent = "最近打开";
+    title.textContent = t("wbGeneralwbElT41");
     box.appendChild(title);
     r.recent.slice(0, 5).forEach((p) => {
       const el = document.createElement("div");
@@ -205,26 +206,37 @@ async function fmOpenFolder() {
       const keepOpen = await fm.onPick(dir);
       if (keepOpen !== false) $("folderModal").style.display = "none";
     } catch (e) {
-      st.className = "set-status err"; st.textContent = "选择失败: " + e.message;
+      st.className = "set-status err"; st.textContent = t("seFmOpenPickertextContentT140") + e.message;
     }
     return;
   }
-  st.className = "set-status"; st.textContent = "正在切换工作区…";
+  st.className = "set-status"; st.textContent = t("seFmOpenPickertextContentT74");
   try {
-    const r = await fetch("/api/workspace", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dir: fm.dir }),
-    }).then((x) => x.json());
+    /* confirmWrites 只在服务端明确要求（needConfirm）时才为 true。
+       不能写成"用户点了确定就传 true"——那样这个确认框就退化成一次无脑点击。 */
+    const openIt = async (confirmWrites) => {
+      const res = await fetch("/api/workspace", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(confirmWrites ? { dir: fm.dir, confirmWrites: true } : { dir: fm.dir }),
+      });
+      return res.json();
+    };
+    let r = await openIt(false);
+    if (r && r.needConfirm) {
+      const go = confirm(r.error + "\n\n确认仍要打开并授予写权限？");
+      if (!go) { st.className = "set-status err"; st.textContent = t("seFmOpenPickertextContentT75"); return; }
+      r = await openIt(true);
+    }
     if (r.ok) {
-      st.className = "set-status ok"; st.textContent = "已打开: " + r.workspace;
+      st.className = "set-status ok"; st.textContent = t("seFmOpenPickertextContentT141") + r.workspace;
       // 清空本地编辑状态，等 hello 广播重建
       state.openTabs = []; state.activeFile = null; state.dirty.clear();
       for (const p in models) { models[p].dispose(); delete models[p]; }
       if (state.monacoReady && editor) editor.setModel(null);
       setTimeout(() => ($("folderModal").style.display = "none"), 500);
       termLine('<span class="tl-info">[pancode] 工作区已切换 → ' + esc(r.workspace) + "</span>");
-    } else { st.className = "set-status err"; st.textContent = "打开失败: " + r.error; }
-  } catch (e) { st.className = "set-status err"; st.textContent = "请求异常: " + e.message; }
+    } else { st.className = "set-status err"; st.textContent = t("seFmOpenPickertextContentT142") + r.error; }
+  } catch (e) { st.className = "set-status err"; st.textContent = t("skPainttextContentT138") + e.message; }
 }
 
 $("btnOpenFolder").onclick = async (e) => {
@@ -242,7 +254,7 @@ $("btnOpenFolder").onclick = async (e) => {
       '<i data-ico="folder"></i><span>' + p.replace(/&/g, "&amp;").replace(/</g, "&lt;") + '</span>' +
       (p === cur ? '<i data-ico="check"></i>' : "") + '</div>'
   ).join("") +
-    '<div class="ws-item ws-more"><i data-ico="folderOpen"></i><span>浏览其他文件夹…</span></div>';
+    '<div class="ws-item ws-more"><i data-ico="folderOpen"></i><span>' + t("seFmOpenFolderH89") + '</span></div>';
   const btn = $("btnOpenFolder");
   document.body.appendChild(menu);
   const r = btn.getBoundingClientRect();
@@ -256,9 +268,19 @@ $("btnOpenFolder").onclick = async (e) => {
       const dir = item.dataset.dir;
       if (!dir || dir === cur) return;
       try {
-        const res = await (await fetch("/api/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir }) })).json();
-        if (!res.ok) toast(res.error || "切换失败");
-      } catch (err) { toast("切换失败: " + err.message); }
+        const openDir = async (confirmWrites) => (await fetch("/api/workspace", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(confirmWrites ? { dir, confirmWrites: true } : { dir }),
+        })).json();
+        let res = await openDir(false);
+        /* 最近列表里的目录多半早就在授权清单里（之前打开过），一般不会走到这个分支；
+           真走到说明它被清过授权或当初是敏感目录，按服务端的要求再确认一次。 */
+        if (res && res.needConfirm) {
+          if (!confirm(res.error + t("dirConfirmWrite"))) { toast(t("wbGeneralwbSavedT60")); return; }
+          res = await openDir(true);
+        }
+        if (!res.ok) toast(res.error || t("wbWtAddRowwbSavedT76"));
+      } catch (err) { toast(t("seFmOpenPickertoastT110") + err.message); }
     };
   });
   // 点外部关闭

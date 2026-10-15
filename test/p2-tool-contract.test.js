@@ -14,28 +14,75 @@ const { MUTATING_TOOLS: UTIL_MUTATING } = require("../server/tools/util");
 
 /* ---------- 迁移前的手工集合（逐字抄录，作为等价的定义） ---------- */
 const OLD_READONLY = [
-  "read_file", "list_files", "search_code", "search_symbol", "repo_map",
+  "read_file", "list_files", "search_code", "search_symbol", "repo_map", "code_graph",
   "search_memory", "get_diagnostics", "use_skill",
-  "git_status", "git_diff", "git_log",
+  "git_status", "git_diff", "git_log", "git_fetch", "git_blame",
   "read_process", "check_port", "list_mcp",
   "web_search", "web_fetch", "goal_status", "list_templates",
+  "find_references",
+  /* 浏览器自动化的"看"那一半：读的是页面状态，不往工作区落地，与 web_fetch 同档。 */
+  "browser_snapshot", "browser_read", "browser_tabs", "browser_wait",
+  /* 电脑控制的"看"那一半：只读 UIA 属性，不发送任何输入。 */
+  "desktop_windows", "desktop_snapshot", "desktop_read",
 ];
-const OLD_NON_CONCURRENT = ["read_process"];
+/* 带跨调用游标的只读工具：agent-browser 一个会话只有一个活跃标签页，ref 属于快照那一刻的那一页，
+   并行两发会让后一发读到前一发的页面 —— 结论不是"过时"而是"错"。
+   桌面的 ref 缓存在常驻 worker 里是进程级一份，且"看到的界面"与"点下去的界面"必须同帧，同理。 */
+const OLD_NON_CONCURRENT = ["read_process", "browser_snapshot", "browser_read", "browser_tabs", "browser_wait",
+  "desktop_windows", "desktop_snapshot", "desktop_read"];
 const OLD_MICROCOMPACTABLE = [
-  "read_file", "list_files", "search_code", "search_symbol", "repo_map",
-  "get_diagnostics", "run_command", "read_process", "check_port",
-  "git_diff", "git_log", "git_status", "web_fetch", "web_search", "list_mcp",
+  "read_file", "list_files", "search_code", "search_symbol", "repo_map", "code_graph",
+  "get_diagnostics", "run_command", "run_tests", "read_process", "check_port",
+  "git_diff", "git_log", "git_status", "git_fetch", "git_blame", "web_fetch", "web_search", "list_mcp",
+  "find_references",
+  /* 浏览器结果全部可再生（重拍一次快照 / 重点一次截图就行），唯独 browser_close 不收：
+     它之后页面就没了，清掉那条结果等于清掉"什么时候关的"。 */
+  "browser_open", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill",
+  "browser_press", "browser_select", "browser_read", "browser_screenshot", "browser_wait",
+  "browser_tabs", "browser_eval",
+  /* 桌面结果同样可再生（重列一次窗口 / 重拍一次控件树就行），desktop_window 也收：
+     它留下的"我把哪个窗口怎么动了"不是需要长期持有的结论。 */
+  "desktop_windows", "desktop_snapshot", "desktop_read", "desktop_screenshot", "desktop_click",
+  "desktop_type", "desktop_press", "desktop_scroll", "desktop_window",
 ];
 const OLD_WAIT_FREE_EXTRA = ["ask_user_choice", "agent", "orchestrate", "set_goal"];
+/* ⚠ create_skill 不在迁移前的集合里，是 P2-4 有意的行为变更，不是漂移：
+   它把正文写进技能库，而正文会被 use_skill / 目录注入读回模型上下文 ——
+   等于往后续会话的提示里插一段文本。原来的空契约（既非只读也非改盘）
+   让 planMode 拦不住它。详见 server/tools/contract.js 的 CONTRACT 注释。
+   ⚠ edit_files 同理是 P0-A3 新增的改盘工具（多文件原子落盘），不是漂移。
+   ⚠ git_push / git_pull / git_reset / git_stash 同理是 P1-B2 新增的 git 工作流工具：
+     四个都会动仓库状态，git_stash 的 list 动作靠 readOnlyWhen 单独放行。
+   ⚠ run_tests 是 P1-B3 新增：它起的也是同一个 shell，而且测试会往工作区写东西
+     （覆盖率目录、snapshot 文件），所以与 run_command 同档算改盘，不当只读。 */
 const OLD_MUTATING = [
-  "write_file", "apply_edit", "delete_file", "run_command",
+  "write_file", "apply_edit", "edit_files", "delete_file", "run_command", "run_tests",
   "undo", "start_process", "stop_process", "git_commit", "git_branch",
+  "git_push", "git_pull", "git_reset", "git_stash", "git_worktree",
+  "create_skill", "rename_symbol",
+  /* 浏览器"动"的那一半算改盘，不是因为它写文件：在真实浏览器里点一次按钮就等于以用户身份
+     向某个站点发一次请求，规划模式必须拦得住它（Cursor 的 plan mode 三条护栏之一就是浏览器保护）。 */
+  "browser_open", "browser_navigate", "browser_click", "browser_fill", "browser_press",
+  "browser_select", "browser_eval", "browser_close",
+  /* 桌面的"动"那一半：一次按键/点击会落到当前焦点窗口上，效果和用户亲手操作等价，
+     所以与改盘同档 —— 规划模式拦、semi/ask 逐次要授权。 */
+  "desktop_click", "desktop_type", "desktop_press", "desktop_scroll", "desktop_window",
 ];
 const OLD_SUB_AGENT_BLOCK = [
   "agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template",
   "save_template", "remove_template", "list_templates", "goal_status", "save_session_memory",
+  "git_push", "git_reset", "git_worktree",
+  /* 浏览器全家拦子智能体：会话名按 convId 派生，同一对话下并行的子代理会共用同一个浏览器，
+     互相把对方的页面导航走。要放开得先做到"每个子代理一个 session"。 */
+  "browser_open", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill",
+  "browser_press", "browser_select", "browser_read", "browser_screenshot", "browser_wait",
+  "browser_tabs", "browser_eval", "browser_close",
+  /* 桌面全家拦子智能体：整机只有一个前台焦点，两个并行分支同时敲键盘必然互相打断，
+     而且子代理看不到"现在焦点在谁那儿"。 */
+  "desktop_windows", "desktop_snapshot", "desktop_read", "desktop_screenshot", "desktop_click",
+  "desktop_type", "desktop_press", "desktop_scroll", "desktop_window",
 ];
-const OLD_IRREVERSIBLE = ["delete_file"];
+const OLD_IRREVERSIBLE = ["delete_file", "git_push"];
 
 /** Set/数组 → 排序后的数组，差异直接打在断言消息里 */
 const sorted = (x) => [...x].sort();
@@ -50,9 +97,9 @@ describe("契约表与注册表互为定义域", () => {
     expect(contract.auditContract(toolNames)).toBeNull();
   });
 
-  it("覆盖全部 38 个工具（漏一个就会静默降级成「需要人工确认」）", () => {
+  it("覆盖全部 72 个工具（漏一个就会静默降级成「需要人工确认」）", () => {
     expect(Object.keys(contract.CONTRACT)).toHaveLength(toolNames.length);
-    expect(toolNames).toHaveLength(38);
+    expect(toolNames).toHaveLength(72);
   });
 
   it("auditContract 真的会报出漏登记与孤儿（否则这条自检形同不存在）", () => {
@@ -91,7 +138,10 @@ describe("派生集合 = 迁移前的手工集合", () => {
 
   it("改盘集合与 tools/util 的旧导出同源", () => {
     sameAs("MUTATING", contract.DERIVED.MUTATING, OLD_MUTATING);
-    sameAs("util 再导出", UTIL_MUTATING, OLD_MUTATING);
+    /* util 的旧导出是迁移前 MUTATING_TOOLS 的原样，没有跟着 create_skill 变更
+       —— 那不是缺陷：contract.js 才是唯一真相源，util 那份只是被 import 过去的历史别名。
+       这里钉住的是"两者必须一致"，哪边改了都要在这里显形。 */
+    sameAs("util 再导出", UTIL_MUTATING, contract.DERIVED.MUTATING);
   });
 
   it("免超时集合 = 4 个等待类 + 全部改盘类", () => {
@@ -102,7 +152,7 @@ describe("派生集合 = 迁移前的手工集合", () => {
     sameAs("SUB_AGENT_BLOCKED", contract.DERIVED.SUB_AGENT_BLOCKED, OLD_SUB_AGENT_BLOCK);
   });
 
-  it("不可逆集合只有 delete_file", () => {
+  it("不可逆集合 = delete_file + git_push（推出去的提交别人可能已拉走）", () => {
     sameAs("IRREVERSIBLE", contract.DERIVED.IRREVERSIBLE, OLD_IRREVERSIBLE);
   });
 });
@@ -145,10 +195,45 @@ describe("权限语义迁移前后不变（直调 _approvalDecision）", () => {
     }
   });
 
-  it("git_branch 只有 list 免确认，建/切分支仍然要确认", () => {
+  it("git_branch 只有 list 免确认，建/切/删分支仍然要确认", () => {
     const a = agentWith();
     expect(a._approvalDecision("git_branch", { action: "list" }).action).toBe("allow");
     expect(a._approvalDecision("git_branch", { action: "create" }).action).toBe("ask");
+    expect(a._approvalDecision("git_branch", { action: "delete" }).action).toBe("ask");
+  });
+
+  /* P1-B2 新增的六个 git 工具：只读的两个（fetch/blame）必须免确认，
+     否则模型看个远端状态都要弹一次窗；动状态的那四个反过来必须问。 */
+  it("git_fetch / git_blame 免确认，git_push / git_pull / git_reset / git_stash 要确认", () => {
+    const a = agentWith();
+    for (const t of ["git_fetch", "git_blame"]) expect(a._approvalDecision(t, {}).action).toBe("allow");
+    for (const t of ["git_push", "git_pull", "git_reset"]) expect(a._approvalDecision(t, {}).action).toBe("ask");
+    expect(a._approvalDecision("git_stash", { action: "list" }).action).toBe("allow");
+    expect(a._approvalDecision("git_stash", { action: "pop" }).action).toBe("ask");
+  });
+
+  /* P2-C2 rename_symbol 一个名字两用：不带 apply 只算预览（免确认，模型才能先看波及面），
+     带 apply 才真落盘（必须问）。find_references 永远纯读。 */
+  it("rename_symbol 预览态免确认、apply 态要确认；find_references 永远免确认", () => {
+    const a = agentWith();
+    expect(a._approvalDecision("find_references", { name: "getUser" }).action).toBe("allow");
+    expect(a._approvalDecision("rename_symbol", { name: "getUser", to: "loadUser" }).action).toBe("allow");
+    expect(a._approvalDecision("rename_symbol", { name: "getUser", to: "loadUser", apply: true }).action).toBe("ask");
+    expect(contract.contractOf("rename_symbol").mutating).toBe(true);
+    // 改名主体给的是"被改的那个名字"，否则 allow/deny 规则没有可匹配的东西
+    expect(a._hookSubject("rename_symbol", { name: "getUser", to: "loadUser" })).toBe("getUser");
+  });
+
+  /* git_push 标了 irreversible：auto 模式 + allow 规则 + 会话已授权三重放行条件叠加后仍要问人。
+     这条钉住的是"撤不回的那一步永远留一道人工闸门"。 */
+  it("git_push 在 auto 模式三重授权下仍强制确认", () => {
+    const a = agentWith({
+      permissions: { mode: "auto", allow: [{ tool: "git_push", pattern: "**" }], deny: [] },
+    });
+    a._sessionGrants = new Set(["git_push"]);
+    const d = a._approvalDecision("git_push", { confirm: true });
+    expect(d.action).toBe("ask");
+    expect(d.reason).toContain("不可逆");
   });
 
   it("delete_file 在 auto 模式 + 命中 allow 规则 + 会话已授权三重条件下仍强制确认", () => {

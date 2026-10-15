@@ -151,6 +151,12 @@ function parseFrontmatter(text) {
   return { meta, body: m[2].trim() };
 }
 
+/* frontmatter 里除正文外的字段都是字符串。disabled / use_count / ts / rating
+   这几个是运行时状态，必须由 normalize 收成正确的类型，
+   否则 "3" < "10" 按字典序比会把热门技能排到后面，disabled:"false" 按真值判会当成关掉了。 */
+function toInt(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function toBool(v) { return v === true || v === "true" || v === 1 || v === "1"; }
+
 function serializeFrontmatter(skill) {
   const lines = ["---"];
   lines.push("name: " + (skill.name || "未命名"));
@@ -161,6 +167,14 @@ function serializeFrontmatter(skill) {
   if (skill.risk_level) lines.push("risk_level: " + skill.risk_level);
   if (skill.author) lines.push("author: " + skill.author);
   if (skill.version) lines.push("version: " + (skill.version || "1.0.0"));
+  /* 状态字段以前不写回 frontmatter，于是重启即失忆：
+     面板里关掉的技能第二天自己又活了，攒下来的使用次数与评分全归零。
+     默认值（0 / false）不写，保持手写的 .md 干净。 */
+  if (skill.disabled) lines.push("disabled: true");
+  if (toInt(skill.useCount) > 0) lines.push("use_count: " + toInt(skill.useCount));
+  if (toInt(skill.rating) > 0) lines.push("rating: " + toInt(skill.rating));
+  if (skill.scope) lines.push("scope: " + skill.scope);
+  if (skill.ts) lines.push("ts: " + toInt(skill.ts));
   lines.push("---");
   lines.push("");
   lines.push(skill.body || "");
@@ -179,14 +193,25 @@ function normalize(skill, source) {
     body: skill.body || skill.steps || "",
     author: skill.author || "user",
     version: skill.version || "1.0.0",
-    useCount: skill.useCount || 0,
+    useCount: toInt(skill.useCount != null ? skill.useCount : skill.use_count),
+    rating: Math.max(0, Math.min(5, toInt(skill.rating))),
+    disabled: toBool(skill.disabled),
     risk_level: skill.risk_level || "",       // W1：风险等级（服务端审计结果为准，自声明仅展示）
     scope: skill.scope || "",                 // W1：user=用户级（跨项目），空=项目级
     source: source || skill.source || "manual",
-    ts: skill.ts || Date.now(),
+    ts: toInt(skill.ts) || Date.now(),
     deprecated: skill.deprecated || false,
   };
 }
+
+/* 市场排序：键名同时是前端那排开关的 data-sort 值。
+   hot 是历史默认（先用量再时间），rating / recent / name 是给市场面板补的视角。 */
+const SORTERS = {
+  hot: (a, b) => (b.useCount - a.useCount) || (b.ts - a.ts),
+  rating: (a, b) => ((b.rating || 0) - (a.rating || 0)) || (b.useCount - a.useCount) || (b.ts - a.ts),
+  recent: (a, b) => (b.ts - a.ts) || (b.useCount - a.useCount),
+  name: (a, b) => String(a.name).localeCompare(String(b.name), "zh"),
+};
 
 class SkillStore {
   constructor(marketDir, localPath, builtinDir, userDir) {
@@ -387,7 +412,8 @@ class SkillStore {
       const q = opts.search.toLowerCase();
       pool = pool.filter((s) => (s.name + " " + s.description + " " + (s.tags || []).join(" ")).toLowerCase().includes(q));
     }
-    return pool.sort((a, b) => (b.useCount - a.useCount) || (b.ts - a.ts)).slice(0, opts.limit || 50);
+    pool.sort(SORTERS[opts.sort] || SORTERS.hot);
+    return pool.slice(0, opts.limit || 50);
   }
 
   /* ---------- 智能匹配 ---------- */
@@ -426,11 +452,25 @@ class SkillStore {
   recordUse(id) {
     const skill = this.getById(id);
     if (!skill) return;
-    skill.useCount = (skill.useCount || 0) + 1;
+    skill.useCount = toInt(skill.useCount) + 1;
     skill.ts = Date.now();
     if (this._marketSkills.includes(skill)) this._saveMarket();
     else if (this._localSkills.includes(skill)) this._saveLocal();
     else if (this._userSkills.includes(skill)) this._saveUser();
+  }
+
+  /* 评分：0 表示取消。这里存的是"我在这台机器上给它的分"——pancode 没有社区服务端，
+     不存在别人的平均分，所以对外文案也不能写成"综合评分"。
+     内置项走不到这里（builtinWorkflows 给的是每次新建的视图），由 API 层先挡住并提示另存。 */
+  rate(id, value) {
+    const skill = this.getById(id);
+    if (!skill) return null;
+    const n = Math.max(0, Math.min(5, Math.round(Number(value) || 0)));
+    skill.rating = n;
+    if (this._marketSkills.includes(skill)) this._saveMarket();
+    else if (this._localSkills.includes(skill)) this._saveLocal();
+    else if (this._userSkills.includes(skill)) this._saveUser();
+    return skill;
   }
 
   /* ---------- 格式化注入 LLM 上下文 ----------
@@ -529,6 +569,19 @@ trigger: 触发关键词1,关键词2
   get stats() {
     const all = [...this._marketSkills, ...this._localSkills, ...this._builtinSkills];
     return { total: all.length, market: this._marketSkills.length, local: this._localSkills.length, builtin: BUILTIN_WORKFLOWS.length + this._builtinSkills.length };
+  }
+  /* 分类 → 个数。API 层读的是这个 getter，而 index.js 以前取的是不存在的 this.categories，
+     JSON.stringify 把 undefined 键静默丢掉，前端 skillCategories 永远等于 {} ——
+     那排分类筛选器因此一次都没出现过。
+     计数口径 = 市场面板能列出的全部（含内置工作流），chip 上的数字与点进去的条数才对得上。 */
+  get categories() {
+    const out = {};
+    for (const s of [...this._marketSkills, ...this._mergedUserSkills(), ...this._localSkills, ...this.builtinWorkflows]) {
+      if (s.deprecated) continue;
+      const c = s.category || "other";
+      out[c] = (out[c] || 0) + 1;
+    }
+    return out;
   }
   get size() { return this._marketSkills.length + this._localSkills.length + BUILTIN_WORKFLOWS.length + this._builtinSkills.length; }
   get builtinWorkflows() {

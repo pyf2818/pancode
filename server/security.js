@@ -8,6 +8,7 @@
    ============================================================ */
 "use strict";
 const fs = require("fs");
+const log = require("./logger");
 const path = require("path");
 
 const BASE = [
@@ -64,9 +65,18 @@ function hasInterpreterPipe(cmd) {
 }
 
 /* W15：Unicode 归一（全角→半角 NFKC）+ 去零宽/控制字符 */
+const HOMOGLYPH_MAP = {
+  "\u2212": "-", // 减号 U+2212（NFKC 不折叠，人眼与 ascii 减号无异）
+  "\u2215": "/", // 除号 U+2215（同上）
+  "\u2044": "/", // 分数斜线 U+2044
+  "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", // 连字符族
+  "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"' // 弯引号
+};
 function normalizeCmd(cmd) {
   let s = String(cmd || "");
   try { s = s.normalize("NFKC"); } catch (e) {}
+  s = s.replace(/[\u2212\u2215\u2044\u2010-\u2013\u2018\u2019\u201c\u201d]/g,
+    (c) => HOMOGLYPH_MAP[c] || c);
   // eslint-disable-next-line no-control-regex
   s = s.replace(/[\u200b\u200c\u200d\u2060\ufeff]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
   return s;
@@ -131,10 +141,16 @@ function _check(cmd, strict, depth) {
   // 3) 编码执行模式
   for (const re of ENCODED_EXEC) if (re.test(norm)) return hit("检测到编码执行链（base64/powershell -enc/certutil 解码后执行），可用于绕过命令审查，已拦截。请改用明文命令。");
 
+  // 4) 语义归一文本再跑 BASE：防全角/零宽/引号拼接/变量拼接绕过
+  //    这一段无条件执行（含用户手敲终端）。原因：全角 `ｒｍ -rf /` 是绕过手段，
+  //    不是「要不要提权」的策略问题——AI 不能做，用户也不该在无意中执行。
+  //    曾把它和下面的 STRICT 一起关在 strict 里，结果用户手敲终端比 AI 更不受保护。
+  const expanded = stripQuoteJoins(macroExpandVars(norm));
+  for (const re of BASE) if (re.test(expanded)) return hit("命中基础危险命令黑名单（语义归一后匹配，疑似编码/拼接绕过），已拦截。这只是本地安全策略，并非沙箱限制——请改用安全的替代方案。");
+
   if (strict) {
-    // 4) 语义归一文本再跑 BASE+STRICT：防全角/零宽/引号拼接/变量拼接绕过
-    const expanded = stripQuoteJoins(macroExpandVars(norm));
-    for (const re of BASE) if (re.test(expanded)) return hit("命中基础危险命令黑名单（语义归一后匹配，疑似编码/拼接绕过），已拦截。这只是本地安全策略，并非沙箱限制——请改用安全的替代方案。");
+    // 4b) STRICT 严档只对 AI 触发：sudo / 全局安装 / 系统目录写入是「该不该做」的策略判断，
+    //     用户在自己终端里 sudo 是正当操作，不该被 AI 的规矩拦住。
     for (const re of STRICT) if (re.test(expanded)) return hit("命中 AI 命令安全黑名单（sudo / 系统目录写入 / 全局安装 / 批量删除等），已拦截。这只是本地安全策略，并非沙箱环境——请改用无需提权或全局写入的替代方案。");
   }
 
@@ -165,7 +181,7 @@ function writeAudit(source, detail) {
     const f = path.join(_auditDir, new Date().toISOString().slice(0, 10) + ".log");
     fs.appendFileSync(f, new Date().toISOString() + " | " + source + " | "
       + String(detail).replace(/\r?\n/g, " ").slice(0, 500) + "\n");
-  } catch (e) { console.warn("[pancode][audit] 写入失败:", e.message); }
+  } catch (e) { log.tag("audit").warn("写入失败: " + e.message); }
 }
 
 /* hooks.pre 规则匹配：tool 匹配（"*" 或精确或省略）+ subject 匹配（/正则/ 或包含子串，省略=仅按 tool）。

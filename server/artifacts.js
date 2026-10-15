@@ -5,6 +5,7 @@
    ============================================================ */
 "use strict";
 const fs = require("fs");
+const log = require("./logger");
 const path = require("path");
 
 /* 扩展名 → 产物类型（只收可预览的交付物；代码/配置文件不算产物） */
@@ -47,7 +48,7 @@ function saveArtifacts(ROOT, convId, list) {
     fs.writeFileSync(tmp, JSON.stringify({ convId, ts: Date.now(), list }, null, 2), "utf8");
     fs.renameSync(tmp, path.join(dir, convId + ".json"));
     return true;
-  } catch (e) { console.warn("[artifacts] 保存失败:", e.message); return false; }
+  } catch (e) { log.tag("artifacts").warn("保存失败: " + e.message); return false; }
 }
 
 function loadArtifacts(ROOT, convId) {

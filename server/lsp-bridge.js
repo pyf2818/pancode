@@ -14,6 +14,7 @@
    ============================================================ */
 "use strict";
 const { spawn } = require("child_process");
+const log = require("./logger");
 const { WebSocketServer } = require("ws");
 const path = require("path");
 const auth = require("./auth");
@@ -65,7 +66,16 @@ class LspManager {
   constructor(cfg) {
     this.cfg = cfg || {};
     this.servers = Object.assign({}, DEFAULT_SERVERS, (this.cfg.lsp && this.cfg.lsp.servers) || {});
-    this.wss = new WebSocketServer({ noServer: true });
+    this.wss = new WebSocketServer({
+      noServer: true,
+      /* 子协议回显的唯一正确位置：handleUpgrade 只有 (req, socket, head, cb) 四个参数，
+         多塞一个 headers 会把 cb 顶掉；completeUpgrade 在 protocols.size > 0 时才调本钩子，
+         返回值写进 Sec-WebSocket-Protocol 响应头，浏览器才不会因"未选择子协议"断开。 */
+      handleProtocols: (protocols) => {
+        for (const p of protocols) if (p.indexOf("bearer.") === 0) return p;
+        return false;
+      },
+    });
     this.wss.on("connection", (ws, req) => this._onConnection(ws, req));
     // 实时诊断缓存：归一化绝对路径 -> { abs, language, uri, items, at }
     // 由后端在代理 textDocument/publishDiagnostics 时填充，Agent 通过 getDiagnostics 查询
@@ -147,12 +157,19 @@ class LspManager {
   /* 清空诊断缓存（如工作区卸载时调用，Agent 侧一般不会用到） */
   clearDiagnostics() { this._diagnostics.clear(); }
 
+  /* 修 C-B2：令牌不再走 query string，改走 Sec-WebSocket-Protocol
+     （浏览器 WebSocket API 无法自定义 header；协议名不进 URL，不入历史/Referer/日志）。
+     query 兜底与 HTTP 侧共用同一个开关 PANCODE_ALLOW_TOKEN_QUERY=1。 */
   handleUpgrade(req, socket, head) {
     const u = new URL(req.url, "http://localhost");
-    const tok = u.searchParams.get("token") || "";
+    const legacy = process.env.PANCODE_ALLOW_TOKEN_QUERY === "1" ? (u.searchParams.get("token") || "") : "";
+    const offered = String(req.headers["sec-websocket-protocol"] || "");
+    const chosen = offered.split(",").map((s) => s.trim()).find((p) => p.indexOf("bearer.") === 0);
+    const tok = (chosen ? decodeURIComponent(chosen.slice(7)) : "") || legacy;
     if (!auth.verify(tok)) { socket.destroy(); return; }
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       ws._lspParams = { lang: (u.searchParams.get("lang") || "").toLowerCase(), root: u.searchParams.get("root") || "" };
+      ws._userToken = tok;
       this.wss.emit("connection", ws, req);
     });
   }
@@ -197,7 +214,7 @@ class LspManager {
     proc.stdout.on("data", (d) => parser.push(d));
     proc.stderr.on("data", (d) => {
       const text = d.toString("utf8").trim();
-      if (text) console.warn(`[lsp:${lang}] ${text.split("\n")[0]}`);
+      if (text) log.tag("lsp").warn(lang + ": " + text.split("\n")[0]);
     });
     proc.on("exit", (code, sig) => {
       send({ type: "lsp.exit", language: lang, code: code ?? null, signal: sig || null });

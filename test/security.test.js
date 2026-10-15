@@ -4,7 +4,7 @@
    - STRICT 沙箱：AI 触发的命令额外拦（sudo / 系统目录写入 / 全局安装 / 批量删工作区）
    返回 { blocked, reason }
    ============================================================ */
-const { check } = require("../server/security");
+const { check, normalizeCmd } = require("../server/security");
 
 describe("security.check — BASE 黑名单（strict=false 也应拦截）", () => {
   const baseBlocked = [
@@ -60,6 +60,31 @@ describe("security.check — STRICT 沙箱（仅 strict=true 拦截）", () => {
       expect(r.blocked).toBe(false);
     });
   }
+});
+
+describe("security.check — 混淆形态对用户与 AI 一视同仁（C-H2）", () => {
+  /* 回归：整段「语义归一后再跑 BASE」曾被关在 if (strict) 里，
+     而 WS term.exec 不传 strict —— 于是用户手敲终端比 AI 更不受保护。 */
+  const obfuscated = [
+    ["\uFF52\uFF4D -rf /", "全角 rm"],
+    ["r\u200bm -rf /", "零宽字符插入"],
+    ["r\u200cm -fr /", "零宽 + flag 换序"],
+    ["\uFF52\uFF4D \u2212rf \uFF0F", "全角 + 数学减号 + 全角斜杠"],
+    ["rm -rf \u2215", "除号 homoglyph 冒充根路径"],
+  ];
+  for (const [cmd, label] of obfuscated) {
+    it(`strict=false 也拦截: ${label} («${cmd}»)`, () => {
+      expect(check(cmd, false).blocked).toBe(true);
+    });
+  }
+  it("normalizeCmd 折叠 NFKC 不处理的同形异义字符", () => {
+    expect(normalizeCmd("\u2212")).toBe("-");
+    expect(normalizeCmd("\u2215")).toBe("/");
+    expect(normalizeCmd("\u2019")).toBe("'");
+    // 原本就能处理的不能被改坏
+    expect(normalizeCmd("\uFF52\uFF4D")).toBe("rm");
+    expect(normalizeCmd("rm\u200b")).toBe("rm");
+  });
 });
 
 describe("security.check — 正常命令放行", () => {

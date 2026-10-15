@@ -23,6 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint (server + test + public)
+        run: npm run lint
+
       - name: Unit tests (vitest)
         run: npm run test:unit
 

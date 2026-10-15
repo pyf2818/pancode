@@ -214,6 +214,77 @@ class FileStore {
     fs.mkdirSync(this.safePath(rel), { recursive: true });
   }
 
+  /* 删除前先搬进回收站，而不是直接 rm -rf。
+     原来「误删 = 真没了」：编辑器里一次 deleteDir 就 recursive 掉整棵目录树，
+     而 AI 那边的 undo 检查点只在 agent 层、纯内存、重启即丢（见 _pushCheckpoint）。
+
+     回收站位置从 auditDir 反推：auditDir = <数据根>/.pancode/audit，
+     于是垃圾箱落在 <数据根>/.pancode/trash —— 在**工作区之外**（不会被 list()/repo_map
+     当项目文件索引进去），又在数据根之内（跟着 pancode 的数据一起搬家，多根共用一份）。
+     绝不放在工作区的父目录：那会在"工作区 = C:\ 或家目录"时直接写到盘根上。 */
+  _trashDir() {
+    const base = this.auditDir ? path.dirname(path.resolve(this.auditDir)) : null;
+    if (base) return path.join(base, "trash");
+    /* 兜底也绝不放工作区内 —— 那会让垃圾箱自己出现在用户的工作区文件树里。
+       退到系统临时目录，进程重启后仍在（可恢复性略降，但不会污染项目）。 */
+    return path.join(require("os").tmpdir(), "pancode-trash-" + this._trashRootKey());
+  }
+
+  /* 多根共用一份垃圾箱，所以条目名里必须带根标识 ——
+     否则 "A 项目里的 src/a.js" 和 "B 项目里的 src/a.js" 恢复回去就是错的目录。
+     与 _audit 那条注释是同一个理由。 */
+  _trashRootKey() {
+    const r = path.resolve(this.dir);
+    let h = 5381;
+    for (let i = 0; i < r.length; i++) h = ((h * 33) ^ r.charCodeAt(i)) >>> 0;
+    return h.toString(36).slice(0, 6);
+  }
+
+  /* 回收站是补救措施，不能反过来变成"因为垃圾箱满了所以文件删不掉"：
+     搬移失败时退回原地删除，把 ok=false 如实返回给调用方审计。 */
+  _toTrash(abs, rel) {
+    const base = this._trashDir();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    let dest = path.join(base, stamp + "__" + this._trashRootKey() + "__" + this._trashEncode(rel));
+    try {
+      fs.mkdirSync(base, { recursive: true });
+      let n = 1;
+      while (fs.existsSync(dest)) {
+        dest = path.join(base, stamp + "__" + this._trashRootKey() + "__" + n + "_" + this._trashEncode(rel));
+        n++;
+      }
+      fs.renameSync(abs, dest);
+      return { ok: true, dest };
+    } catch (e) {
+      /* 跨设备（rename EXDEV）等情况：拷贝后再删原体，语义等价于搬走 */
+      try {
+        fs.cpSync(abs, dest, { recursive: true });
+        fs.rmSync(abs, { recursive: true, force: true });
+        return { ok: true, dest };
+      } catch (e2) { return { ok: false }; }
+    }
+  }
+
+  /* 条目名里的路径部分必须**无损可逆** —— 曾经把 "src/a.js" 压成 "src_a.js"，
+     结果 restore 只能还原出一个躺在工作区根的同名文件，目录结构全丢。
+     斜杠/反斜杠编码成分隔符（%2F / %5C），其余字符原样保留，仍能被人眼读懂。 */
+  _trashEncode(rel) {
+    return String(rel).replace(/%/g, "%25").replace(/\//g, "%2F").replace(/\\/g, "%5C");
+  }
+
+  /* 反解条目名：<stamp>__<rootKey>__[<n>_]<encodedRel>。
+     序号只可能出现在 encodedRel 的开头（数字 + 下划线），且编码后的路径首字符
+     不会是数字下划线组合，所以剥一次即可 —— 但用 ^\\d+_ 只剥一层，
+     因为 "1_src/a.js" 与 "1/2/x.js" 两种原名都要能还原。 */
+  _trashRel(name) {
+    const parts = String(name || "").split("__");
+    if (parts.length < 3) return null;
+    const body = parts.slice(2).join("__").replace(/^\d+_/, "");
+    let rel;
+    try { rel = decodeURIComponent(body); } catch (e) { return null; }
+    return rel || null;
+  }
+
   remove(rel) {
     const abs = this.safePath(rel);
     if (abs === path.resolve(this.dir)) throw new AppError("ROOT_DELETE", "不能删除工作区根目录", "无法删除工作区根目录。");
@@ -221,8 +292,45 @@ class FileStore {
     const st = fs.statSync(abs);
     this._selfWrites.set(rel.replace(/\\/g, "/"), Date.now());
     this._binCache && this._binCache.delete(rel.replace(/\\/g, "/"));
+    const tr = this._toTrash(abs, rel);
+    if (tr.ok) return { recycled: true, trash: path.basename(tr.dest) };
     if (st.isDirectory()) fs.rmSync(abs, { recursive: true });
     else fs.unlinkSync(abs);
+    return { recycled: false };
+  }
+
+  /* 从回收站恢复（服务端接口；前端未接 UI，先让能力可测、可脚本化） */
+  restore(trashName) {
+    const base = this._trashDir();
+    const root = path.resolve(base);
+    const real = path.resolve(base, String(trashName || ""));
+    if (real !== root && !real.startsWith(root + path.sep)) throw new Error("非法回收站条目");
+    if (!fs.existsSync(real)) throw new Error("回收站里没有这个条目: " + trashName);
+    const rel = this._trashRel(path.basename(real));
+    if (!rel) throw new Error("回收站条目名不可解析: " + trashName);
+    const dest = this.safePath(rel);
+    if (fs.existsSync(dest)) throw new Error("原位置已被占用，未恢复: " + rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.renameSync(real, dest);
+    this._selfWrites.set(rel.replace(/\\/g, "/"), Date.now());
+    this._audit("fs", "restore", rel);
+    return { restored: rel };
+  }
+
+  listTrash() {
+    const base = this._trashDir();
+    let names = [];
+    try { names = fs.readdirSync(base); } catch (e) { return []; }
+    const key = this._trashRootKey();
+    const out = [];
+    for (const n of names) {
+      let st = null;
+      try { st = fs.statSync(path.join(base, n)); } catch (e) {}
+      const parts = n.split("__");
+      out.push({ name: n, dir: !!(st && st.isDirectory()), mtime: st ? st.mtimeMs : 0,
+                 rel: this._trashRel(n), mine: parts[1] === key });
+    }
+    return out.sort((a, b) => b.mtime - a.mtime);
   }
 
   rename(rel, relNew) {

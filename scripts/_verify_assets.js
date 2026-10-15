@@ -375,8 +375,13 @@ async function main() {
     ok("assets 给出记忆/规则/技能/专家计数", !!(r.json.assets && typeof r.json.assets.rules === "number"), JSON.stringify(r.json.assets || {}));
     ok("权限默认不放开（yolo 不为默认）", r.json.agent.permissions && r.json.agent.permissions.mode !== "yolo", JSON.stringify(r.json.agent.permissions || {}));
 
-    r = await req("POST", "/api/config", { section: "agent", patch: { permissions: { mode: "acceptEdits" }, memory: { enabled: false } } });
-    ok("按段保存 agent", r.json.ok === true && r.json.agent.permissions.mode === "acceptEdits", r.json.error);
+    r = await req("POST", "/api/config", { section: "agent", patch: { permissions: { mode: "semi" }, memory: { enabled: false } } });
+    ok("按段保存 agent", r.json.ok === true && r.json.agent.permissions.mode === "semi", r.json.error);
+    /* 修 C-H3：permissions.mode 走白名单（ask/semi/auto），白名单外的值必须被拒而不是原样存进去。
+       以前这里塞的是 "acceptEdits"/"plan" —— 那正是洞本身：任意字符串能被收下，
+       引擎按未知值当最严处理，配置里却显示一个不存在的模式，用户以为开了别的档。 */
+    r = await req("POST", "/api/config", { section: "agent", patch: { permissions: { mode: "acceptEdits" } } });
+    ok("白名单外的权限模式被拒且不落盘", r.json.ok === true && r.json.agent.permissions.mode === "semi", JSON.stringify(r.json.agent.permissions || {}));
     r = await req("GET", "/api/settings");
     ok("engine 段读取正常", r.status === 200);
     r = await req("POST", "/api/config", { section: "nonsense", patch: {} });
@@ -387,11 +392,11 @@ async function main() {
     ok("导出里没有 apiKey 字段", !/"apiKey"/.test(r.json.json || ""), "泄露风险");
     ok("导出里也没有 embedding 明文密钥", !/sk-/.test(r.json.json || ""));
 
-    r = await req("POST", "/api/config/import", { json: JSON.stringify({ _kind: "pancode-config", agent: { permissions: { mode: "plan" } }, llm: { apiKey: "sk-should-be-dropped", model: "gpt-test" } }) });
+    r = await req("POST", "/api/config/import", { json: JSON.stringify({ _kind: "pancode-config", agent: { permissions: { mode: "ask" } }, llm: { apiKey: "sk-should-be-dropped", model: "gpt-test" } }) });
     ok("导入应用 agent 段", r.json.ok === true && (r.json.applied || []).includes("agent"), r.json.error);
     ok("导入拒绝并告知跳过了密钥", (r.json.skipped || []).some((s) => /apiKey/.test(s)), JSON.stringify(r.json.skipped || []));
     r = await req("GET", "/api/agent-settings");
-    ok("导入的权限模式真的生效", r.json.permissions && r.json.permissions.mode === "plan", JSON.stringify(r.json.permissions || {}));
+    ok("导入的权限模式真的生效", r.json.permissions && r.json.permissions.mode === "ask", JSON.stringify(r.json.permissions || {}));
     r = await req("POST", "/api/config/import", { json: "{ not json" });
     ok("坏 JSON 被拒绝", r.json.ok === false);
     r = await req("POST", "/api/config/import", { json: { _kind: "other-tool" } });

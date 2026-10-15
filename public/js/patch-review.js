@@ -7,7 +7,7 @@
 let patchDiffEditor = null;
 
 function openPatchReview(ev) {
-  if (!state.monacoReady) { toast("编辑器尚未就绪，稍后可在 SCM 查看改动"); return; }
+  if (!state.monacoReady) { toast(t("paOpenPatchReviewtoastT115")); return; }
   const files = (ev.files || []).map((f) => Object.assign({}, f, {
     hunks: (f.hunks || []).map((h) => Object.assign({}, h, { accepted: true })),
   }));
@@ -21,7 +21,7 @@ function openPatchReview(ev) {
 
 function reopenPatchReview() {
   if (!state.patch || !state.patch.files || !state.patch.files.length) return;
-  if (!state.monacoReady) { toast("编辑器尚未就绪"); return; }
+  if (!state.monacoReady) { toast(t("paReopenPatchReviewtoastT116")); return; }
   $("patchModal").style.display = "flex";
   renderPatchList();
   renderPatchDiff(state.patch._sel || state.patch.files[0].path);
@@ -79,7 +79,7 @@ function renderPatchList() {
     const row = document.createElement("div");
     row.className = "patch-file" + (f.path === state.patch._sel ? " active" : "");
     row.innerHTML = fileIco(f.path) + ' <span class="pf-name">' + escHtml(f.path) + '</span><span class="pf-stat">' + stat + '</span>' +
-      '<span class="pf-act"><button class="pf-btn acc">接受</button><button class="pf-btn rej">拒绝</button></span>';
+      '<span class="pf-act"><button class="pf-btn acc">' + t("apShowBoxH3") + '</button><button class="pf-btn rej">' + t("apShowBoxH4") + '</button></span>';
     row.querySelector(".pf-btn.acc").onclick = (e) => { e.stopPropagation(); patchApply([f.path]); };
     row.querySelector(".pf-btn.rej").onclick = (e) => { e.stopPropagation(); patchReject([f.path]); };
     row.onclick = () => renderPatchDiff(f.path);

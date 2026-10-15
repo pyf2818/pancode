@@ -85,7 +85,9 @@ function startGateway() {
 
 /* ---------- WS 客户端：记录整条事件流，好做"B 一条都没收到"这种否定断言 ---------- */
 async function connect(token, label) {
-  const ws = new WebSocket("ws://127.0.0.1:" + PORT + "?token=" + encodeURIComponent(token));
+  /* 令牌走 Sec-WebSocket-Protocol，与真实前端同一个路径（C-B2）；
+     原先挂 ?token= 只是靠 _sandbox 为兼容老脚本临时开的 PANCODE_ALLOW_TOKEN_QUERY。 */
+  const ws = new WebSocket("ws://127.0.0.1:" + PORT + "/", ["bearer." + encodeURIComponent(token)]);
   const events = [];
   const waiters = [];
   ws.on("message", (raw) => {

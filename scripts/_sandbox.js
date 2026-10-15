@@ -122,9 +122,21 @@ function create(opts = {}) {
     dataDir,
     wsDir,
     /* 给 spawn 用的环境。create() 已经改过 process.env，这里只是把覆盖项拼上，
-       省得每个探针再抄一遍 PANCODE_DATA_DIR（抄漏就是本次要修的那个坑）。 */
+       省得每个探针再抄一遍 PANCODE_DATA_DIR（抄漏就是本次要修的那个坑）。
+
+       不再开 PANCODE_ALLOW_TOKEN_QUERY：那扇门是 C-B2 迁移期给老脚本留的一次性旁路，
+       留着的代价是"整条 verify 链走的都不是正式前端的鉴权路径"——探针连 WS 用 ?token=
+       也能全绿，而 Electron 起的正式服务端会直接 socket.destroy()，这个洞只在 verify:all
+       的桌面阶段才暴露（本轮就是这么抓到的）。四个残留调用点（desktop / eventscope /
+       bootperf / test-lsp）已全部改成 bearer 子协议，旁路随之摘掉。
+
+       同样带上 PANCODE_ALLOW_SIGNUP=1：服务端默认在"已有用户"后关闭自助注册
+       （修 C-B1 的越权链）。多个探针要造第二个用户来验会话/事件按用户隔离，
+       不开这个窗就会撞到 403 REGISTRATION_CLOSED。沙箱数据根本就是空的临时目录，
+       开注册窗不会让任何真实账号暴露。 */
     env(extra) {
-      return Object.assign({}, process.env, { PANCODE_DATA_DIR: dataDir }, extra || {});
+      return Object.assign({}, process.env,
+        { PANCODE_DATA_DIR: dataDir, PANCODE_ALLOW_SIGNUP: "1" }, extra || {});
     },
     /* 探针自己的临时产物（比如要造两个 git 仓库）放这儿，跟着沙箱一起消失，
        别在仓库根留 w12-snap-* 这种没人认领的目录。 */

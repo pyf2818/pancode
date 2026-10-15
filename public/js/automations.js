@@ -23,9 +23,9 @@ function autoSchedDesc(a) {
 }
 function autoFmtTs(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
 function autoLastBadge(s) {
-  if (s === "ok") return '<span class="mcp-badge ok">成功</span>';
-  if (s === "fail") return '<span class="mcp-badge err">失败</span>';
-  return '<span class="mcp-badge dim">未运行</span>';
+  if (s === "ok") return '<span class="mcp-badge ok">' + t("auAutoLastBadgeH82") + '</span>';
+  if (s === "fail") return '<span class="mcp-badge err">' + t("apOnOrchStepFailtextContentT55") + '</span>';
+  return '<span class="mcp-badge dim">' + t("auAutoLastBadgeH83") + '</span>';
 }
 
 async function openAutomations() {
@@ -48,7 +48,7 @@ async function loadAutomations() {
     automationsList = (r && r.automations) || [];
   } catch (e) { box.innerHTML = '<div style="color:var(--err,#e5484d);padding:12px">加载失败: ' + escHtml(e.message) + "</div>"; return; }
   if (!automationsList.length) {
-    box.innerHTML = '<div style="color:var(--text-dim);padding:18px 4px;font-size:12px;text-align:center">还没有自动化任务。用下方模板一键创建：定时跑测试、夜间依赖审计、每周代码健康报告。</div>';
+    box.innerHTML = '<div style="color:var(--text-dim);padding:18px 4px;font-size:12px;text-align:center">' + t("auLoadAutomationsH84") + '</div>';
     return;
   }
   box.innerHTML = automationsList.map((a) => {
@@ -59,8 +59,8 @@ async function loadAutomations() {
       + '<span style="flex:1"></span>'
       + '<button class="auto-act" data-act="run" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">' + ico("play") + " 立即运行</button>"
       + '<button class="auto-act" data-act="' + (running ? "pause" : "resume") + '" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">' + (running ? ico("stopSq") + " 暂停" : ico("play") + " 恢复") + "</button>"
-      + '<button class="auto-act" data-act="hist" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">' + ico("history") + " 历史</button>"
-      + '<button class="auto-act" data-act="del" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px" title="删除任务">' + ico("trash") + "</button>"
+      + '<button class="auto-act" data-act="hist" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px">' + ico("history") + " " + t("autoHistBtn") + "</button>"
+      + '<button class="auto-act" data-act="del" data-id="' + escHtml(a.id) + '" style="font-size:11px;padding:3px 10px" title="' + escHtml(t("autoDelTip")) + '">' + ico("trash") + "</button>"
       + "</div>"
       + '<div style="font-size:12px;color:var(--text-dim);margin-top:6px">' + autoSchedDesc(a) + "</div>"
       + '<div style="font-size:11px;color:var(--text-dim);margin-top:4px">上次: ' + autoFmtTs(a.lastRunAt) + " · 下次: " + autoFmtTs(a.nextRunAt) + "</div>"
@@ -76,7 +76,7 @@ async function autoToggleHistory(id) {
   const box = card.querySelector(".auto-runs");
   if (autoHistoryOpen[id]) { box.style.display = "none"; autoHistoryOpen[id] = false; return; }
   box.style.display = "block";
-  box.innerHTML = '<div style="font-size:11px;color:var(--text-dim)">加载中…</div>';
+  box.innerHTML = '<div style="font-size:11px;color:var(--text-dim)">' + t("cmOpenCommittextContentT124") + '</div>';
   try {
     const r = await fetch("/api/automations/" + id + "/runs").then((x) => x.json());
     const runs = (r && r.runs) || [];
@@ -87,8 +87,8 @@ async function autoToggleHistory(id) {
         + " <b>" + new Date(rn.startedAt).toLocaleString() + "</b> · " + ((rn.finishedAt || rn.startedAt) - rn.startedAt >= 0 ? (((rn.finishedAt || rn.startedAt) - rn.startedAt) / 1000).toFixed(1) + "s" : "")
         + (rn.error ? ' <span style="color:var(--err,#e5484d)">' + escHtml(rn.error).slice(0, 200) + "</span>" : "")
         + '<div style="color:var(--text-dim);white-space:pre-wrap;max-height:100px;overflow:auto;margin-top:3px;font-family:var(--mono)">' + escHtml((rn.output || "").slice(0, 1500)) + "</div></div>").join("")
-      : '<div style="font-size:11px;color:var(--text-dim);padding:4px 0">还没有运行记录（点「立即运行」试一次）</div>';
-  } catch (e) { box.innerHTML = '<div style="font-size:11px;color:var(--err,#e5484d)">加载历史失败</div>'; }
+      : '<div style="font-size:11px;color:var(--text-dim);padding:4px 0">' + t("auAutoToggleHistoryH85") + '</div>';
+  } catch (e) { box.innerHTML = '<div style="font-size:11px;color:var(--err,#e5484d)">' + t("auAutoToggleHistoryH86") + '</div>'; }
   autoHistoryOpen[id] = true;
 }
 
@@ -131,9 +131,9 @@ $("autoList").addEventListener("click", async (e) => {
   const id = btn.dataset.id;
   const act = btn.dataset.act;
   if (act === "run") {
-    btn.disabled = true; btn.textContent = "运行中…";
-    try { await fetch("/api/automations/" + id + "/run", { method: "POST" }); toast("已触发，稍后刷新历史查看结果"); }
-    catch (err) { toast("触发失败: " + err.message); }
+    btn.disabled = true; btn.textContent = t("auAutoFillTemplatetextContentT101");
+    try { await fetch("/api/automations/" + id + "/run", { method: "POST" }); toast(t("auAutoFillTemplatetoastT107")); }
+    catch (err) { toast(t("auAutoFillTemplatetoastT108") + err.message); }
     setTimeout(loadAutomations, 800);
   } else if (act === "pause" || act === "resume") {
     try { await fetch("/api/automations/" + id + "/" + act, { method: "POST" }); } catch (err) {}
@@ -159,10 +159,10 @@ $("btnAutoSave").onclick = async () => {
   try {
     const r = await fetch("/api/automations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json());
     if (r.ok) {
-      toast("任务已创建，到点自动执行");
+      toast(t("auAutoFillTemplatetoastT109"));
       $("autoName").value = ""; $("autoPrompt").value = ""; $("autoCron").value = ""; $("autoAt").value = "";
       autoToggleForm(false);
       loadAutomations();
-    } else { st.className = "set-status err"; st.textContent = "创建失败: " + (r.error || "未知错误"); }
-  } catch (e) { st.className = "set-status err"; st.textContent = "请求异常: " + e.message; }
+    } else { st.className = "set-status err"; st.textContent = t("auAutoFillTemplatetextContentT139") + (r.error || t("apapplyModelC22")); }
+  } catch (e) { st.className = "set-status err"; st.textContent = t("skPainttextContentT138") + e.message; }
 };

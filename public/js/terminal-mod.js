@@ -58,10 +58,13 @@ function renderTermTabs() {
   if (!bar) return;
   bar.innerHTML = "";
   Object.keys(termTabs).forEach((id) => {
-    const t = termTabs[id];
+    const tab = termTabs[id];
+    /* 标签名按"终端 N"这个形状现算，不直接显示存下来的 title：
+       title 是建标签那一刻的语言写进协议里的，切过语言后它就成了旧语言。 */
+    const num = (String(tab.title || "").match(/(\d+)\s*$/) || [])[1] || "";
     const b = document.createElement("div");
     b.className = "term-tab" + (id === termActive ? " active" : "");
-    b.innerHTML = '<span class="term-tab-name">' + esc(t.title) + '</span><span class="term-tab-x" title="关闭标签">✕</span>';
+    b.innerHTML = '<span class="term-tab-name">' + esc(t("terminalTabName", { n: num })) + '</span><span class="term-tab-x" title="' + esc(t("closeTerminalTab")) + '">✕</span>';
     b.querySelector(".term-tab-name").onclick = () => swapTerm(id);
     b.querySelector(".term-tab-x").onclick = (e) => { e.stopPropagation(); closeTermTab(id); };
     bar.appendChild(b);
@@ -69,7 +72,7 @@ function renderTermTabs() {
   const add = document.createElement("div");
   add.className = "term-tab-add";
   add.textContent = "＋";
-  add.title = "新建终端标签";
+  add.title = t("newTerminalTab");
   add.onclick = newTermTab;
   bar.appendChild(add);
 }
@@ -77,8 +80,8 @@ function renderTermTabs() {
 function newTermTab() {
   const id = genTermTabId();
   const n = Object.keys(termTabs).length + 1;
-  termTabs[id] = { title: "终端 " + n, lines: [] };
-  send({ type: "term.open", tabId: id, title: "终端 " + n });
+  termTabs[id] = { title: t("tmNewTermTabtitleT151") + n, lines: [] };
+  send({ type: "term.open", tabId: id, title: t("tmNewTermTabtitleT151") + n });
   swapTerm(id);
 }
 
@@ -98,17 +101,19 @@ function closeTermTab(id) {
 function initTermTabs(tabs) {
   termTabs = {};
   termActive = null;
-  (tabs || []).forEach((t) => {
-    const lines = (t.history || []).map((e) => '<div class="tl">' + termHtmlFromEntry(e) + "</div>");
-    termTabs[t.id] = { title: t.title || "终端", lines };
+  (tabs || []).forEach((tab) => {
+    const lines = (tab.history || []).map((e) => '<div class="tl">' + termHtmlFromEntry(e) + "</div>");
+    termTabs[tab.id] = { title: tab.title || t("tmInitTermTabstitleT138"), lines };
   });
   const ids = Object.keys(termTabs);
   if (ids.length) {
     swapTerm(ids[0]);
   } else {
     const id = genTermTabId();
-    termTabs[id] = { title: "终端 1", lines: ['<div class="tl"><span class="tl-dim">pancode 集成终端 — 命令在服务端 workspace/ 目录真实执行（Ctrl+C 中断）</span></div>'] };
-    send({ type: "term.open", tabId: id, title: "终端 1" });
+    termTabs[id] = { title: t("tmInitTermTabstitleT138"), lines: ['<div class="tl"><span class="tl-dim term-intro">' + t("terminalIntro", { dir: (typeof state !== "undefined" && state.project) || "workspace" }) + '</span></div>'] };
+    send({ type: "term.open", tabId: id, title: t("tmInitTermTabstitleT138") });
     swapTerm(id);
   }
 }
+/* 标签条与「+」提示是 JS 画的，不在 [data-i18n] 覆盖范围内：切语言时重画一次。 */
+if (typeof onLang === "function") onLang(() => { try { renderTermTabs(); } catch (e) {} });

@@ -45,7 +45,7 @@ function fail(s) { console.error("[fileops] FAIL: " + s); process.exit(1); }
   }).then((r) => r.json());
   const token = tokRes && tokRes.token;
   if (!token) fail("注册测试用户失败: " + JSON.stringify(tokRes));
-  const ws = new WebSocket("ws://localhost:" + PORT + "?token=" + encodeURIComponent(token));
+  const ws = new WebSocket("ws://localhost:" + PORT + "/", ["bearer." + encodeURIComponent(token)]);
   let files = {};
   const waiters = [];
   let evSeq = 0;

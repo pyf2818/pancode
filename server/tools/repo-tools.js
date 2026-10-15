@@ -1,9 +1,28 @@
 "use strict";
-/* 仓库工具：repo_map / search_symbol / get_diagnostics / list_mcp */
+/* 仓库工具：repo_map / search_symbol / code_graph / get_diagnostics / list_mcp */
 const repoMap = require("../repo-map");
+const CG = require("../code-graph");
+const R = require("../refactor");
 const { getMcpManager } = require("../mcp");
 const { getActiveManager } = require("../lsp-bridge");
 const { fmtDiag } = require("./util");
+
+/* 工作区全部文件（算孤岛要用；只从边里收集节点会把"没查到"和"是孤岛"混成一件事）。
+   list() 失败时返回空数组——图照样能问上下游，只是不报孤岛。 */
+function allFiles(agent) {
+  try { return (agent.files.list() || []).map(CG.norm); } catch (e) { return []; }
+}
+
+/* 图里查不到这个节点时给几个"你是不是想问"——直接回"没找到"会让人以为工具坏了。 */
+function nearMatches(g, target, limit) {
+  const q = CG.norm(target).toLowerCase();
+  const seg = q.split("/").pop() || q;
+  return [...g.nodes]
+    .map((p) => ({ p, l: p.toLowerCase() }))
+    .filter((x) => x.l.includes(seg) || seg.includes(x.p.split("/").pop()))
+    .slice(0, limit || 6)
+    .map((x) => x.p);
+}
 
 module.exports = {
   repo_map: async (agent, args) => {
@@ -24,6 +43,68 @@ module.exports = {
       : "无匹配符号";
     t.body(txt);
     t.done(true, rs.length + " 处匹配");
+    return txt;
+  },
+
+  /* P3-D2 代码知识图谱：把"改这里会牵连谁"变成一个可直接问的只读工具。
+     四种问法对应四种真实动作：接手陌生仓看形状 / 改文件前看影响面 / 看它依赖谁 / 改符号前看谁在用。 */
+  code_graph: async (agent, args) => {
+    const mode = ["overview", "impact", "deps", "symbol"].includes(args.mode) ? args.mode : "overview";
+    const target = CG.norm(args.target || args.path || args.name || "");
+    const depth = Math.max(1, Math.min(6, Number(args.depth) || 2));
+    const t = agent.tool("read", mode === "overview" ? "依赖图概览" : mode === "impact" ? "改动影响面" : mode === "deps" ? "依赖清单" : "符号使用点",
+      mode === "overview" ? "全仓" : target);
+    const idx = agent._repoIndex();
+    const g = CG.fromIndex(idx, allFiles(agent));
+    if (!g.linked.size) {
+      const txt = "依赖图是空的：这个工作区里没识别到任何 import/require 关系（可能是纯脚本集合，或依赖写法不在识别范围内）。";
+      t.done(false, "无依赖边");
+      return txt;
+    }
+    if (mode === "overview") {
+      const txt = CG.formatOverview(CG.overview(g, { top: Number(args.top) || 8 }));
+      t.body(txt.slice(0, 6000));
+      t.done(true, g.nodes.size + " 个文件有依赖关系");
+      return txt;
+    }
+    if (!target) {
+      t.done(false, "缺少 target");
+      return "错误: mode=" + mode + " 需要 target（工作区相对路径或符号名）。例如 { mode: \"impact\", target: \"server/files.js\" }。";
+    }
+    if (mode === "symbol") {
+      if (!R.IDENT_RE.test(target)) {
+        t.done(false, "符号名不合法");
+        return "错误: target 要是一个标识符（字母/数字/_/$ 组成），收到的是「" + target + "」。按文件问影响面请用 mode=impact。";
+      }
+      const defs = repoMap.searchSymbols(idx, target).filter((s) => s.name.toLowerCase() === target.toLowerCase());
+      const scan = R.scanFiles((p) => { try { return agent.files.read(p); } catch (e) { return null; } }, g.nodes.size ? [...g.nodes] : [], target, {});
+      const users = scan.files.filter((f) => f.hits && f.hits.length);
+      const head = "符号 " + target + "：定义 " + defs.length + " 处、被引用文件 " + users.length + " 个\n";
+      const defLines = defs.length ? defs.map((d) => "  · 定义 " + d.path + ":" + d.line + "（" + d.kind + "）").join("\n") + "\n" : "";
+      const useLines = users.slice(0, 40).map((f) => "  · " + f.path + "（" + f.hits.length + " 处，L" + (f.hits[0].line || "?") + " 起）").join("\n");
+      /* 定义所在文件的反向影响面才是重点：谁 import 了这个文件，才可能用到这个符号 */
+      const defPaths = [...new Set(defs.map((d) => d.path))];
+      const spill = new Set();
+      defPaths.forEach((p) => CG.impact(g, p, depth).forEach((r) => spill.add(r.path)));
+      const txt = head + defLines + (useLines || "  （没有文件按这个名字引用它）\n")
+        + (spill.size ? "\n这些定义文件再往上还会牵连：" + [...spill].slice(0, 30).join("、") + "\n" : "")
+        + "（边的粒度是文件级：谁 import 了定义所在文件都算牵连到，具体是否真用到这个符号请逐个看上面的引用行。）";
+      t.body(txt.slice(0, 6000));
+      t.done(true, users.length + " 个文件引用");
+      return txt;
+    }
+    if (!g.nodes.has(target)) {
+      const near = nearMatches(g, target);
+      const txt = "依赖图里没有「" + target + "」这个节点（它没有任何 import/require 边，或路径写错了）。"
+        + (near.length ? "\n名字接近的节点：" + near.join("、") : "")
+        + "\n要按名字问符号级的问题请改用 mode=symbol。";
+      t.done(false, "节点不存在");
+      return txt;
+    }
+    const rows = mode === "impact" ? CG.impact(g, target, depth) : CG.depsOf(g, target, depth);
+    const txt = CG.formatWalk(target, rows, mode === "impact" ? "反向（谁依赖它）" : "正向（它依赖谁）");
+    t.body(txt.slice(0, 6000));
+    t.done(true, rows.length + " 个文件");
     return txt;
   },
 

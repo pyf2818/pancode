@@ -467,7 +467,15 @@ async function main() {
       const out = [];
       for (const sid of ["skills", "rules", "memory", "experts"]) {
         window.openWorkbench(sid);
-        await new Promise((r) => setTimeout(r, 420));
+        /* 等这一区真的渲染完再量：固定 sleep 在全量回归（几十个探针连着跑、机器满载）时
+           会量到"列表还没挂上去"的中间态，于是 det=-1 被当成空框报出来——那是探针自己的时序，
+           不是产品的空框。轮询到节点出现为止，超时才认失败。 */
+        const t0 = Date.now();
+        while (Date.now() - t0 < 6000) {
+          await new Promise((r) => setTimeout(r, 80));
+          if (document.querySelector("#wbBody .wb-detail") && document.querySelector("#wbBody .wb-side-list")) break;
+        }
+        await new Promise((r) => setTimeout(r, 220));
         const det = document.querySelector("#wbBody .wb-detail");
         const lst = document.querySelector("#wbBody .wb-side-list");
         out.push({ sid, det: det ? (det.innerText || "").trim().length : -1, lst: lst ? (lst.innerText || "").trim().length : -1 });
@@ -797,10 +805,53 @@ async function main() {
     ok("跨项目记忆仍带用户级标色", recall.scope1 === true, "scope1=" + recall.scope1);
 
     /* #45：编排历史侧栏要能看到"分发出去的子 agent 任务与结果"。
-       mock /api/orch/history 灌一条三步记录（成功/失败/进行中），断言步骤行渲染出 task 与 output 摘要。 */
+       mock /api/orch/history 灌一条三步记录（成功/失败/进行中），断言步骤行渲染出 task 与 output 摘要。
+       2026-10-15 追加：历史按工作区落盘，侧栏必须只摊本会话的，别的会话可一键切到全部。 */
     const orchUi = await page.evaluate(async () => {
-      const runs = [{ id: "orch-test", title: "探针编排", ok: false, elapsed: 3.2, ts: Date.now(),
-        counts: { done: 1, fail: 1, total: 3 }, summary: "编排「探针编排」完成：1 成功，1 失败",
+      const mk = (id, title, conv) => ({ id, title, ok: false, elapsed: 3.2, ts: Date.now(), conv,
+        counts: { done: 1, fail: 1, total: 3 }, summary: "编排「" + title + "」完成：1 成功，1 失败",
+        steps: [
+          { id: "s1", name: "检索", status: "done", layer: 0, agent_type: "general", task: "在仓库里找出所有入口文件", output: "找到 3 个入口：server/index.js、electron/main.js、public/index.html" },
+          { id: "s2", name: "评审", status: "fail", layer: 0, agent_type: "reviewer", task: "评审上一步结果", output: "子智能体超时" },
+          { id: "s3", name: "补位", status: "running", layer: 1, agent_type: "general", task: "修复评审意见", output: "" },
+        ] });
+      const runs = [
+        mk("orch-test", "探针编排", convId),                 // 本会话
+        mk("orch-other", "别人的编排", "conv-somewhere-else"), // 另一个会话
+        mk("orch-legacy", "老记录（无 conv）", undefined),      // 字段上线前的落盘记录
+      ];
+      const realFetch = window.fetch;
+      const paint = async () => {
+        window.fetch = () => Promise.resolve(new Response(JSON.stringify({ ok: true, runs }), { headers: { "Content-Type": "application/json" } }));
+        try { await renderOrchHistory(); } finally { window.fetch = realFetch; }
+        const items = [...document.querySelectorAll("#agOrchHistory .ag-orch-item")];
+        return {
+          titles: items.map((x) => ((x.querySelector(".ag-orch-item-title") || {}).textContent || "").trim()),
+          scopeBar: !!document.querySelector("#agOrchHistory .ag-orch-scope"),
+          scopes: [...document.querySelectorAll("#agOrchHistory .aos-btn")].map((b) => (b.textContent || "").trim()),
+          active: ((document.querySelector("#agOrchHistory .aos-btn.active") || {}).textContent || "").trim(),
+          convRow: items.length ? [...items[0].querySelectorAll(".ag-orch-item-conv")].length : 0,
+        };
+      };
+      _orchScope = "conv";
+      const mine = await paint();
+      _orchScope = "all";
+      const all = await paint();
+      _orchScope = "conv";
+      return { mine, all };
+    });
+    const orchMine = orchUi.mine, orchAll = orchUi.all;
+    ok("编排历史默认只看本会话（别的会话/老记录不混进来）",
+      orchMine.titles.length === 1 && orchMine.titles[0] === "探针编排", JSON.stringify(orchMine.titles));
+    ok("存在其他会话的记录时给出范围切换行（当前落在「本会话」）",
+      orchMine.scopeBar === true && orchMine.scopes.join("/") === "本会话/本工作区全部" && orchMine.active === "本会话", JSON.stringify(orchMine));
+    ok("切到「本工作区全部」三条都显示", orchAll.titles.length === 3, JSON.stringify(orchAll.titles));
+    ok("全部视图给每条标出归属会话", orchAll.convRow === 1, "convRow=" + orchAll.convRow);
+    ok("切回本会话后视图跟着收窄", orchMine.titles.length === 1);
+
+    const orchUi2 = await page.evaluate(async () => {
+      const runs = [{ id: "orch-test", title: "探针编排", ok: false, elapsed: 3.2, ts: Date.now(), conv: convId,
+        counts: { done: 1, fail: 1, total: 3 }, summary: "",
         steps: [
           { id: "s1", name: "检索", status: "done", layer: 0, agent_type: "general", task: "在仓库里找出所有入口文件", output: "找到 3 个入口：server/index.js、electron/main.js、public/index.html" },
           { id: "s2", name: "评审", status: "fail", layer: 0, agent_type: "reviewer", task: "评审上一步结果", output: "子智能体超时" },
@@ -820,10 +871,139 @@ async function main() {
         failDot: !!it.querySelector(".ag-orch-step.fail"),
       };
     });
-    ok("编排历史条目渲染（3 个子任务行）", orchUi.found === true && orchUi.steps === 3, JSON.stringify(orchUi).slice(0, 240));
-    ok("子任务行显示派发的任务原文（task）", /入口文件/.test(orchUi.task0), "task=" + orchUi.task0);
-    ok("子任务行显示结果摘要（output）", /server\/index\.js/.test(orchUi.out0), "out=" + orchUi.out0);
-    ok("失败子任务带失败状态点", orchUi.failDot === true, "failDot=" + orchUi.failDot);
+    ok("编排历史条目渲染（3 个子任务行）", orchUi2.found === true && orchUi2.steps === 3, JSON.stringify(orchUi2).slice(0, 240));
+    ok("子任务行显示派发的任务原文（task）", /入口文件/.test(orchUi2.task0), "task=" + orchUi2.task0);
+    ok("子任务行显示结果摘要（output）", /server\/index\.js/.test(orchUi2.out0), "out=" + orchUi2.out0);
+    ok("失败子任务带失败状态点", orchUi2.failDot === true, "failDot=" + orchUi2.failDot);
+
+    /* #45 续（P2-C1）：编排要有"图"的样子——谁等谁、谁和谁同批并行。
+       这里走真实事件流（orch.start → step.done），断言泳道、边数、边跟着状态变色，
+       并留一组反向对照：单批无依赖不许画成泳道（没依赖还画框列就是噪音）。 */
+    const dag = await page.evaluate(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      window.handleEvent({
+        type: "orch.start", title: "依赖图探针",
+        steps: [
+          { id: "s1", name: "起点", layer: 0, parallel: false, depends_on: [] },
+          { id: "s2", name: "左支", layer: 1, parallel: true, depends_on: ["s1"] },
+          { id: "s3", name: "右支", layer: 1, parallel: true, depends_on: ["s1"] },
+          { id: "s4", name: "汇合", layer: 2, parallel: false, depends_on: ["s2", "s3"] },
+        ],
+      });
+      await wait(60);
+      const host = document.getElementById("orchSteps");
+      const read = () => ({
+        graphed: host.classList.contains("orch-dag"),
+        wide: !!document.querySelector(".orch-box.orch-box-wide"),
+        lanes: [...host.querySelectorAll(".orch-lane")].map((l) => ({
+          layer: l.dataset.layer, nodes: l.querySelectorAll(".orch-step").length,
+          head: (l.querySelector(".orch-lane-head") || {}).textContent || "",
+        })),
+        edges: [...host.querySelectorAll(".orch-dag-svg .orch-edge")].map((p) => ({ cls: p.getAttribute("class"), d: p.getAttribute("d") || "" })),
+        nodes: host.querySelectorAll(".orch-step").length,
+      });
+      const first = read();
+      window.handleEvent({ type: "orch.step.start", stepId: "s1", name: "起点", layer: 0, parallel: false });
+      window.handleEvent({ type: "orch.step.done", stepId: "s1", name: "起点", elapsed: 1, output: "起点结论" });
+      await wait(60);
+      const afterS1 = read();
+      /* 边必须真的连在两个节点上：拿节点矩形反查边的两个端点，误差 2px 以内 */
+      const rects = {};
+      [...host.querySelectorAll(".orch-step")].forEach((el) => {
+        const r = el.getBoundingClientRect();
+        rects[el.dataset.id] = { left: r.left, top: r.top, right: r.right, cy: r.top + r.height / 2 };
+      });
+      const svgBox = host.querySelector(".orch-dag-svg").getBoundingClientRect();
+      const num = (d) => (d.match(/-?\d+(\.\d+)?/g) || []).map(Number);
+      /* 路径形状是 M x1,y1 C mx,y1 mx,y2 (x2-7),y2 —— 首两点是源节点右缘，末两点是目标节点左缘 */
+      const joined = afterS1.edges.map((e) => {
+        const n = num(e.d);
+        return { x1: svgBox.left + n[0], y1: svgBox.top + n[1], x2: svgBox.left + n[n.length - 2] + 7, y2: svgBox.top + n[n.length - 1] };
+      });
+      window.handleEvent({ type: "orch.step.fail", stepId: "s2", name: "左支", elapsed: 2, error: "子智能体超时" });
+      await wait(60);
+      const afterFail = read();
+      /* 实时那一步的结果原先写 style.display=""，被 CSS 的 display:none 赢回去，等于从来没显示过。
+         现在默认收起、点标题展开——展开必须是真展开，不然这一步的产出在界面上无处可看。 */
+      const s1El = host.querySelector('[data-id="s1"]');
+      const beforeClick = getComputedStyle(s1El.querySelector(".orch-step-out")).display;
+      s1El.querySelector(".orch-step-head").click();
+      const afterClick = getComputedStyle(s1El.querySelector(".orch-step-out")).display;
+      const outText = (s1El.querySelector(".orch-step-out") || {}).textContent || "";
+      s1El.querySelector(".orch-step-head").click();
+      const reCollapsed = getComputedStyle(s1El.querySelector(".orch-step-out")).display;
+      // 反向对照：单批、无依赖
+      window.handleEvent({ type: "orch.start", title: "平铺对照", steps: [{ id: "f1", name: "F1", layer: 0, depends_on: [] }, { id: "f2", name: "F2", layer: 0, depends_on: [] }] });
+      await wait(60);
+      const flat = read();
+      document.getElementById("orchClose").click();
+      return { first, afterS1, afterFail, flat, rects, joined, click: { beforeClick, afterClick, outText, reCollapsed } };
+    });
+    ok("多批依赖画成泳道图（3 列，节点数 1/2/1）",
+      dag.first.graphed === true && dag.first.lanes.length === 3 && dag.first.lanes.map((l) => l.nodes).join(",") === "1,2,1",
+      JSON.stringify(dag.first.lanes));
+    ok("箱宽随图放开（泳道不能被 560px 挤成竖条）", dag.first.wide === true, "wide=" + dag.first.wide);
+    ok("泳道标题说明这一批是并行还是单独一步", /2 步并行/.test(dag.first.lanes[1].head) && /单独一步/.test(dag.first.lanes[0].head),
+      JSON.stringify(dag.first.lanes.map((l) => l.head)));
+    ok("依赖边数量等于边数（s1→s2,s1→s3,s2→s4,s3→s4 共 4 条）", dag.first.edges.length === 4, "实际 " + dag.first.edges.length);
+    ok("边的端点落在源节点右缘与目标节点左缘（不是凭空画的装饰线）",
+      dag.joined.every((e) => {
+        /* 4px 容差：泳道等分宽度和滚动条会让布局差 1~2px，这条断言要抓的是
+           "边连没连到节点上"，不是亚像素；连错节点的话差的是整列宽度（>100px）。 */
+        const src = Object.keys(dag.rects).find((k) => Math.abs(dag.rects[k].right - e.x1) < 4 && Math.abs(dag.rects[k].cy - e.y1) < 4);
+        const dst = Object.keys(dag.rects).find((k) => Math.abs(dag.rects[k].left - e.x2) < 4 && Math.abs(dag.rects[k].cy - e.y2) < 4);
+        return !!src && !!dst;
+      }),
+      JSON.stringify(dag.joined[0]));
+    ok("点开步骤标题真能看到结果（实时那一步原先永远展不开）",
+      dag.click.beforeClick === "none" && dag.click.afterClick === "block" && /起点结论/.test(dag.click.outText) && dag.click.reCollapsed === "none",
+      JSON.stringify(dag.click));
+    const clsCount = (list) => list.reduce((acc, e) => {
+      const k = (e.cls.match(/orch-edge (pending|running|done|fail)/) || [])[1] || "?";
+      acc[k] = (acc[k] || 0) + 1; return acc;
+    }, {});
+    ok("边色跟着「上游有没有交付」走：s1 完成后 s1→s2、s1→s3 两条转绿，未轮到的仍是虚线",
+      JSON.stringify(clsCount(dag.afterS1.edges)) === JSON.stringify({ done: 2, pending: 2 }),
+      JSON.stringify(clsCount(dag.afterS1.edges))),
+    ok("分支失败后，从它出发的那条边转红（一眼看出下游为什么过不去）",
+      JSON.stringify(clsCount(dag.afterFail.edges)) === JSON.stringify({ done: 2, fail: 1, pending: 1 }),
+      JSON.stringify(clsCount(dag.afterFail.edges)));
+    ok("反向对照：单批无依赖仍是整宽列表，不画泳道图",
+      dag.flat.graphed === false && dag.flat.lanes.length === 0 && dag.flat.nodes === 2, JSON.stringify(dag.flat).slice(0, 200));
+
+    /* 历史回放也要有同一张图（记录里现在留着 depends_on） */
+    const replay = await page.evaluate(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const realFetch = window.fetch;
+      window.fetch = (u) => Promise.resolve(new Response(JSON.stringify({
+        ok: true,
+        run: { id: "orch-p", title: "回放探针", ok: false, elapsed: 4, ts: Date.now(), summary: "1 失败",
+          steps: [
+            { id: "p1", name: "取数", layer: 0, status: "done", elapsed: 1, depends_on: [], output: "取到 3 行" },
+            { id: "p2", name: "落库", layer: 1, status: "fail", elapsed: 2, depends_on: ["p1"], output: "约束冲突" },
+            { id: "p3", name: "补跑", layer: 2, status: "running", elapsed: 0, depends_on: ["p2"], output: "" },
+          ] },
+      }), { headers: { "Content-Type": "application/json" } }));
+      try { await replayOrchRun("orch-p", "回放探针"); } finally { window.fetch = realFetch; }
+      await wait(120);
+      const host = document.getElementById("orchSteps");
+      const steps = [...host.querySelectorAll(".orch-step")];
+      const edgeCls = [...host.querySelectorAll(".orch-dag-svg .orch-edge")].map((p) => p.getAttribute("class"));
+      return {
+        graphed: host.classList.contains("orch-dag"),
+        lanes: host.querySelectorAll(".orch-lane").length,
+        edges: host.querySelectorAll(".orch-dag-svg .orch-edge").length,
+        edgeCls,
+        fromFail: edgeCls.filter((c) => /fail/.test(c)).length,
+        statuses: steps.map((s) => (s.querySelector(".orch-step-status") || {}).textContent || ""),
+        collapsed: getComputedStyle(steps[0].querySelector(".orch-step-out")).display,
+      };
+    });
+    ok("回放同样画成泳道图（3 批 2 条依赖）", replay.graphed === true && replay.lanes === 3 && replay.edges === 2, JSON.stringify(replay).slice(0, 220));
+    ok("从失败步骤出发的那条边是失败色（下游为什么过不去，一眼看出）", replay.fromFail === 1, JSON.stringify(replay.edgeCls));
+    ok("回放里中断未回收的步骤不谎称「执行中」", /未回收/.test(replay.statuses.join("|")), replay.statuses.join(" / "));
+    ok("回放结果默认收起（泳道里不摊开整段输出）", replay.collapsed === "none", "display=" + replay.collapsed);
+
 
     /* 诊断：胶囊有没有被谁裁掉（临时输出，确认后转断言） */
     await page.evaluate(() => {

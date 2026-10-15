@@ -115,12 +115,12 @@ document.addEventListener("click", (e) => {
   const btn = e.target && e.target.closest && e.target.closest(".wg-btn");
   if (!btn) return;
   const rec = WG_REGISTRY.get(btn.dataset.wg);
-  if (!rec) { toast("可视化内容已过期，请让 AI 重新生成"); return; }
+  if (!rec) { toast(t("vi_wgSvgToPngtoastT117")); return; }
   const act = btn.dataset.act;
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-  if (act === "svg") { _wgDownload(_wgSvgBlob(rec.body), "diagram-" + stamp + ".svg"); toast("已下载 SVG"); }
+  if (act === "svg") { _wgDownload(_wgSvgBlob(rec.body), "diagram-" + stamp + ".svg"); toast(t("vi_wgSvgToPngtoastT118")); }
   else if (act === "png") {
-    _wgSvgToPng(rec.body, (b) => { if (b) { _wgDownload(b, "diagram-" + stamp + ".png"); toast("已下载 PNG"); } else toast("PNG 转换失败"); });
+    _wgSvgToPng(rec.body, (b) => { if (b) { _wgDownload(b, "diagram-" + stamp + ".png"); toast(t("vi_wgSvgToPngtoastT119")); } else toast(t("vi_wgSvgToPngC2")); });
   } else if (act === "open") {
     const blob = new Blob([rec.body], { type: "text/html;charset=utf-8" });
     _wgDownload; // no-op 引用规避 lint

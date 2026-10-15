@@ -12,6 +12,7 @@
    ============================================================ */
 "use strict";
 const fs = require("fs");
+const log = require("./logger");
 const path = require("path");
 const wsKey = require("./ws-key");            // 索引文件名与缓存键的唯一来源
 
@@ -90,7 +91,7 @@ async function embed(texts, cfg) {
     if (!j.data || !Array.isArray(j.data)) return null;
     return j.data.map((d) => d.embedding);
   } catch (err) {
-    console.warn("[code-index] embedding 失败，回退 BM25:", err.message);
+    log.tag("code-index").warn("embedding 失败，回退 BM25: " + err.message);
     return null;
   }
 }
@@ -212,7 +213,7 @@ async function buildIndex({ wsDir, fileStore, cfg }) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(payload), "utf8");
-  } catch (e) { console.warn("[code-index] 持久化失败:", e.message); }
+  } catch (e) { log.tag("code-index").warn("持久化失败: " + e.message); }
   const key = cacheKeyOf(wsAbs);
   _cache.set(key, payload);
   _lastCfg = cfg || _lastCfg;
@@ -310,7 +311,7 @@ async function flushUpdate(wsDir, rels) {
   try {
     fs.mkdirSync(path.dirname(wsIndexFile(wsAbs)), { recursive: true });
     fs.writeFileSync(wsIndexFile(wsAbs), JSON.stringify(payload), "utf8");
-  } catch (e) { console.warn("[code-index] 增量持久化失败:", e.message); }
+  } catch (e) { log.tag("code-index").warn("增量持久化失败: " + e.message); }
   _cache.set(key, payload);
   return { ok: true, count: next.length };
 }
@@ -324,7 +325,7 @@ function queueFileUpdate(wsDir, rel) {
   if (ent.timer) clearTimeout(ent.timer);
   ent.timer = setTimeout(() => {
     const e = ent; _queue.delete(key);
-    flushUpdate(e.wsDir, Array.from(e.rels)).catch((err) => console.warn("[code-index] 增量更新失败:", err.message));
+    flushUpdate(e.wsDir, Array.from(e.rels)).catch((err) => log.tag("code-index").warn("增量更新失败: " + err.message));
   }, 700);
 }
 
@@ -342,7 +343,7 @@ function removeFile(wsDir, rel) {
   try {
     fs.mkdirSync(path.dirname(wsIndexFile(wsAbs)), { recursive: true });
     fs.writeFileSync(wsIndexFile(wsAbs), JSON.stringify(payload), "utf8");
-  } catch (e) { console.warn("[code-index] 删除持久化失败:", e.message); }
+  } catch (e) { log.tag("code-index").warn("删除持久化失败: " + e.message); }
   _cache.set(key, payload);
   return { ok: true };
 }

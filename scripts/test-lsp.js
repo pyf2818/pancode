@@ -56,7 +56,9 @@ function ok(name) { console.log("  ✓ " + name); pass++; }
   await new Promise((res) => server.listen(0, res));
   const port = server.address().port;
 
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/lsp?lang=mock&root=%2Ftmp&token=${encodeURIComponent(token)}`);
+  /* 令牌走 Sec-WebSocket-Protocol，与 public/js/lsp-client.js 同一个路径（C-B2）：
+     /lsp 的 handleUpgrade 默认已不收 ?token=，挂 query 会被直接 socket.destroy()。 */
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/lsp?lang=mock&root=%2Ftmp`, ["bearer." + encodeURIComponent(token)]);
   const env = [];           // 收到的 {type, ...} 信封
   const msgs = [];          // 其中的 LSP msg
   let initResolved = false, diagGot = false, compGot = false;

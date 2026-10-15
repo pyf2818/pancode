@@ -1,6 +1,6 @@
 {
   "name": "pancode",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "基于 Monaco Editor (VS Code 开源内核) 的 Web AI 编程工作台 — 可写编辑器 + Git 基线 + 真实 LLM Agent 工具调用循环（OpenAI 兼容），无 Key 时演示引擎保底",
   "main": "electron/main.js",
   "scripts": {
@@ -11,7 +11,7 @@
     "dist": "electron-builder --win nsis",
     "smoke": "node scripts/smoke-test.js",
     "test:fileops": "node scripts/fileops-test.js",
-    "test:verify": "node scripts/_verify_dataroot.js mark && node scripts/_verify_render.js && node scripts/_verify_repo_map.js && node scripts/_verify_tools.js && node scripts/verify-git-async.js && node scripts/_verify_agentflow.js && node scripts/_verify_ctxpair.js && node scripts/_verify_parallel.js && node scripts/_verify_promptctx.js && node scripts/_verify_wskey.js && node scripts/_verify_tasks.js && node scripts/_verify_roots.js && node scripts/_verify_multiroot.js && node scripts/_verify_roots_ui.js && node scripts/_verify_choice.js && node scripts/_verify_assets.js && node scripts/_verify_preview.js && node scripts/_verify_skilluse.js && node scripts/_verify_workbench.js && node scripts/_verify_longtask.js && node scripts/_verify_auth.js && node scripts/_verify_eventscope.js && node scripts/_verify_layout.js && node scripts/_verify_uitaste.js && node scripts/_verify_bootperf.js && node scripts/_verify_dataroot.js check",
+    "test:verify": "node scripts/_verify_dataroot.js mark && node scripts/_verify_render.js && node scripts/_verify_repo_map.js && node scripts/_verify_codegraph.js && node scripts/_verify_tools.js && node scripts/_verify_testrunner.js && node scripts/_verify_cost.js && node scripts/verify-git-async.js && node scripts/_verify_gitworkflow.js && node scripts/_verify_worktree.js && node scripts/_verify_agentflow.js && node scripts/_verify_ctxpair.js && node scripts/_verify_parallel.js && node scripts/_verify_promptctx.js && node scripts/_verify_wskey.js && node scripts/_verify_tasks.js && node scripts/_verify_roots.js && node scripts/_verify_multiroot.js && node scripts/_verify_roots_ui.js && node scripts/_verify_choice.js && node scripts/_verify_assets.js && node scripts/_verify_rulehistory.js && node scripts/_verify_preview.js && node scripts/_verify_skilluse.js && node scripts/_verify_skillmarket.js && node scripts/_verify_workbench.js && node scripts/_verify_longtask.js && node scripts/_verify_auth.js && node scripts/_verify_eventscope.js && node scripts/_verify_logger.js && node scripts/_verify_editfiles.js && node scripts/_verify_refactor.js && node scripts/_verify_decisions.js && node scripts/_verify_ruleevo.js && node scripts/_verify_undo.js && node scripts/_verify_i18n.js && node scripts/_verify_gearmenu.js && node scripts/_verify_plandock.js && node scripts/_verify_listeners.js && node scripts/_verify_diagnostics.js && node scripts/_verify_layout.js && node scripts/_verify_uitaste.js && node scripts/_verify_bootperf.js && node scripts/_verify_browser.js && node scripts/_verify_computer.js && node scripts/_verify_shotui.js && node scripts/_verify_dataroot.js check",
     "test:integration": "node scripts/integration-runner.js",
     "test:lsp": "node scripts/test-lsp.js",
     "test:code-index": "node scripts/test-code-index.js",
@@ -24,9 +24,9 @@
     "index:build": "node scripts/index-build.js",
     "verify:search": "node scripts/verify-search.js",
     "test:vitest": "vitest run",
-    "test:unit": "vitest run",
-    "lint": "npx eslint server/ test/ --quiet",
-    "lint:fix": "npx eslint server/ test/ --quiet --fix",
+    "test:unit": "node scripts/_verify_dataroot.js mark && vitest run && node scripts/_verify_dataroot.js check",
+    "lint": "npx eslint server/ test/ public/ scripts/ --quiet",
+    "lint:fix": "npx eslint server/ test/ public/ scripts/ --quiet --fix",
     "format": "npx prettier --write \"server/**/*.js\" \"test/**/*.js\" \"public/**/*.js\"",
     "test": "npm run test:verify && node scripts/smoke-test.js && node scripts/fileops-test.js && npm run test:integration && npm run test:patch && npm run test:lsp && npm run test:code-index"
   },
@@ -43,7 +43,12 @@
       "public/**",
       "workspace/**",
       "assets/**",
-      "package.json"
+      "package.json",
+      "!node_modules/agent-browser/bin/agent-browser-darwin-*",
+      "!node_modules/agent-browser/bin/agent-browser-linux*"
+    ],
+    "asarUnpack": [
+      "node_modules/agent-browser/bin/**"
     ],
     "win": {
       "target": "nsis"
@@ -57,6 +62,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "agent-browser": "0.39.1",
     "express": "^4.19.2",
     "mammoth": "^1.12.0",
     "ws": "^8.17.0"

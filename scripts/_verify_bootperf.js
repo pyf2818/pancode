@@ -177,7 +177,7 @@ async function snapshotNew(g, f) {
     ok("沙箱里能拿到登录 token（账号只落在沙箱数据根）", !!token);
     const helloMs = await new Promise((resolve, reject) => {
       const WebSocket = require("ws");
-      const ws = new WebSocket(`ws://127.0.0.1:${PORT}/?token=${encodeURIComponent(token)}`);
+      const ws = new WebSocket(`ws://127.0.0.1:${PORT}/`, ["bearer." + encodeURIComponent(token)]);
       const start = Date.now();
       const timer = setTimeout(() => { ws.terminate(); reject(new Error("hello 超时未到达")); }, 60000);
       ws.on("open", () => {});

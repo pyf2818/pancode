@@ -58,6 +58,55 @@ function buildRepoIndex(files) {
   try { paths = files.list(); } catch (e) { paths = []; }
   const fileEntries = [];
   let symbolCount = 0, indexed = 0;
+  /* F-H1：依赖图排序（Aider 方案）—— 轻量 import/require 边提取，
+     让 formatRepoMap 按「依赖被谁用」拓扑排序，被依赖多的文件先展示。
+     对 JS/TS 提取 import/require，对 Python 提取 from/import，对 Go 提取 import 块，
+     对 Rust 提取 use。边只记录文件级（不记符号级），开销可接受。
+     最后一个 import\s* 分支是为 P3-D2 补的：`import "./side-effect.css"` 这种无绑定的
+     副作用导入以前一条都不匹配，于是依赖图上凭空少一条边——少边比多边危险，
+     因为"看不出牵连"和"没有牵连"在界面上长得一模一样。 */
+  const DEP_RE = {
+    javascript: /^\s*(?:import\s.*?from\s|import\s*\(|require\s*\(|import\s+[\w{},\s]+|import\s*)\s*["']([^"']+)["']/,
+    typescript: /^\s*(?:import\s.*?from\s|import\s*\(|require\s*\(|import\s+[\w{},\s]+|import\s*)\s*["']([^"']+)["']/,
+    python: /^\s*(?:from\s+(\.\.?\/?[\w.]+)\s+import|import\s+(\w))/,
+    go: /^\s*(?:import\s+\(|import\s+)["']([^"']+)["']?/,
+    rust: /^\s*use\s+([a-zA-Z_][\w:]*)/,
+  };
+  const depMap = new Map();   // path -> Set<depPath>
+  function resolveDep(importer, spec) {
+    if (!spec) return null;
+    const segs = importer.split("/");
+    segs.pop();   // dirname
+    const base = spec.startsWith(".") ? segs.join("/") : "";
+    const raw = spec.startsWith(".") ? spec : "node_modules/" + spec;
+    let rel;
+    if (spec.startsWith(".")) {
+      /* base 为空是真实情况：根级文件（app.js / index.js）的 dirname 就是工作区根本身。
+         以前无条件拼 "base + '/' + spec" 会得出 "/./b"，于是根级文件的相对导入一条都解析不上——
+         偏偏根级文件是入口，"看不出牵连"在图上和"没有牵连"长得一模一样。 */
+      const joined = (base ? base + "/" : "") + spec;
+      const parts = joined.split("/");
+      let i = 0;
+      while (i < parts.length) {
+        if (parts[i] === ".") { parts.splice(i, 1); continue; }
+        if (parts[i] === ".." && i > 0) { parts.splice(i - 1, 2); i--; continue; }
+        i++;
+      }
+      rel = parts.join("/");
+    } else {
+      // 非相对导入（npm 包），无法解析为本地文件，跳过
+      return null;
+    }
+    // 尝试常见后缀
+    const exts = [".js", ".ts", ".jsx", ".tsx", ".py", ".go", ".rs", ""];
+    for (const ext of exts) {
+      const candidate = rel + ext;
+      if (ext === "") {
+        if (paths.includes(candidate)) return candidate;
+      } else if (paths.includes(candidate)) return candidate;
+    }
+    return null;
+  }
   for (const p of paths) {
     if (indexed >= MAX_INDEX_FILES) break;
     const lang = langOf(p);
@@ -71,24 +120,63 @@ function buildRepoIndex(files) {
     if (content.length > MAX_SYMBOL_FILE_BYTES) continue;
     const lines = content.split("\n");
     const syms = [];
+    const deps = new Set();
+    const depRe = DEP_RE[lang];
+    let capped = false;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       let hit = false;
-      if (rules) {
-        for (const rule of rules) {
-          const m = rule.re.exec(line);
-          if (m) { syms.push({ name: m[1], kind: rule.kind, line: i + 1 }); hit = true; break; }
+      /* 符号数封顶只该封顶符号，不该顺手把这一文件的依赖边也截断：
+         以前这里是 break，于是"超过 60 个符号的文件"后半段的 import 全丢，
+         depCount 排序与 P3-D2 的依赖图都因此少边（大文件恰恰是最该看清依赖的那批）。 */
+      if (!capped) {
+        if (rules) {
+          for (const rule of rules) {
+            const m = rule.re.exec(line);
+            if (m) { syms.push({ name: m[1], kind: rule.kind, line: i + 1 }); hit = true; break; }
+          }
+        }
+        if (!hit && METHOD_KINDS.has(lang)) {
+          const mm = METHOD_RE.exec(line);
+          if (mm) syms.push({ name: mm[1], kind: "method", line: i + 1 });
+        }
+        if (syms.length >= MAX_SYMBOLS_PER_FILE) capped = true;
+      }
+      /* F-H1：提取依赖边 */
+      if (depRe && i < lines.length) {
+        const dm = depRe.exec(line);
+        if (dm) {
+          const spec = dm[1] || dm[2];
+          if (spec) {
+            const resolved = resolveDep(p, spec);
+            if (resolved) deps.add(resolved);
+          }
         }
       }
-      if (!hit && METHOD_KINDS.has(lang)) {
-        const mm = METHOD_RE.exec(line);
-        if (mm) syms.push({ name: mm[1], kind: "method", line: i + 1 });
-      }
-      if (syms.length >= MAX_SYMBOLS_PER_FILE) break;
     }
+    if (deps.size) depMap.set(p, deps);
     if (syms.length) { fileEntries.push({ path: p, lang, symbols: syms }); symbolCount += syms.length; indexed++; }
   }
-  return { files: fileEntries, symbolCount, fileCount: paths.length, indexedCount: indexed };
+  /* F-H1：拓扑排序 —— 按被依赖数量降序排列（被依赖越多越靠前），
+     相同被依赖数时按原路径排序保持稳定 */
+  const depCount = new Map();   // path -> 被谁依赖的次数
+  for (const [importer, depSet] of depMap) {
+    for (const dep of depSet) {
+      depCount.set(dep, (depCount.get(dep) || 0) + 1);
+    }
+  }
+  fileEntries.sort((a, b) => {
+    const ac = depCount.get(a.path) || 0;
+    const bc = depCount.get(b.path) || 0;
+    if (ac !== bc) return bc - ac;   // 被依赖多的排前面
+    return a.path.localeCompare(b.path);
+  });
+  return {
+    files: fileEntries, symbolCount, fileCount: paths.length, indexedCount: indexed, depCount,
+    /* P3-D2：把邻接表原样交出去。以前算完只留了 depCount 计数，边本身被丢掉了，
+       于是"改这个文件会牵连谁"这种问题无处可问。 */
+    edges: Object.fromEntries([...depMap.entries()].map(([k, v]) => [k, [...v]])),
+  };
 }
 
 function formatRepoMap(index, opts) {

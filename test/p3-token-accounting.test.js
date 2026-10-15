@@ -13,7 +13,19 @@
 
    这一组测试钉住修好之后的四条不变量。
    ============================================================ */
+/* 数据根必须在 require("../server/agent-llm") 之前设好：_accumUsage 会把用量记进
+   config.ROOT/.pancode/usage.json，不隔离就是往开发者真实的账本里记一笔假账
+   （实测：跑一次 vitest 全量，仓库根的 .pancode/usage.json 就凭空多出来）。
+   这里不新建 fs/os/path 顶层绑定——本文件后半段还有一组同名 const，重复声明会整文件加载失败。 */
+const TMP_ACC = require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "tokacc-"));
+process.env.PANCODE_DATA_DIR = TMP_ACC;
+
 const { LlmAgent } = require("../server/agent-llm");
+
+afterAll(() => {
+  delete process.env.PANCODE_DATA_DIR;
+  try { require("fs").rmSync(TMP_ACC, { recursive: true, force: true }); } catch (e) {}
+});
 
 function makeAgent(cfgExtra) {
   // 与 p0 同一套轻量构造：Object.create 不走构造函数，正是"字段缺省变 NaN"的现场

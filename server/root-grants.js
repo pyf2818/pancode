@@ -15,6 +15,7 @@
    ============================================================ */
 "use strict";
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const wsKey = require("./ws-key");
 const safeWrite = require("./safe-write");
@@ -23,6 +24,80 @@ const LABEL_MAX = 60;
 const TOUCH_MIN_MS = 60000;   // lastUsedAt 一小时写一次就够：每次工具调用都刷盘会把盘打热
 
 const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } };
+
+/* "打开这个文件夹"不该等于"AI 现在能往这个文件夹里以及它下面的一切写文件"。
+   这个判断是给"要不要先问一句"用的，所以宁可多列出一些：
+   盘符/文件系统根、用户家目录本身、系统与程序目录、以及任何祖先命中这些的目录。
+   漏判的代价是用户没被问就交出了整个树；误报的代价是多弹一次确认。
+
+   三条判据要分开，不能混成一张名字表 —— 混了会在 Windows 上把每一个项目都当成敏感目录
+   （默认装法下几乎所有项目都在 C:\Users\<名字>\ 下面）：
+   - SYSTEM_NAMES 命中目录自身或任一祖先就算敏感（系统目录及其下面的东西）。
+   - POSIX_SYSTEM_NAMES 只认"紧贴根目录"的那一层（/etc、/usr、/bin …）。
+     否则 ~/proj/lib 这种项目内子目录也会被当成系统目录。
+   - PROFILE_DATA_NAMES 只在目录正好躺在某个用户目录直下时才算敏感（Downloads/Desktop 这类）。
+     ~/Documents/某个项目 是正常项目目录，不该拦；~/Downloads 才是。 */
+const SYSTEM_NAMES = new Set([
+  "windows", "system32", "syswow64", "program files", "program files (x86)",
+  "programdata", "$recycle.bin", "system volume information",
+]);
+const POSIX_SYSTEM_NAMES = new Set([
+  "etc", "var", "usr", "bin", "sbin", "lib", "lib64", "opt", "proc", "sys",
+  "boot", "dev", "private", "library",
+]);
+/* 用户目录的容器名：命中说明它的下一层是"某个人"的家目录 */
+const PROFILE_CONTAINER_NAMES = new Set(["users", "home", "user home"]);
+const PROFILE_DATA_NAMES = new Set([
+  "documents", "downloads", "desktop", "pictures", "music", "videos",
+  "onedrive", "appdata", "my documents",
+]);
+
+function isSensitiveRoot(dir) {
+  let abs;
+  try { abs = path.resolve(dir); } catch (e) { return false; }
+  let parsed;
+  try { parsed = path.parse(abs); } catch (e) { return false; }
+  // 盘符根 / 文件系统根：C:\ 、/
+  if (parsed.root === abs) return true;
+  // 家目录本身，以及它的任意祖先（C:\Users 底下是整台机器上所有用户的文件）
+  let home = "";
+  try { home = path.resolve(os.homedir()); } catch (e) {}
+  if (home) {
+    const nh = wsKey.normalizeDir(home, home);
+    const na = wsKey.normalizeDir(abs, home);
+    if (na === nh || nh.startsWith(na + path.sep)) return true;
+  }
+  // 环境变量指向的系统目录（Windows 上这几个值最常被手滑选到）
+  for (const k of ["SystemRoot", "windir", "ProgramFiles", "ProgramData", "ProgramW6432"]) {
+    const v = process.env[k];
+    if (!v) continue;
+    try {
+      const nv = wsKey.normalizeDir(path.resolve(v), path.resolve(v));
+      const na = wsKey.normalizeDir(abs, nv);
+      if (na === nv || nv.startsWith(na + path.sep)) return true;
+    } catch (e) {}
+  }
+
+  const segs = abs.split(/[\\/]+/).filter(Boolean);
+  if (!segs.length) return true;
+  const own = segs[segs.length - 1].toLowerCase();
+
+  // 目录自己就叫系统目录，或就是用户目录容器本身（/root、C:\Users）
+  if (SYSTEM_NAMES.has(own) || POSIX_SYSTEM_NAMES.has(own) && segs.length === 1) return true;
+  if (PROFILE_CONTAINER_NAMES.has(own)) return true;
+  // 数据目录：只有在某个用户目录（含 users\<名字> 这一层）直下才算
+  if (PROFILE_DATA_NAMES.has(own)) {
+    const parent = segs.slice(0, -1);
+    if (parent.some((s) => PROFILE_CONTAINER_NAMES.has(s.toLowerCase()))) return true;
+  }
+  // 祖先里有系统目录（C:\Windows\System32\drivers 之类）
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i].toLowerCase();
+    if (SYSTEM_NAMES.has(s)) return true;
+    if (i === 0 && POSIX_SYSTEM_NAMES.has(s)) return true;
+  }
+  return false;
+}
 
 /* 目录边界包含判定：授权了 E:\proj 不能顺带覆盖 E:\proj-secret。
    比较用规范化后的形态（绝对化 + 去尾分隔符 + Windows 折大小写），与键同源。 */
@@ -164,6 +239,13 @@ class RootGrants {
     const res = await this.add({ path: dir, writable: true, source: "workspace", label });
     return res.root || null;
   }
+
+  /* 这个目录要不要先问一句才给可写权？（静态：只看路径，不看清单）
+     供 POST /api/workspace 在"这个目录还没被授权过"时决定是否拦一次。 */
+  static isSensitiveRoot(dir) { return isSensitiveRoot(dir); }
+  /* 实例方法别名：index.js 里 rootGrants 是 RootGrants 实例，调 isSensitiveRoot 时
+     走这里委托到静态实现，避免调用方要记得用 RootGrants.isSensitiveRoot。 */
+  isSensitiveRoot(dir) { return RootGrants.isSensitiveRoot(dir); }
 }
 
-module.exports = { RootGrants, contains };
+module.exports = { RootGrants, contains, isSensitiveRoot };

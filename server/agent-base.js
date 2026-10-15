@@ -62,16 +62,37 @@ class AgentBase {
 
   tool(kind, name, target) {
     const id = this.id();
+    /* 这一步到底有没有产生可撤销的检查点，不看"工具名字表"而看撤销栈真的长没长：
+       名字与写盘的对应关系散在好几个 handler 里（edit_files 整批只推一个检查点、
+       只读工具一个都不推、被拒绝规则拦下时也不推），任何一份前端名字表都会先漂。
+       栈深差值是唯一不会说谎的判据。 */
+    const depth0 = (this._undoStack || []).length;
     this.emit({ type: "tool.start", id, kind, name, target, round: this.round + 1 });
     return {
       body: (text) => this.emit({ type: "tool.body", id, text: String(text).slice(0, 8000) }),
-      done: (ok, label, open) => this.emit({ type: "tool.end", id, ok, label, open: !!open }),
+      /* 截图通道：只发"图在会话截图目录里的相对路径"，字节由前端向 /api/shot 取。
+         不走工具结果正文，是因为 role:"tool" 的内容只能装字符串 —— 像素进不了模型，
+         而这图本来就是给人看的证据，不该按 token 计价。 */
+      image: (rel) => this.emit({ type: "tool.image", id, path: String(rel || "").slice(0, 300) }),
+      done: (ok, label, open) => this.emit({
+        type: "tool.end", id, ok, label, open: !!open,
+        /* 只看栈长没长，不再叠一个 "&& ok"：检查点既然压进去了就有东西要撤，
+           工具在写完之后才失败（批量编辑改到一半）时把按钮藏掉才是问题。
+           什么都没写的失败自然栈深不变，也就不会有按钮。 */
+        undoable: (this._undoStack || []).length > depth0,
+      }),
     };
   }
 
   state(running, label) {
     this.running = running;
-    this.emit({ type: "agent.state", running, label: label || (running ? "AI 运行中" : "AI 空闲") });
+    /* 默认状态语由前端按当前界面语言渲染（labelKey）；调用方给了自定义 label 才照发。
+       否则服务端写死的"AI 空闲"会把英文界面钉回中文。 */
+    this.emit({
+      type: "agent.state", running,
+      label: label || null,
+      labelKey: label ? null : (running ? "running" : "aiIdle"),
+    });
   }
 
   /* 单个文件内容变化 → 推给前端 */

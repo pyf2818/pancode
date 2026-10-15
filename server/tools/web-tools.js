@@ -1,5 +1,7 @@
 "use strict";
 /* Web 工具：web_search / web_fetch */
+const netGuard = require("../net-guard");
+
 module.exports = {
   web_search: async (agent, args) => {
     const t = agent.tool("read", "Web 搜索", args.query);
@@ -37,11 +39,17 @@ module.exports = {
   web_fetch: async (agent, args) => {
     const t = agent.tool("read", "Web 抓取", args.url);
     try {
-      const r = await fetch(args.url, {
+      /* 走守卫而不是裸 fetch：web_fetch 的 URL 由模型自己决定，等于把"能连到本机任何端口"
+         的能力交给了模型。守卫查解析后的 IP、逐跳复检重定向，并把正文包成显式的不可信数据块。 */
+      const guarded = await netGuard.fetchGuarded(args.url, {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
         signal: AbortSignal.timeout(20000),
-      });
-      if (!r.ok) { t.done(false, "HTTP " + r.status); return "抓取失败：HTTP " + r.status; }
+      }, {});
+      const r = guarded.res;
+      if (!r.ok) {
+        t.done(false, "HTTP " + r.status);
+        return "抓取失败：HTTP " + r.status + "（最终地址 " + guarded.url + "）";
+      }
       const ct = r.headers.get("content-type") || "";
       let text;
       if (ct.includes("text/html")) {
@@ -52,9 +60,18 @@ module.exports = {
         html = html.replace(/\s+/g, " ").trim();
         text = html.slice(0, 8000);
       } else { text = (await r.text()).slice(0, 8000); }
+      /* 返回给模型的是包过边界的版本；工具卡片上给人看的仍是正文，不加噪声。 */
+      const wrapped = netGuard.wrapUntrusted(text, guarded.url);
       t.body(text.slice(0, 2000));
-      t.done(true, text.length + " 字符");
-      return text;
-    } catch (e) { t.done(false, "抓取失败"); return "Web 抓取失败：" + e.message; }
+      t.done(true, text.length + " 字符" + (guarded.redirects ? "（经 " + guarded.redirects + " 次重定向）" : ""));
+      return wrapped;
+    } catch (e) {
+      const blocked = e instanceof netGuard.NetGuardError;
+      t.done(false, blocked ? "目标被拦" : "抓取失败");
+      /* 拦下来说明原因和绕法由用户决定 —— 不给模型"换个写法再试"的机会。 */
+      return blocked
+        ? "已拒绝抓取：" + e.message + "（这类目标不在 web_fetch 的允许范围内，换地址之前请先跟用户确认。）"
+        : "Web 抓取失败：" + e.message;
+    }
   },
 };

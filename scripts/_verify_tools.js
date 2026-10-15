@@ -13,8 +13,12 @@ let rounds = 0;
 
 /* 当前 TOOLS 全集（随功能扩容，保持与 agent-llm.js 同步） */
 const EXPECT_TOOLS = [
-  "list_files", "read_file", "write_file", "apply_edit", "delete_file",
-  "search_code", "run_command", "repo_map", "search_symbol",
+  "list_files", "read_file", "write_file", "apply_edit", "edit_files",
+  /* P2-C2 跨文件重构：find_references 纯读，rename_symbol 不带 apply 时也只是预览 */
+  "find_references", "rename_symbol", "delete_file",
+  "search_code", "run_command", "run_tests", "repo_map", "search_symbol",
+  /* P3-D2 代码知识图谱：纯读，问"改这个会牵连谁" */
+  "code_graph",
   "search_memory", "get_diagnostics", "undo",
   "create_skill", "use_skill", "create_plan", "update_plan",
   "list_templates", "instantiate_template", "save_template", "remove_template",
@@ -23,8 +27,17 @@ const EXPECT_TOOLS = [
   "start_process", "read_process", "stop_process", "check_port",
   /* Git 结构化 */
   "git_status", "git_diff", "git_log", "git_branch", "git_commit",
-  /* Web / MCP / 编排 / 交互 */
+  /* P1-B2 Git 工作流 */
+  "git_fetch", "git_push", "git_pull", "git_stash", "git_blame", "git_reset", "git_worktree",
+  /* Web / 浏览器自动化 / MCP / 编排 / 交互 */
   "web_search", "web_fetch", "list_mcp", "orchestrate", "ask_user_choice",
+  /* 浏览器自动化（agent-browser 驱动本机 Chrome/Edge）：判读走无障碍树文本，截图只落盘给人看 */
+  "browser_open", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill",
+  "browser_press", "browser_select", "browser_read", "browser_screenshot", "browser_wait",
+  "browser_tabs", "browser_eval", "browser_close",
+  /* 电脑控制（Windows UI Automation 常驻 worker）：读控件树为主，坐标点击兜底 */
+  "desktop_windows", "desktop_snapshot", "desktop_read", "desktop_click", "desktop_type",
+  "desktop_press", "desktop_scroll", "desktop_window", "desktop_screenshot",
 ].sort();
 
 const mockLlm = {

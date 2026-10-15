@@ -12,7 +12,7 @@ const path = require("path");
 const os = require("os");
 
 let tmp, dataDir, wsDir;
-let Orchestrator, histAppend, histList;
+let Orchestrator, histAppend, histList, histGet;
 
 beforeAll(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "orch-"));
@@ -25,7 +25,7 @@ beforeAll(() => {
   process.env.PANCODE_DATA_DIR = dataDir;
   // vitest 每个测试文件是独立模块图；require 前必须已设好 PANCODE_DATA_DIR，
   // config.ROOT 在模块加载时就固定了
-  ({ Orchestrator, histAppend, histList } = require("../server/orchestrator"));
+  ({ Orchestrator, histAppend, histList, histGet } = require("../server/orchestrator"));
 });
 
 afterAll(() => {
@@ -150,5 +150,85 @@ describe("编排历史 — 子任务与结果可见", () => {
     const titles = histList().map((x) => x.title);
     expect(titles).toContain("第一场");
     expect(titles).toContain("第二场");
+  });
+});
+
+/* ============================================================
+   P2-C1 · 依赖图的数据：分层与边必须能从事件/落盘记录里拿到
+   前端画泳道图靠这两份数据；以前 orch.start 只给 depends_on（要前端自己推分层），
+   落盘记录只给 layer（回放时边全丢了）。两处都缺，图就画不成真的。
+   ============================================================ */
+describe("编排依赖图数据（P2-C1）", () => {
+  const startEvent = (a) => a.emitted.find((e) => e.type === "orch.start");
+
+  it("orch.start 每一步都带 layer，且分层就是真正执行用的那一次拓扑", async () => {
+    const a = fakeAgent(async () => "ok");
+    await new Orchestrator(a).run({
+      title: "菱形依赖",
+      steps: [
+        { id: "s1", name: "起点", task: "一" },
+        { id: "s2", name: "左支", task: "二", depends_on: ["s1"] },
+        { id: "s3", name: "右支", task: "三", depends_on: ["s1"] },
+        { id: "s4", name: "汇合", task: "四", depends_on: ["s2", "s3"] },
+      ],
+    });
+    const ev = startEvent(a);
+    expect(ev).toBeTruthy();
+    const byId = {};
+    ev.steps.forEach((s) => { byId[s.id] = s; });
+    expect([byId.s1.layer, byId.s2.layer, byId.s3.layer, byId.s4.layer]).toEqual([0, 1, 1, 2]);
+    expect(byId.s2.depends_on).toEqual(["s1"]);
+    expect(byId.s4.depends_on).toEqual(["s2", "s3"]);
+    // 同批并行要能标出来（前端据此写"2 步并行"，而不是让用户自己数列）
+    expect(byId.s2.parallel).toBe(true);
+    expect(byId.s1.parallel).toBe(false);
+  });
+
+  it("步骤顺序按批排布：同一批的相邻出现，泳道直接切片即可", async () => {
+    const a = fakeAgent(async () => "ok");
+    await new Orchestrator(a).run({
+      title: "顺序检查",
+      steps: [
+        { id: "b1", name: "B1", task: "一" },
+        { id: "b2", name: "B2", task: "二", depends_on: ["b1"] },
+        { id: "b3", name: "B3", task: "三" },
+      ],
+    });
+    const layers = startEvent(a).steps.map((s) => s.layer);
+    expect(layers).toEqual([0, 0, 1]);   // 无依赖的 b3 与 b1 同批；b2 等 b1
+  });
+
+  it("循环依赖不死锁，兜底那批仍落在同一层并可画", async () => {
+    const a = fakeAgent(async () => "ok");
+    await new Orchestrator(a).run({
+      title: "环",
+      steps: [
+        { id: "c1", name: "C1", task: "一" },
+        { id: "c2", name: "C2", task: "二", depends_on: ["c3"] },
+        { id: "c3", name: "C3", task: "三", depends_on: ["c2"] },
+      ],
+    });
+    const byId = {};
+    startEvent(a).steps.forEach((s) => { byId[s.id] = s; });
+    expect(byId.c1.layer).toBe(0);
+    expect(byId.c2.layer).toBe(byId.c3.layer);   // 成环的两个被塞进同一批一起跑
+    expect(byId.c2.layer).toBeGreaterThan(0);
+  });
+
+  it("落盘记录保留 depends_on：历史回放画得出边，不只是几列框框", async () => {
+    const a = fakeAgent(async () => "done-out");
+    const r = await new Orchestrator(a).run({
+      title: "回放依赖",
+      steps: [
+        { id: "d1", name: "D1", task: "一" },
+        { id: "d2", name: "D2", task: "二", depends_on: ["d1"] },
+      ],
+    });
+    const listed = histList().find((x) => x.title === "回放依赖");
+    expect(listed).toBeTruthy();
+    const full = histGet(listed.id);        // 列表端点是裁剪过的，回放走的是整条原始记录
+    expect(full.steps.find((s) => s.id === "d2").depends_on).toEqual(["d1"]);
+    expect(full.steps.find((s) => s.id === "d1").depends_on).toEqual([]);
+    expect(full.steps.find((s) => s.id === "d2").layer).toBe(1);
   });
 });

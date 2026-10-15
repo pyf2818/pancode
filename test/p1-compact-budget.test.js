@@ -305,3 +305,168 @@ describe("compactHistory — 先走免费的 microcompact，再决定要不要�
     expect(JSON.stringify(h)).toBe(snapshot);
   });
 });
+
+/* ============================================================
+   P1-B6 · 摘要这一遍：九段模板、失败不再等于失忆、断路器
+   单测把模型换成假实现（_chatStream 注入），验的是我们喂出去的指令
+   和换回来的历史形状 —— 真模型的质量不在这里断言。
+   ============================================================ */
+describe("compactHistory — 摘要模板与断路器（P1-B6）", () => {
+  const SECTIONS = ["【任务目标】", "【全部用户消息】", "【已定决策】", "【已改文件】", "【验证状态】",
+    "【待办任务】", "【当前工作】", "【下一步】", "【安全约束】"];
+  const SUMMARY_PREFIX = "[历史摘要] ";
+  const big = (n) => "读回来的文件正文，中文字数很多。".repeat(n);
+  const goodSummary = SECTIONS.map((s) => s + "一条够短的事实").join("\n");
+
+  /* 大历史：只有 user 消息 + 写类工具结果（写类不在 microcompact 白名单里，
+     所以这一份是「便宜的那一遍完全帮不上」的夹具，摘要线必然被走到）。
+     每轮的工具结果带 ROUND-n 标记，这样"留头留尾"能被逐轮验出来。 */
+  function heavy(nRounds) {
+    const h = [];
+    for (let r = 0; r < nRounds; r++) {
+      h.push({ role: "user", content: "第 " + r + " 个要求" });
+      h.push(asst([T("h" + r, "write_file")]));
+      h.push(tool("h" + r, "ROUND-" + r + " " + big(120)));
+    }
+    return h;
+  }
+
+  function fakeModel(reply) {
+    const box = { calls: 0, system: "", user: "", msgs: null };
+    box.install = (a) => {
+      a._chatStream = async (messages) => {
+        box.calls++; box.msgs = messages;
+        box.system = messages[0].content; box.user = messages[1].content;
+        return { content: typeof reply === "function" ? reply(box) : reply };
+      };
+    };
+    return box;
+  }
+
+  const overBudget = (extra) => Object.assign({ llm: { contextWindow: 200000 }, context: { budgetTokens: 6000, autoCompact: true } }, extra || {});
+
+  function pairErrors(h) {
+    const called = new Set(), answered = new Set(), errs = [];
+    h.forEach((m) => (m.tool_calls || []).forEach((c) => called.add(c.id)));
+    h.forEach((m) => { if (m.role === "tool") answered.add(m.tool_call_id); });
+    h.forEach((m) => { if (m.role === "tool" && !called.has(m.tool_call_id)) errs.push("孤儿 tool 结果 " + m.tool_call_id); });
+    called.forEach((id) => { if (!answered.has(id)) errs.push("有 call 没结果 " + id); });
+    return errs;
+  }
+
+  it("指令里九段一个小标题都不能少，并明说没有内容也要写「无」", async () => {
+    const a = agent(overBudget());
+    const m = fakeModel(goodSummary); m.install(a);
+    await a.compactHistory(heavy(6), { force: true });
+    expect(m.calls).toBe(1);
+    for (const s of SECTIONS) expect(m.system).toContain(s);
+    expect(m.system).toContain("一段都不能少");
+    expect((m.system.match(/【[^】]{2,8}】/g) || []).length).toBe(9);
+  });
+
+  it("摘要原文留头也留尾：【当前工作】【下一步】来自最后几轮，不能被切掉", () => {
+    const a = agent(overBudget());
+    const msgs = [];
+    for (let r = 0; r < 40; r++) msgs.push({ role: "user", content: "ROUND-" + r + "-" + "补".repeat(500) });
+    const txt = a._summaryTranscript(msgs);
+    expect(txt).toContain("ROUND-0-");
+    expect(txt).toContain("ROUND-39-");    // 旧算法取前 12000 字，最后几轮在这里已经被切没
+    expect(txt).toContain("已省略");
+    expect(txt.length).toBeLessThan(13000);
+    // 反向对照：短到不用截时原样给出，不塞"已省略"这种噪音
+    expect(a._summaryTranscript([{ role: "user", content: "就一句话" }])).toBe("user: 就一句话");
+  });
+
+  it("上一版摘要被认出来单独并入，不再「摘要的摘要」", async () => {
+    const a = agent(overBudget());
+    const m = fakeModel(goodSummary); m.install(a);
+    const h = heavy(6);
+    h.unshift({ role: "system", content: SUMMARY_PREFIX + "【任务目标】更早那段的事实：先加日志再改调用点" });
+    await a.compactHistory(h, { force: true });
+    expect(m.user).toContain("已有摘要：");
+    expect(m.system).toContain("禁止出现「摘要的摘要」");
+    /* 旧摘要只以「已有摘要」的身份出现一次；再出现在新内容里就是被二次摘要进去了 */
+    expect(m.user.split("先加日志再改调用点").length - 1).toBe(1);
+  });
+
+  it("模型回空或调用炸了：绝不拿占位符替换真实历史（旧实现会把历史压成一句失败提示）", async () => {
+    const a = agent(overBudget());
+    fakeModel("").install(a);
+    const h = heavy(6);
+    const snap = JSON.stringify(h);
+    expect(await a.compactHistory(h, { force: true })).toBe(h);
+    expect(JSON.stringify(h)).toBe(snap);
+    const warn = a.emitted.find((e) => e.type === "term.line" && /摘要没能生成/.test(e.text || ""));
+    expect(warn).toBeTruthy();
+
+    const b = agent(overBudget());
+    b._chatStream = async () => { throw new Error("上游 503"); };
+    const h2 = heavy(6);
+    expect(await b.compactHistory(h2, { force: true })).toBe(h2);
+  });
+
+  it("摘要消息尾部挂着压缩提醒：不复述、不重做、不停下来问是否继续", async () => {
+    const a = agent(overBudget());
+    fakeModel(goodSummary).install(a);
+    const out = await a.compactHistory(heavy(6), { force: true });
+    expect(out[0].role).toBe("system");
+    expect(out[0].content).toContain(SUMMARY_PREFIX);
+    expect(out[0].content).toContain(goodSummary);
+    for (const phrase of ["不要向用户复述", "不要重做", "也不要停下来问「是否继续」", "别凭摘要里的印象猜"]) {
+      expect(out[0].content).toContain(phrase);
+    }
+    expect(pairErrors(out)).toEqual([]);   // 提醒挂在同一条消息里，没有多出任何不成对的消息
+  });
+
+  it("断路器：连续两次自动压缩压不动，就不再花第三次模型调用", async () => {
+    const a = agent(overBudget());
+    const m = fakeModel(""); m.install(a);
+    const h = heavy(6);
+    expect(a._estTokens(h)).toBeGreaterThan(a._compactSpec().thresholdTokens);  // 夹具自检：确实超线
+    const snap = JSON.stringify(h);
+    await a.compactHistory(h);
+    await a.compactHistory(h);
+    expect(m.calls).toBe(2);
+    expect(a._compactStopped).toBe(true);
+    expect(a.emitted.some((e) => e.type === "context.compact_breaker")).toBe(true);
+    const line = a.emitted.filter((e) => e.type === "term.line" && /暂停自动摘要/.test(e.text || "")).pop();
+    expect(line).toBeTruthy();
+    expect(line.text).toContain("/compact");
+    await a.compactHistory(h);                    // 第三次：省掉这一次模型调用
+    expect(m.calls).toBe(2);
+    expect(JSON.stringify(h)).toBe(snap);         // 停手不等于偷偷改历史
+  });
+
+  it("手动 /compact 会复位断路器：压成功一次，自动那一遍重新开工", async () => {
+    const a = agent(overBudget());
+    const box = { calls: 0 };
+    let mode = "fail";
+    a._chatStream = async () => { box.calls++; return { content: mode === "fail" ? "" : goodSummary }; };
+    const h = heavy(6);
+    await a.compactHistory(h);
+    await a.compactHistory(h);
+    expect(a._compactStopped).toBe(true);
+    mode = "ok";
+    const out = await a.compactHistory(h, { force: true });   // 用户明确要压，就真压
+    expect(out).not.toBe(h);
+    expect(a._compactStopped).toBe(false);
+    const before = box.calls;
+    await a.compactHistory(h);                                // 自动那一遍恢复工作
+    expect(box.calls).toBe(before + 1);
+  });
+
+  it("压下来一次就把连续计数清零，不会攒到断路器上", async () => {
+    const a = agent(overBudget());
+    const box = { calls: 0 };
+    let reply = "啰嗦".repeat(40000);              // 第一次：摘要比原文还长 → 无收益
+    a._chatStream = async () => { box.calls++; return { content: reply }; };
+    const h = heavy(6);
+    await a.compactHistory(h);
+    expect(a._compactNoop).toBe(1);
+    expect(a._compactStopped).toBeFalsy();         // 一次失败不该就停手
+    reply = goodSummary;                           // 第二次：真的压下来了
+    const out = await a.compactHistory(h);
+    expect(out).not.toBe(h);
+    expect(a._compactNoop).toBe(0);
+  });
+});

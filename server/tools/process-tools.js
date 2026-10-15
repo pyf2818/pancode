@@ -51,7 +51,15 @@ module.exports = {
     if (!gate.approved) { const t = agent.tool("terminal", "启动被拒", args.command); t.done(false, "用户拒绝", false); return "用户拒绝了启动进程：" + args.command; }
     const t = agent.tool("terminal", "后台启动进程", "[" + args.name + "] " + args.command);
     const r = agent.procs.start(args.name, args.command);
-    if (!r.ok) { t.body(r.error); t.done(false, "启动失败", false); return "启动失败: " + r.error; }
+    if (!r.ok) {
+      t.body(r.error);
+      t.done(false, r.blocked ? "已拦截" : "启动失败", false);
+      /* 区分「被安全策略拦」和「参数不对」：前者不是启动失败，重试同样的命令没有意义，
+         引导模型换方案，别让它换个名字再试一次。 */
+      return r.blocked
+        ? "命令被安全沙箱拦截，未启动：" + r.error + "\n\n这类命令请改用安全的替代方案（例如把范围收窄到具体路径、改用可回收的操作）。"
+        : "启动失败: " + r.error;
+    }
     t.body("进程已在后台启动，pid=" + r.pid + "。稍等片刻后可用 check_port 探测端口就绪、用 read_process 查看启动日志。");
     t.done(true, "pid " + r.pid, false);
     return "进程 [" + args.name + "] 已后台启动（pid " + r.pid + "）。下一步建议：check_port 探测服务端口 → read_process 查看日志确认启动成功。";

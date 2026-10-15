@@ -60,15 +60,16 @@
       };
     }
 
+    /* 修 C-B2：token 走子协议而非 URL query（不进历史/Referer/日志）。 */
     _url() {
-      const q = new URLSearchParams({ lang: this.language, root: this.rootUri, token: this.getToken() });
+      const q = new URLSearchParams({ lang: this.language, root: this.rootUri });
       return (this.secure ? "wss://" : "ws://") + this.host + "/lsp?" + q.toString();
     }
 
     connect() {
       if (this.ws || this.disposed) return;
       let ws;
-      try { ws = new WebSocket(this._url()); } catch (e) { return; }
+      try { ws = new WebSocket(this._url(), ["bearer." + encodeURIComponent(this.getToken() || "")]); } catch (e) { return; }
       this.ws = ws;
       ws.onopen = () => this._initialize();
       ws.onmessage = (e) => this._onMessage(e);

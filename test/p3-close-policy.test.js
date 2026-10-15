@@ -9,6 +9,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { decideClose, closeDialog, normalizePref } = require("../electron/close-policy");
+const { WORST_CASE_WRITE_MS } = require("../server/safe-write");
 
 const ask = (choice, remember) => decideClose({ pref: "ask", trayOk: true, choice, remember });
 
@@ -87,8 +88,11 @@ function freshConfig(dataDir) {
   return require("../server/config");
 }
 async function readDisk(pred, ms) {
+  /* 预算从 safe-write 的重试阶梯推导，不在这里另写魔数：
+     写撞上 EPERM 时最坏要退避 ~10.9s，预算小于它就变成随机 flake。 */
+  const budget = ms || (WORST_CASE_WRITE_MS + 3000);
   const t0 = Date.now();
-  while (Date.now() - t0 < (ms || 4000)) {
+  while (Date.now() - t0 < budget) {
     try {
       const j = JSON.parse(fs.readFileSync(path.join(root, "pancode.config.json"), "utf8"));
       if (pred(j)) return j;
@@ -141,5 +145,25 @@ describe("config.saveDesktop：偏好写盘", () => {
     expect(j).toBeTruthy();
     expect(j.permissions.mode).toBe("auto");
     expect(j.context.budgetTokens).toBe(123456);
+  });
+
+  /* 上一条靠时序碰运气：全量跑 50 个测试文件时它随机失败过一次，失败形态正是
+     "permissions 整段被 desktop 写回抹掉"。这一条把那个时序钉死成确定状态——
+     盘上还是老那份，而它的 mtime 与刚入队那次写落在同一毫秒
+     （Windows 时间戳粒度粗，装机上是常态不是巧合）。
+     只比 mtime 的读回缓存在这种状态下会误信磁盘，改判"有没有在途写"才不会吞。 */
+  it("在途写还没落盘时不许误信磁盘旧内容（同毫秒连存的确定复现）", async () => {
+    const p = path.join(root, "pancode.config.json");
+    const cfg = cfgMod.load();
+    cfg.context.budgetTokens = 654321;
+    cfgMod.saveAgentSettings(cfg, { permissions: { mode: "auto" } });
+    fs.writeFileSync(p, JSON.stringify({ workspace: "." }), "utf8");
+    const same = new Date();
+    fs.utimesSync(p, same, same);
+    cfgMod.saveDesktop(cfg, { closeAction: "quit" });
+    const j = await readDisk((x) => x.desktop && x.desktop.closeAction === "quit");
+    expect(j).toBeTruthy();
+    expect(j.permissions && j.permissions.mode).toBe("auto");
+    expect(j.context && j.context.budgetTokens).toBe(654321);
   });
 });

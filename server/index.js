@@ -23,10 +23,13 @@ const { ping } = require("./llm");
 const { LlmAgent, _ctx: agentCtx } = require("./agent-llm");
 const { TaskBoard } = require("./tasks");
 const { RootGrants } = require("./root-grants");
+const { writeAudit } = require("./security");   // 敏感目录授权等敏感动作要留痕
 const { RootStore } = require("./root-store");
 const evScope = require("./event-scope");
 const { DemoAgent } = require("./agent-demo");
 const { LspManager, setActiveManager } = require("./lsp-bridge");
+const log = require("./logger");
+const usageStore = require("./usage-store");   // P1-B4 用量账本（面板与 /api/usage 共用一份）
 const codeIndex = require("./code-index");
 const { SoulStore } = require("./soul-store");
 const { SkillStore } = require("./skill-store");
@@ -34,6 +37,8 @@ const { MemoryStore } = require("./memory-store");
 const { histList: orchHistList, histGet: orchHistGet } = require("./orchestrator"); // 编排历史（服务端落盘）
 const { ExpertStore, parseExpertMd } = require("./expert-store"); // W2 专家注册表
 const rulesLib = require("./rules"); // T4 规则可视化管理：与 loadRules 同源
+const ruleHistory = require("./rule-history"); // P1-B5 写前快照：历史不在 .pancode/rules 里，避免被当规则注入
+const ruleProp = require("./rule-proposals"); // P3-D3 自进化规则：证据→提案→人工采纳
 const { AutomationStore, Scheduler } = require("./scheduler"); // W4 自动化任务
 const { PlanStore } = require("./plan-store");
 const { WorkflowStore } = require("./workflow-store");
@@ -157,11 +162,16 @@ function buildEngine() {
   _engineAssets.soul = new SoulStore(ws.file(soulDir));
   const progDir = path.join(configMod.ROOT, ".pancode", "progression");
   _engineAssets.progression = new ProgressionStore(ws.file(progDir));
+  /* P3-D3 规则提案账本：与记忆同一套分片键（换工作区不串台），
+     记的是"这条证据有没有被人裁决过"——采纳/忽略必须活过一次重启，
+     否则每次开面板都把用户已经拒绝过的提案再催一遍。 */
+  _engineAssets.ruleProposals = new ruleProp.ProposalStore(
+    ws.file(path.join(configMod.ROOT, ".pancode", "rule-proposals")));
   _engineAssets.cfg = cfg;
   // 任务表按工作区分片；换工作区即换表（旧表的行属于旧目录，不该串到新目录里显示）
   taskBoard = new TaskBoard(ws.file(path.join(configMod.ROOT, ".pancode", "tasks")));
   if (taskBoard.interruptedCount) {
-    console.log("[pancode] 上次进程退出时有 " + taskBoard.interruptedCount + " 个任务未收口，已标为 interrupted");
+    log.tag("tasks").info("上次进程退出时有 " + taskBoard.interruptedCount + " 个任务未收口，已标为 interrupted");
   }
   // 默认 engine（helloPayload 等全局状态用）
   engine = ensureUserEngine("anon");
@@ -170,11 +180,11 @@ function buildEngine() {
   /* 分片键归并结果要说得出口：搬了哪些文件、还留着哪些同工作区的老键名等人合并 */
   const moved = wsKey.drainMigrated();
   if (moved.length) {
-    console.log("[pancode] 分片键归并 " + moved.length + " 个文件："
+    log.tag("workspace").info("分片键归并 " + moved.length + " 个文件："
       + moved.map((m) => path.basename(m.from) + " → " + path.basename(m.to)).join("、"));
   }
   for (const d of wsKey.drainDrift()) {
-    console.warn("[pancode] " + d.dir + " 下同属本工作区还有别的历史分片（当前读 " + d.live + "）："
+    log.tag("workspace").warn(d.dir + " 下同属本工作区还有别的历史分片（当前读 " + d.live + "）："
       + (d.leftovers || []).join("、") + (d.error ? "（改名失败，退回原文件：" + d.error + "）" : "") + "；内容合并需人工确认。");
   }
 }
@@ -233,7 +243,12 @@ function ensureUserEngine(userKey) {
 /* 从 WS 取 userKey：登录用户 = token 的 8 位哈希（会话/目标按人隔离），无 token = "anon"。
    工作区维度由 agent 构造器内部用分片键组合，此处不重复拼，保持文件名片段干净（Windows 安全）。 */
 function wsUserKey(ws) {
-  const tok = ws._userToken || "";
+  return tokenUserKey(ws._userToken || "");
+}
+
+/* 同一个 token 算同一个 key：REST 也要能拿到"这个用户正在用的那个引擎"，
+   否则面板与 Agent 会各自持有一份 repo 索引缓存，一边新一边旧。 */
+function tokenUserKey(tok) {
   if (!tok) return "anon";
   return "u" + crypto.createHash("md5").update(tok).digest("hex").slice(0, 8);
 }
@@ -252,19 +267,22 @@ function mountWorkspace(dir) {
      add 的行是同步进内存的，这里不等落盘——挂载失败不该被一次写盘拖住。 */
   /* 不往清单里写"当前工作区"这种会变的状态：它是每次请求现算的徽标（workbench 按 active 上色）。
      当年写进 roots.json 的后果是切过一次工作区后，两条授权行都自称"当前工作区"（实测在真实例里看到过）。 */
-  rootGrants.ensure(abs).catch((e) => console.warn("[pancode] 授权清单登记失败：" + e.message));
+  rootGrants.ensure(abs).catch((e) => log.tag("roots").warn("授权清单登记失败 " + e));
   files = new FileStore(WS_DIR, path.join(configMod.ROOT, ".pancode", "audit"));
   /* 活动根认的就是这个实例：不能再造第二个，否则同一目录两份 fs.watch，外部改动会被推两遍 */
   rootStore.setActive(WS_DIR, files);
   git = new GitLayer(WS_DIR, files);
   require("./security").setAuditDir(path.join(configMod.ROOT, ".pancode", "audit")); // W14：agent 层审计统一落同一目录
+  /* P3-D1 决策链：与 audit 同根不同文件（audit 是"做了什么动作"的人话流水，格式已被探针钉住；
+     这边是"当时怎么判断的"结构化 JSONL，按 convId 能还原一整局）。 */
+  require("./decision-log").setDecisionDir(path.join(configMod.ROOT, ".pancode", "decisions"));
   term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"), cfg.permissions.strictCommand !== false);
   procs = new ProcessLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
   buildEngine();
   files.startWatch(() => {
     snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
   });
-  console.log("workspace 已挂载: " + WS_DIR);
+  log.tag("workspace").info("workspace 已挂载: " + WS_DIR);
 }
 
 /* 启动时挂载：绝对路径直接用，相对路径相对数据根（兼容旧配置 "workspace"）
@@ -386,10 +404,24 @@ const NO_AUTH = new Set([
 
 ]);
 /* A1：用户会话闸门——仅校验登录后下发的 userToken（auth.verify）；AUTH_TOKEN 仅用于本机 bootstrap 与 WS 环回 */
+/* 修 C-B2：令牌不再走 query string。
+   query 会进浏览器历史、Referer 头、代理/服务器访问日志、以及崩溃报告——四处都会留痕。
+   现在只认 header；query 兜底保留但默认关闭（PANCODE_ALLOW_TOKEN_QUERY=1 可临时开，
+   供老版本前端/老脚本平滑升级）。 */
+function bearerToken(req) {
+  const h = (req.headers && (req.headers["x-user-token"] || req.headers["authorization"])) || "";
+  const raw = h || "";
+  return raw.startsWith("Bearer ") ? raw.slice(7) : raw;
+}
+function legacyQueryToken(req) {
+  if (process.env.PANCODE_ALLOW_TOKEN_QUERY === "1" && req.query) return String(req.query.userToken || "");
+  return "";
+}
+function tokenOf(req) {
+  return bearerToken(req) || legacyQueryToken(req);
+}
 function userAuthed(req) {
-  const raw = (req.headers && (req.headers["x-user-token"] || req.headers["authorization"])) || (req.query && req.query.userToken) || "";
-  const tok = raw.startsWith("Bearer ") ? raw.slice(7) : raw;
-  return !!auth.verify(tok);
+  return !!auth.verify(tokenOf(req));
 }
 app.use((req, res, next) => {
   if (!req.path.startsWith("/api/")) return next();                       // 静态资源不鉴权
@@ -420,6 +452,94 @@ app.get("/api/audit/dates", (req, res) => {
       : [];
     res.json({ ok: true, dates });
   } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* P3-D1 决策链：?date=&convId=&kind=&limit=（默认今天 / 全部会话 / 最近 300 条，时间正序）。
+   与 /api/audit 一样受全局鉴权保护——它能看出"用户拒过哪些命令、放行过哪些写盘"，不是公开信息。 */
+app.get("/api/decisions", (req, res) => {
+  try {
+    const dl = require("./decision-log");
+    const date = (req.query.date || "").toString().replace(/[^0-9-]/g, "") || undefined;
+    const decisions = dl.readDecisions({
+      date,
+      convId: req.query.convId ? String(req.query.convId) : undefined,
+      kind: req.query.kind ? String(req.query.kind) : undefined,
+      limit: parseInt(req.query.limit, 10) || 300,
+    });
+    res.json({ ok: true, date: date || new Date().toISOString().slice(0, 10), decisions, path: dl.decisionDir() });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.get("/api/decisions/dates", (req, res) => {
+  try { res.json({ ok: true, dates: require("./decision-log").decisionDates() }); }
+  catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* ---------- P-H3 撤销（undo）的界面入口 ----------
+   引擎里一直有这套检查点（_snapshotBefore / _pushCheckpoint / _undoLast + shadow git），
+   但只有 Agent 自己能调的 undo 工具，用户手上没有任何按钮或接口能用它 —— 这里补的就是这一段。
+   ⚠ 必须按"请求者是谁"取引擎：撤销栈挂在每个用户的引擎实例上（与 /api/graph 同一个坑），
+     拿匿名实例去读会看到一份空栈，表现为"明明刚改过文件却说没有可撤销的"。 */
+function undoEngine(req) { return ensureUserEngine(tokenUserKey(tokenOf(req))); }
+app.get("/api/undo", (req, res) => {
+  try {
+    const eng = undoEngine(req);
+    const steps = typeof eng.undoSteps === "function" ? eng.undoSteps() : [];
+    res.json({ ok: true, steps, depth: steps.length });
+  } catch (e) { res.json({ ok: false, error: e.message, steps: [] }); }
+});
+app.post("/api/undo", (req, res) => {
+  try {
+    const eng = undoEngine(req);
+    if (typeof eng.undoSteps !== "function" || typeof eng._undoLast !== "function") {
+      return res.json({ ok: false, error: "当前引擎不支持撤销（演示引擎没有写盘检查点）" });
+    }
+    const steps = eng.undoSteps();
+    if (!steps.length) return res.json({ ok: false, empty: true, error: "没有可撤销的改动了：撤销栈只记本机这台服务运行期间写过的文件" });
+    const conv = String((req.body && req.body.convId) || "");
+    /* 撤销是后进先出的，能撤的只有栈顶那一步。顶上的改动属于另一个会话时直接说明，
+       而不是悄悄把别人的工作回滚掉 —— 那才是这个按钮最危险的误用面。 */
+    if (conv && steps[0].convId && steps[0].convId !== conv) {
+      return res.json({ ok: false, cross: true, error: "最近一步改动属于另一个会话（" + steps[0].label + "），没有替你撤销它" });
+    }
+    const top = steps[0];
+    const r = eng._undoLast();
+    if (!r || !r.ok) return res.json({ ok: false, error: (r && r.reason) || "撤销失败" });
+    writeAudit("undo", "撤销 " + (r.label || top.label) + " → " + (r.restored || []).join("、"));
+    res.json({ ok: true, label: r.label || top.label, restored: r.restored || [], left: eng.undoSteps().length });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 服务日志环（P0-A1）：内存里最近 log.ringMax 条结构化日志，诊断面板与排障共用一个入口。
+   刻意不落盘：日志自己写坏盘是新引入的风险，而这里的语义是"刚刚发生了什么"，
+   重启即空是明确取舍（要留久的东西走 .pancode/audit，那边是按天分文件的动作审计，不是运行日志）。
+   鉴权：本端点不在 NO_AUTH 白名单里，所以走全局 userToken 闸门——它能读出模块名、
+   出错堆栈首行与 reqId，匿名请求等于把内部结构递到本机任意进程手上。 */
+app.get("/api/logs", (req, res) => {
+  try {
+    const cap = log.ringMax;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, cap);
+    res.json({
+      ok: true, level: log.level(), json: log.jsonMode(), capacity: cap,
+      entries: log.readRing({
+        limit, level: req.query.level, module: req.query.module,
+        reqId: req.query.reqId, q: req.query.q,
+      }),
+    });
+  } catch (e) { res.json({ ok: false, error: String(e && e.message || e) }); }
+});
+/* 用量与成本（P1-B4）：?days=30 → 按天 / 按模型的 token 与金额汇总。
+   鉴权：不在 NO_AUTH 白名单里，走全局 userToken 闸门——花销是本机的隐私数据。
+   priced=false 意味着"没配单价"，前端要显示"未配置单价"而不是 ¥0：
+   后者会被读成"这次免费"，而真实含义是"我不知道价"。 */
+app.get("/api/usage", (req, res) => {
+  try {
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), usageStore.KEEP_DAYS);
+    const s = usageStore.summary(days);
+    res.json({
+      ok: true, days: s.days, models: s.models, total: s.total, priced: s.priced,
+      prompt: s.prompt, completion: s.completion, today: usageStore.today(),
+      currency: (cfg.pricing && cfg.pricing.currency) || "CNY",
+      rates: (cfg.pricing && cfg.pricing.rates) || [],
+      path: usageStore.filePath(),
+    });
+  } catch (e) { res.json({ ok: false, error: String(e && e.message || e) }); }
 });
 app.get("/api/health", (req, res) => res.json({ ok: true, name: "pancode", version: VERSION, apiStamp: API_STAMP, workspace: WS_DIR, wsClients: clients.size, engine: configMod.publicInfo(cfg) }));
 app.get("/api/version", (req, res) => res.json({
@@ -464,11 +584,30 @@ app.get("/api/bootstrap", (req, res) => {
 
 /* ---------- 用户认证 API ---------- */
 app.get("/api/auth/status", (req, res) => {
-  const userToken = req.headers["x-user-token"] || req.query.userToken;
-  const user = auth.verify(userToken);
+  const user = auth.verify(tokenOf(req));
   res.json({ ok: true, loggedIn: !!user, username: user ? user.username : null, hasUsers: auth.hasUsers() });
 });
 app.post("/api/auth/register", async (req, res) => {
+  /* 首个账号才能自助注册，之后必须显式开窗（修 C-B1）。
+     原先这里只有重名检查，于是 /api/auth/register 是个无鉴权入口：
+     任何能连到本机端口的主体都能注册拿到 token，再改配置开 auto 模式，
+     最后经 WS 触发命令执行 —— 一条完整的越权链。
+
+     判断刻意写死成"只认真开"：这个值来自 JSON 配置文件，手改时把 false 写成
+     字符串 "false" 或 "0" 很常见，而 JS 里 "0"/"false" 都是真值 ——
+     用 !cfg.allowUserSignup 这种朴素判断等于给越权留了个后门。
+     只有布尔 true，或字符串 "1"/"true" 才算开窗。 */
+  const signupOpen = cfg.allowUserSignup === true
+    || cfg.allowUserSignup === "1"
+    || cfg.allowUserSignup === "true";
+  if (auth.hasUsers() && !signupOpen) {
+    return res.status(403).json({
+      ok: false,
+      error: "已存在用户，默认不再开放自助注册。确实要新增账号时，"
+        + "用环境变量 PANCODE_ALLOW_SIGNUP=1 启动一次完成注册，然后关掉。",
+      code: "REGISTRATION_CLOSED",
+    });
+  }
   const { username, password } = req.body || {};
   try { res.json(await auth.register(String(username || "").trim(), String(password || ""))); }
   catch (e) { res.json({ ok: false, error: "注册失败：" + e.message }); }
@@ -479,23 +618,22 @@ app.post("/api/auth/login", async (req, res) => {
   catch (e) { res.json({ ok: false, error: "登录失败：" + e.message }); }
 });
 app.post("/api/auth/logout", (req, res) => {
-  const userToken = req.headers["x-user-token"] || req.query.userToken;
-  auth.logout(userToken);
+  auth.logout(tokenOf(req));
   res.json({ ok: true });
 });
 
 /* ---------- Skills 生态 API ---------- */
 app.get("/api/skills/market", (req, res) => {
   try {
-    if (!engine || !engine.skills) return res.json({ ok: true, skills: [], builtin: [] });
-    const skills = engine.skills.list({ limit: 50, category: req.query.category, search: req.query.q });
-    res.json({ ok: true, skills, stats: engine.skills.stats, builtin: engine.skills.builtinWorkflows });
-  } catch (e) { res.json({ ok: true, skills: [], builtin: [] }); }
+    if (!engine || !engine.skills) return res.json({ ok: true, skills: [], builtin: [], categories: {} });
+    const skills = engine.skills.list({ limit: 50, category: req.query.category, search: req.query.q, sort: req.query.sort });
+    res.json({ ok: true, skills, stats: engine.skills.stats, categories: engine.skills.categories, builtin: engine.skills.builtinWorkflows });
+  } catch (e) { res.json({ ok: true, skills: [], builtin: [], categories: {} }); }
 });
 app.get("/api/skills/all", (req, res) => {
   try {
     if (!engine || !engine.skills) return res.json({ ok: true, skills: [], stats: { total: 0, market: 0, local: 0, builtin: 0 }, builtin: [], categories: {} });
-    const skills = engine.skills.list({ limit: 100 });
+    const skills = engine.skills.list({ limit: 100, sort: req.query.sort });
     res.json({ ok: true, skills, stats: engine.skills.stats, builtin: engine.skills.builtinWorkflows, categories: engine.skills.categories });
   } catch (e) { res.json({ ok: true, skills: [], builtin: [], categories: {} }); }
 });
@@ -543,7 +681,18 @@ app.post("/api/skills/market/:id/use", (req, res) => {
 app.post("/api/skills/market/:id/rate", (req, res) => {
   try {
     if (!engine || !engine.skills) return res.status(503).json({ ok: false, error: "引擎未就绪" });
-    const skill = engine.skills.rate(req.params.id, Number(req.body.rating) || 0);
+    /* 以前这里调的是根本不存在的 engine.skills.rate()，抛 TypeError 被 catch 吞成 400
+       ——前端每次评分都得到一句干巴巴的 "engine.skills.rate is not a function"。 */
+    const raw = (req.body || {}).rating;
+    const v = Number(raw);
+    if (raw == null || raw === "" || !Number.isFinite(v) || v < 0 || v > 5) {
+      return res.status(400).json({ ok: false, error: "评分必须是 0–5 的数字（0 = 取消评分）" });
+    }
+    /* 内置项没有可写落点：写进内存视图会假装成功、重启即失，所以像 toggle 一样显式挡掉并说明出路。 */
+    if (engine.skills.isBuiltin(req.params.id)) {
+      return res.json({ ok: false, needFork: true, error: "内置技能随安装包分发，评分不会保存；请先另存为我的技能" });
+    }
+    const skill = engine.skills.rate(req.params.id, v);
     if (!skill) return res.status(404).json({ ok: false, error: "Skill 不存在" });
     res.json({ ok: true, skill });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
@@ -691,6 +840,36 @@ app.post("/api/git/commit", async (req, res) => {
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
+/* ---------- P-M1 worktree 隔离副本 ----------
+   这三个端点会建目录 / 删目录，所以受全局鉴权保护（/api/git/* 一律不在 NO_AUTH 白名单里）。
+   形状与 Agent 侧的 git_worktree 完全同源（同一个 GitLayer 方法），
+   不留"面板一套逻辑、工具另一套逻辑"的缝。 */
+app.get("/api/git/worktrees", async (req, res) => {
+  try {
+    if (!git || !git.available) return res.json({ ok: false, available: false, worktrees: [], error: "当前工作区不是 Git 仓库" });
+    const r = await git.worktrees();
+    res.json(Object.assign({ available: true }, r));
+  } catch (e) { res.json({ ok: false, error: e.message, worktrees: [] }); }
+});
+app.post("/api/git/worktree", async (req, res) => {
+  try {
+    if (!git || !git.available) return res.json({ ok: false, error: "当前工作区不是 Git 仓库" });
+    const b = req.body || {};
+    const r = await git.addWorktree(b.name, { base: b.base });
+    if (r.ok) writeAudit("git", "worktree add " + r.path + " 分支 " + r.branch);
+    res.json(r);
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.delete("/api/git/worktree", async (req, res) => {
+  try {
+    if (!git || !git.available) return res.json({ ok: false, error: "当前工作区不是 Git 仓库" });
+    const b = req.body || {};
+    const r = await git.removeWorktree(b.name || b.path, b.force === true);
+    if (r.ok) writeAudit("git", "worktree remove " + r.removed + (r.forced ? "（含未提交改动，强删）" : ""));
+    res.json(r);
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
 /* 智能变更摘要（P9 / P10）：GET 全量，POST {files} 仅统计选中子集
    返回 summary(changelog/总览/建议) 与 docDraft(文档片段)，均为草稿，由前端决定是否采用 */
 function buildSummaryPayload(subset) {
@@ -753,6 +932,24 @@ app.post("/api/workspace", (req, res) => {
     // 多用户：任一用户引擎运行中都禁止切工作区（其闭包指向旧 files/git/term）
     if (engine && engine.running) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" });
     for (const eng of userEngines.values()) { if (eng.running) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" }); }
+    /* 高危目录要人点头才给可写权（修 C-H4）。
+       mountWorkspace 里的 rootGrants.ensure(abs) 会把这个目录按 writable:true 登记进授权清单，
+       于是"POST 一个任意路径"就等于"AI 拿到了这棵树以及它下面全部内容的写权限"，全程无确认。
+       这里只在**这个目录还没被授权过**时拦一次：已经在清单里的（用户此前明确授过权的）
+       不再重复问，否则每切一次工作区都要点一次确认。
+       confirmWrites 缺省为 true——选择不确认必须由前端显式说明，不靠"字段没传"来推断。 */
+    const body = req.body || {};
+    const alreadyGranted = rootGrants.get(wsKey.shardKey(path.resolve(dir), configMod.ROOT));
+    if (!alreadyGranted && rootGrants.isSensitiveRoot(dir)) {
+      if (body.confirmWrites !== true) {
+        return res.status(409).json({
+          ok: false, needConfirm: true, code: "SENSITIVE_ROOT",
+          error: "「" + path.resolve(dir) + "」是系统或用户数据目录。把 AI 的写权限交到这个层级，"
+            + "它下面的每一份文件都可改（回收站只兜得住删除，兜不住就地覆盖）。确认要打开它，请重新提交并带 confirmWrites=true。",
+        });
+      }
+      writeAudit("workspace", "确认授权敏感目录 " + path.resolve(dir));
+    }
     if (term) term.closeAll();
     mountWorkspace(dir);
     configMod.saveWorkspace(cfg, WS_DIR);
@@ -784,6 +981,23 @@ app.get("/api/raw", (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     fs.createReadStream(abs).pipe(res);
   } catch (e) { res.status(404).send("文件不存在: " + e.message); }
+});
+
+/* 会话截图：只服务数据根 .pancode/shots 这一个目录。
+   与 /api/raw 分开是因为边界不一样 —— raw 限定在工作区内，而截图刻意不落工作区
+   （落进去就会被 Git 基线当成用户改动、被撤销栈纳入检查点）。
+   只接受 shots 目录内的相对路径，逐段校验，任何 .. 或绝对路径一律 404。 */
+app.get("/api/shot", (req, res) => {
+  try {
+    const shots = require("./computer/shots");
+    const abs = shots.resolveRel(String(req.query.name || ""));
+    if (!abs) return res.status(404).send("截图不存在或路径不在截图目录内");
+    const st = fs.statSync(abs);
+    if (st.size > PREVIEW_MAX) return res.status(413).send("文件过大");
+    res.setHeader("Content-Type", extOf(abs) === "png" ? "image/png" : "application/octet-stream");
+    res.setHeader("Cache-Control", "no-store");
+    fs.createReadStream(abs).pipe(res);
+  } catch (e) { res.status(404).send("截图读取失败: " + e.message); }
 });
 
 /* docx → HTML 预览（mammoth，与 VS Code Office Viewer 同类方案） */
@@ -906,7 +1120,7 @@ app.get("/api/llm/profiles", (req, res) => {
       profiles: (cfg.llmProfiles || []).map(configMod.profilePublic),
       active: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, hasKey: !!cfg.llm.apiKey,
         keyTail: cfg.llm.apiKey ? "…" + cfg.llm.apiKey.slice(-4) : "",
-        contextWindow: cfg.llm.contextWindow, maxToolRounds: cfg.llm.maxToolRounds },
+        contextWindow: cfg.llm.contextWindow, maxToolRounds: cfg.llm.maxToolRounds, maxOutputTokens: cfg.llm.maxOutputTokens },
     });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
@@ -1081,16 +1295,29 @@ function configSnapshot() {
   const ruleCount = collectRuleRecords([]).length;
   return {
     engine: configMod.publicInfo(cfg),
-    llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow },
+    llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens },
     agent: configMod.agentSettings(cfg),
     embedding: configMod.embeddingInfo(cfg),
     mcp: { configured: (cfg.mcp && Array.isArray(cfg.mcp.servers)) ? cfg.mcp.servers : [], running: mcpManager.statusList() },
     workspace: { dir: WS_DIR, recent: cfg.recentWorkspaces || [] },
     desktop: cfg.desktop || { closeAction: "ask" },   // 桌面端关窗行为（设置里那一行读写的就是它）
+    /* 电脑控制的偏好 + "东西到底在不在"。后者跟着配置一起回，是因为这两项能力都依赖外部实物
+       （随包的 agent-browser 二进制、常驻 PowerShell + UIA）：只回配置的话，界面会显示"已开启"
+       而工具却说"没装"，用户在设置里看不出差别。 */
+    computer: cfg.computer || {},
+    computerStatus: (() => {
+      try {
+        const abS = require("./computer/agent-browser").status(cfg);
+        return {
+          browser: { available: abS.available, exe: abS.exe, browser: abS.browser, reason: abS.reason },
+          desktop: { supported: require("./computer/uia-worker").supported() },
+        };
+      } catch (e) { return { error: String(e && e.message || e) }; }
+    })(),
     assets: { memory: memCount, rules: ruleCount, skills: engine && engine.skills ? engine.skills.stats : null, experts: expertRecords().length },
     paths: { root: configMod.ROOT, configFile: configMod.CONFIG_PATH, rulesWorkspace: ".pancode/rules（工作区内，Agent 实际读取处）", rulesApp: configMod.rulesDir() },
     version: VERSION,
-    features: ["repo_map", "search_symbol", "permissions", "persona", "rules", "auto_memory", "skills", "experts", "sediment", "orchestration", "risk_scan", "mcp", "automation", "progression"],
+    features: ["repo_map", "search_symbol", "permissions", "persona", "rules", "auto_memory", "skills", "experts", "sediment", "orchestration", "risk_scan", "mcp", "automation", "progression", "browser", "computer"],
   };
 }
 app.get("/api/config", (req, res) => {
@@ -1103,9 +1330,37 @@ app.post("/api/config", (req, res) => {
     const p = patch || {};
     let out = {};
     if (section === "llm") { configMod.saveLlm(cfg, p); buildEngine(); out = { engine: configMod.publicInfo(cfg) }; broadcast({ type: "engine.info", engine: out.engine }); }
-    else if (section === "agent") { configMod.saveAgentSettings(cfg, p); out = { agent: configMod.agentSettings(cfg) }; broadcast({ type: "agent.settings", agent: out.agent }); }
+    else if (section === "agent") { configMod.saveAgentSettings(cfg, p);
+      /* 用户亲手改权限档 / Agent 模式，是整局里最该留痕的决定之一：
+         它解释了之后所有门的松紧（"那阵子为什么什么都直接放行"）。 */
+      if (p && (p.agentMode !== undefined || p.permissions !== undefined)) {
+        require("./decision-log").recordDecision({
+          convId: "settings", kind: "mode", action: "switched",
+          reason: "用户在设置里改了 Agent 模式 / 权限档",
+          mode: ((cfg.permissions || {}).mode || ""),
+          detail: { agentMode: cfg.agentMode, permissionsMode: (cfg.permissions || {}).mode },
+        });
+      }
+      /* 改了单价就按 token 数把历史账整表重算：账本里存的是**当时**算出的金额，
+         不重算的话用户填完价格面板纹丝不动，看起来像"设置没生效"。 */
+      if (p && p.pricing) { try { usageStore.reprice(cfg.pricing.rates, cfg.pricing.currency); } catch (e) { log.tag("usage").warn("按新单价重算历史账失败: " + e.message); } }
+      out = { agent: configMod.agentSettings(cfg) }; broadcast({ type: "agent.settings", agent: out.agent }); }
     else if (section === "embedding") { configMod.saveEmbedding(cfg, p); out = { embedding: configMod.embeddingInfo(cfg) }; }
     else if (section === "desktop") { configMod.saveDesktop(cfg, p); out = { desktop: cfg.desktop }; }
+    /* 电脑控制：存完顺手把"能不能用"回给前端。
+       这两项都依赖外部实物（随包的 agent-browser 二进制、常驻 PowerShell + UIA），
+       只存不验就会变成"开关明明开了、工具却说没装"，而用户没有任何地方能看出来。 */
+    else if (section === "computer") {
+      configMod.saveComputer(cfg, p);
+      const abS = require("./computer/agent-browser").status(cfg);
+      out = {
+        computer: cfg.computer,
+        computerStatus: {
+          browser: { available: abS.available, exe: abS.exe, browser: abS.browser, reason: abS.reason },
+          desktop: { supported: require("./computer/uia-worker").supported() },
+        },
+      };
+    }
     else if (section === "mcp") {
       if (!Array.isArray(p.servers)) return res.json({ ok: false, error: "servers 必须是数组" });
       configMod.saveMcpServers(cfg, { servers: p.servers });
@@ -1121,7 +1376,7 @@ app.get("/api/config/export", (req, res) => {
   try {
     const dump = {
       _kind: "pancode-config", _version: VERSION, _exportedAt: new Date().toISOString(),
-      llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow },
+      llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens },
       agent: configMod.agentSettings(cfg),
       embedding: { endpoint: cfg.embedding.endpoint, model: cfg.embedding.model, dim: cfg.embedding.dim },
       mcp: { servers: (cfg.mcp && cfg.mcp.servers) || [] },
@@ -1482,7 +1737,7 @@ function skillRecords(q) {
   const rows = [...all, ...bk.map((s) => Object.assign({ builtin: true }, s))].map((s) => ({
     id: s.id, name: s.name, description: s.description, trigger: s.trigger, tags: s.tags || [],
     source: s.builtin ? "builtin" : s.source, scope: s.scope || (s.source === "auto" ? "project" : s.source === "user" ? "user" : "app"),
-    version: s.version, useCount: s.useCount || 0, ts: s.ts, disabled: !!s.disabled,
+    version: s.version, useCount: s.useCount || 0, rating: s.rating || 0, ts: s.ts, disabled: !!s.disabled,
     risk: s.risk_level || "OK", builtin: !!s.builtin || s.source === "workflow",
     chars: (s.body || "").length, steps: Array.isArray(s.steps) ? s.steps.length : 0,
   }));
@@ -1779,6 +2034,11 @@ function rulePath(file) {
   if (f.includes("..")) return null;
   return f;
 }
+/* 取"改动前那份内容"给历史用。读不出来（二进制 / 超 1MB / 权限）就返回 null：
+   版本化是附加能力，不能因为快照取不到就挡住用户存规则。 */
+function prevRuleContent(rel) {
+  try { return files.exists(rel) ? files.read(rel) : null; } catch (e) { return null; }
+}
 app.get("/api/rules", (req, res) => {
   try {
     const q = String(req.query.q || "");
@@ -1839,6 +2099,9 @@ app.post("/api/rules", (req, res) => {
     };
     const file = rulesLib.RULES_DIR + "/" + rulesLib.safeName(meta.title, b.file) + ".md";
     if (files.exists(file) && !b.overwrite) return res.json({ ok: false, error: "已存在同名规则「" + meta.title + "」，请改名或选择覆盖" });
+    /* 覆盖写之前留一份旧内容。新建（文件不存在）不留版——没有"旧内容"可留，
+       造一条空版本只会让历史列表里多一行看不懂的东西。 */
+    if (files.exists(file)) ruleHistory.snapshot(file, prevRuleContent(file), "update");
     files.write(file, rulesLib.toMd(meta, body));
     res.json({ ok: true, file, rules: collectRuleRecords([]) });
   } catch (e) { res.json({ ok: false, error: e.message }); }
@@ -1859,6 +2122,7 @@ app.put("/api/rules", (req, res) => {
     });
     const body = b.content != null ? String(b.content).trim() : cur.body;
     if (!body) return res.json({ ok: false, error: "规则正文不能为空" });
+    ruleHistory.snapshot(rel, prevRuleContent(rel), "update");
     files.write(rel, rulesLib.toMd(meta, body));
     res.json({ ok: true, file: rel, rules: collectRuleRecords([]) });
   } catch (e) { res.json({ ok: false, error: e.message }); }
@@ -1868,8 +2132,43 @@ app.delete("/api/rules", (req, res) => {
     const rel = rulePath(req.body && req.body.file);
     if (!rel) return res.json({ ok: false, error: "只能删除工作区 .pancode/rules 下的规则" });
     if (!files.exists(rel)) return res.json({ ok: false, error: "规则文件不存在" });
+    /* 删除前必须留一份：这条是整套版本化里唯一"没有快照就真找不回来"的路径。
+       留了这份，用户误删规则之后还能从历史里把文件本体恢复出来。 */
+    ruleHistory.snapshot(rel, prevRuleContent(rel), "delete");
     files.remove(rel);
     res.json({ ok: true, rules: collectRuleRecords([]) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* ---------- P1-B5 规则历史：列表 / 行级 diff / 回滚 ---------- */
+app.get("/api/rules/history", (req, res) => {
+  try {
+    const rel = rulePath(req.query.file);
+    if (!rel) return res.json({ ok: false, error: "非法规则路径" });
+    res.json({ ok: true, file: rel, slug: ruleHistory.slugOf(rel), keep: ruleHistory.KEEP_PER_FILE, versions: ruleHistory.list(rel) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.get("/api/rules/diff", (req, res) => {
+  try {
+    const rel = rulePath(req.query.file);
+    if (!rel) return res.json({ ok: false, error: "非法规则路径" });
+    const hit = ruleHistory.read(rel, req.query.ts);
+    if (!hit) return res.json({ ok: false, error: "没有这个版本（可能已被更旧的版本挤出保留数）" });
+    const cur = prevRuleContent(rel);
+    const d = ruleHistory.diffLines(hit.content, cur == null ? "" : cur);
+    res.json({ ok: true, file: rel, meta: hit.meta, exists: cur != null, tooBig: d.tooBig, added: d.added, removed: d.removed, lines: d.lines, old: hit.content });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 回滚。回滚之前先把"当前这份"也存一版（pre-restore）——
+   否则误滚一次就把手头那份没保存好的改动永久弄丢，等于用一个不可逆去修另一个不可逆。 */
+app.post("/api/rules/restore", (req, res) => {
+  try {
+    const rel = rulePath(req.body && req.body.file);
+    if (!rel) return res.json({ ok: false, error: "只能恢复工作区 .pancode/rules 下的规则" });
+    const hit = ruleHistory.read(rel, req.body && req.body.ts);
+    if (!hit) return res.json({ ok: false, error: "没有这个版本，恢复不了" });
+    if (files.exists(rel)) ruleHistory.snapshot(rel, prevRuleContent(rel), "pre-restore");
+    files.write(rel, hit.content);
+    res.json({ ok: true, file: rel, restoredFrom: hit.meta, rules: collectRuleRecords([]) });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 /* 一键启停：只重写 frontmatter，正文一字不动 */
@@ -1881,6 +2180,7 @@ app.post("/api/rules/toggle", (req, res) => {
     const raw = files.read(rel);
     const parsed = rulesLib.parseFrontmatter(raw);
     const next = req.body.enabled != null ? !!req.body.enabled : !parsed.meta.enabled;
+    ruleHistory.snapshot(rel, prevRuleContent(rel), "toggle");
     files.write(rel, rulesLib.toMd(Object.assign({}, parsed.meta, { enabled: next }), parsed.body));
     res.json({ ok: true, enabled: next, rules: collectRuleRecords([]) });
   } catch (e) { res.json({ ok: false, error: e.message }); }
@@ -1903,6 +2203,83 @@ app.get("/api/rules/preview", (req, res) => {
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
+/* ---------- P3-D3 自进化规则：证据 → 提案 → 人工采纳 ----------
+   提案不叫 LLM 生成，只从既有账本里数重复（证据口径见 server/rule-proposals.js 头注释）。
+   面板每打开一次扫一遍：证据消失了（记忆被裁剪、决策滚出窗口）pending 自动下架，
+   已采纳/已忽略是人的决定，按住不再冒出来。 */
+const PROPOSAL_WINDOW_DAYS = 7;
+function proposalEvidence() {
+  const dl = require("./decision-log");
+  const decisions = [];
+  for (const d of (dl.decisionDates() || []).slice(0, PROPOSAL_WINDOW_DAYS)) {
+    try { decisions.push.apply(decisions, dl.readDecisions({ date: d, limit: 2000 })); } catch (e) {}
+  }
+  return {
+    decisions,
+    entries: _engineAssets.memory ? _engineAssets.memory.list({ limit: 200 }) : [],
+  };
+}
+app.get("/api/rule-proposals", (req, res) => {
+  try {
+    const store = _engineAssets.ruleProposals;
+    if (!store) return res.json({ ok: false, error: "提案库未就绪（工作区尚未挂载）" });
+    const ev = proposalEvidence();
+    store.sync(ruleProp.candidates(ev));
+    const proposals = store.list().map((p) => Object.assign({}, p, {
+      ruleFileExists: !!(p.ruleFile && files.exists(p.ruleFile)),
+    }));
+    res.json({
+      ok: true, proposals, counts: store.counts(), minRepeat: ruleProp.MIN_REPEAT,
+      sourceLabels: ruleProp.SRC_LABEL,
+      window: { days: PROPOSAL_WINDOW_DAYS, decisions: ev.decisions.length, memories: ev.entries.length },
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 采纳 = 往工作区 .pancode/rules 写一条真规则。
+   走的是与 POST /api/rules 同一条写路径（rulesLib.toMd + files.write），
+   所以它天然带 frontmatter（能在规则面板里停用）、受 rule-history 快照（改坏了能回滚）。 */
+app.post("/api/rule-proposals/:id/adopt", (req, res) => {
+  try {
+    const store = _engineAssets.ruleProposals;
+    const p = store && store.get(req.params.id);
+    if (!p) return res.json({ ok: false, error: "提案不存在（证据已消失或账本被清理）" });
+    if (p.status === "adopted" && p.ruleFile && files.exists(p.ruleFile)) {
+      return res.json({ ok: true, already: true, proposal: p, file: p.ruleFile, rules: collectRuleRecords([]) });
+    }
+    const body = String(p.statement || "").trim();
+    if (!body) return res.json({ ok: false, error: "这条提案没有可写入的正文" });
+    /* 文件名带上提案 id 的尾段：两条不同来源的提案可能撞出同一个标题
+       （同一工具既被拒过又撞过拒绝规则），不带尾号就是后采纳的那条覆盖前一条。 */
+    const rel = rulesLib.RULES_DIR + "/" + rulesLib.safeName("evolve " + p.title + " " + p.id.slice(-4)) + ".md";
+    if (files.exists(rel)) ruleHistory.snapshot(rel, prevRuleContent(rel), "update");
+    files.write(rel, rulesLib.toMd({
+      title: "进化 · " + p.title,
+      description: "采纳自规则提案（" + (ruleProp.SRC_LABEL[p.source] || p.source) + " 证据 " + p.count + " 次）",
+      enabled: true,
+    }, body));
+    const hit = store.setStatus(p.id, "adopted", { ruleFile: rel });
+    writeAudit("rules", "采纳规则提案 " + rel);
+    res.json({ ok: true, proposal: hit, file: rel, rules: collectRuleRecords([]) });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+app.post("/api/rule-proposals/:id/dismiss", (req, res) => {
+  try {
+    const store = _engineAssets.ruleProposals;
+    const hit = store && store.setStatus(req.params.id, "dismissed");
+    if (!hit) return res.json({ ok: false, error: "提案不存在" });
+    res.json({ ok: true, proposal: hit, counts: store.counts() });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+/* 忽略点错了要能收回来：忽略态只是按住，不删证据，重新待定后下一轮扫描仍在。 */
+app.post("/api/rule-proposals/:id/reopen", (req, res) => {
+  try {
+    const store = _engineAssets.ruleProposals;
+    const hit = store && store.setStatus(req.params.id, "pending");
+    if (!hit) return res.json({ ok: false, error: "提案不存在" });
+    res.json({ ok: true, proposal: hit, counts: store.counts() });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
 app.get("/api/sediment", (req, res) => {
   try {
     // 规则：Agent 的 loadRules() 读的是「工作区内」.pancode/rules/*.md，预览必须同源
@@ -1921,11 +2298,24 @@ app.post("/api/sediment", async (req, res) => {
     const topic = (title || "沉淀").toString().trim().slice(0, 60);
     const text = String(content).trim().slice(0, 4000);
     if (target === "rule") {
-      const rel = ".pancode/rules/sediment-" + stamp + ".md";
-      let prev = "";
-      try { if (files.exists(rel)) prev = files.read(rel); } catch (e) {}
-      const head = prev ? "" : "# 沉淀规则\n\n> 由「沉淀」入口写入。Agent 每次对话强制读取本目录并遵循。\n\n";
-      files.write(rel, prev + head + "## " + topic + "（" + stamp + "）\n\n" + text + "\n\n");
+      /* 一条沉淀 = 一条规则 = 一个带 frontmatter 的文件。
+         旧写法按天把沉淀追加进同一个 sediment-<date>.md，三个后果：
+           · 没有 frontmatter → 规则面板只能给整份起一个标题，单条关不掉、也挂不上 glob；
+           · 没有去重 → 同一句话点两次「沉淀」，硬约束里就出现两遍一模一样的话；
+           · 一天的沉淀挤在一个文件里 → 想撤一条得改整份文件，写前快照也把无关的几条一起卷进版本。
+         文件名保留 sediment- 前缀：沉淀面板按它认出自己写的那批（assets-center 的筛条）。 */
+      const rel = rulesLib.RULES_DIR + "/sediment-" + rulesLib.safeName(topic, "rule") + ".md";
+      const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+      if (files.exists(rel)) {
+        const cur = rulesLib.parseFrontmatter(files.read(rel));
+        if (norm(cur.body) === norm(text)) return res.json({ ok: true, target, file: rel, unchanged: true });
+        ruleHistory.snapshot(rel, prevRuleContent(rel), "update");
+      }
+      files.write(rel, rulesLib.toMd({
+        title: topic,
+        description: "由「沉淀」入口写入（" + stamp + "）",
+        enabled: true,
+      }, text));
       return res.json({ ok: true, target, file: rel });
     }
     // 记忆：写入结构化 MemoryStore（sticky + 高价值，免于遗忘曲线裁剪）
@@ -1954,6 +2344,40 @@ app.post("/api/sediment/distill", async (req, res) => {
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
+/* ---------- P3-D2 代码依赖图 REST（底栏「依赖」页签的数据源） ----------
+   索引取自 engine._repoIndex()：那是 Agent 自己用的同一份缓存，fileChanged 会置脏。
+   另起一份缓存就会出现"面板说没有依赖、Agent 说有"的两套真相。 */
+app.get("/api/graph", (req, res) => {
+  try {
+    /* 取"这个用户正在用的那个引擎"的索引，而不是全局 anon 那份：
+       缓存是按引擎实例挂的（_repoCache / _repoDirty），Agent 写完文件只把自己那份弄脏。
+       用错实例就会出现"面板说没有牵连、Agent 说有一串"——实测就是这样假绿过一次。 */
+    const eng = ensureUserEngine(tokenUserKey(tokenOf(req)));
+    if (!eng || typeof eng._repoIndex !== "function") return res.json({ ok: false, error: "引擎未就绪" });
+    const CG = require("./code-graph");
+    let all = [];
+    try { all = (files.list() || []).map(CG.norm); } catch (e) { all = []; }
+    const g = CG.fromIndex(eng._repoIndex(), all);
+    const file = CG.norm(req.query.file || "");
+    const depth = Math.max(1, Math.min(4, Number(req.query.depth) || 2));
+    const o = CG.overview(g, { top: 8 });
+    res.json({
+      ok: true,
+      files: g.nodes.size,
+      linked: g.linked.size,
+      edges: [...g.out.values()].reduce((n, s) => n + s.size, 0),
+      hubs: o.hubs, cycles: o.cycles, orphanCount: o.orphanCount, orphans: o.orphans,
+      node: file ? {
+        path: file,
+        known: g.nodes.has(file),
+        deps: [...(g.out.get(file) || [])].sort(),
+        importers: [...(g.in.get(file) || [])].sort(),
+        impact: CG.impact(g, file, depth),
+      } : null,
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
 /* ---------- 轻量代码向量索引 REST ---------- */
 app.post("/api/index/build", async (req, res) => {
   try {
@@ -1978,27 +2402,63 @@ app.get("/api/index/status", (req, res) => {
 
 /* ---------- WebSocket ---------- */
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+/* handleProtocols 是 ws v8 唯一能回显 Sec-WebSocket-Protocol 的钩子：
+   completeUpgrade 里 protocols.size > 0 时才调它，返回值直接写进响应头。
+   （handleUpgrade(req, socket, head, cb) 只有 4 个参数，没有 headers 位——
+     把 hdrs 塞在第 4 位会把 cb 顶掉，连接建成后回调永不触发。） */
+const wss = new WebSocketServer({
+  noServer: true,
+  /* 客户端把令牌当 "bearer.<tok>" 子协议申请，服务端必须回显一个已接受的协议名，
+     否则浏览器按 RFC 6455 §4.1 判定"未选择任何子协议"而断开连接。回显同一个值。 */
+  handleProtocols: (protocols) => {
+    for (const p of protocols) if (p.indexOf("bearer.") === 0) return p;
+    return false;   // 不选任何子协议
+  },
+});
 const lspManager = new LspManager(cfg);
 setActiveManager(lspManager);   // 让 Agent 的 get_diagnostics 工具能访问同一实例的诊断缓存
 
-/* A1：业务 WS 仅接受登录后的 userToken（登录闸门）。AUTH_TOKEN 仅用于本机 bootstrap，不再用于 WS */
+/* A1：业务 WS 仅接受登录后的 userToken（登录闸门）。AUTH_TOKEN 仅用于本机 bootstrap，不再用于 WS
+   修 C-B2（另一半）：query string 已不用；浏览器 WebSocket API 无法自定义 header，
+   令牌改走 Sec-WebSocket-Protocol（RFC 6455 推荐的握手内传递方式，不进 URL，
+   因而不会出现在浏览器历史 / Referer / 访问日志里）。协议名是 "bearer.<token>"。 */
+function wsTokenFromProtocol(h) {
+  const raw = String(h || "");
+  if (!raw) return "";
+  const list = raw.split(",").map((s) => s.trim());
+  for (const p of list) {
+    if (p.indexOf("bearer.") === 0) return decodeURIComponent(p.slice(7));
+  }
+  return "";
+}
 server.on("upgrade", (req, socket, head) => {
   const u = new URL(req.url, "http://localhost");
   // LSP 走独立端点 /lsp，避免与主聊天 WS 混流
   if (u.pathname === "/lsp") { lspManager.handleUpgrade(req, socket, head); return; }
-  const tok = u.searchParams.get("token") || "";
+  /* query 兜底默认关闭（与 HTTP 侧同一个开关）；老前端/老脚本平滑升级用 */
+  const legacy = process.env.PANCODE_ALLOW_TOKEN_QUERY === "1" ? (u.searchParams.get("token") || "") : "";
+  const tok = wsTokenFromProtocol(req.headers["sec-websocket-protocol"]) || legacy;
   if (!auth.verify(tok)) { socket.destroy(); return; }
+  /* 子协议回显交给 wss 的 handleProtocols（见上方构造处），这里只负责鉴权与移交 */
   wss.handleUpgrade(req, socket, head, (ws) => { ws._userToken = tok; wss.emit("connection", ws, req); });
 });
 
-function safe(fn, ws) {
-  try { return fn(); }
-  catch (e) {
-    const { classifyError } = require("./app-error");
-    const info = classifyError(e);
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "op.error", error: info.message, code: info.code, kind: info.kind, userHint: info.userHint }));
-  }
+/* WS 指令执行的统一包装。原先 catch 之后只往前端发一条 op.error，服务端一行日志不留，
+   于是"界面上说服务内部异常"和"后台到底哪一步炸了"完全对不上号 —— 出了问题只能靠猜。
+   修法（见 ws-safe.js 的完整注释）：落一行服务端日志 + 生成 reqId 回传前端。
+   实现放在 ws-safe.js 而非这里，因为本文件模块顶层会 listen()，require 进来就等于起服务，
+   断言脚本没法在没有服务端的环境里单测这条链路。 */
+const { safe } = require("./ws-safe");
+
+/* 用户侧文件操作的 /undo 检查点：按能力取快照，缺方法的引擎返回 null（调用侧也随之跳过）。
+   返回 null 而不是 [] —— [] 会被压成一条"什么都没改"的空检查点，撤回去是假的还原。 */
+function userSnaps(eng, paths) {
+  if (!eng || typeof eng._snapshotBefore !== "function") return null;
+  return paths.filter((p) => typeof p === "string" && p).map((p) => eng._snapshotBefore(p));
+}
+function userCheckpoint(eng, snaps, label) {
+  if (snaps == null || !snaps.length || typeof eng._pushCheckpoint !== "function") return;
+  eng._pushCheckpoint(snaps, label);
 }
 
 wss.on("connection", (ws) => {
@@ -2114,7 +2574,9 @@ wss.on("connection", (ws) => {
               const afterPct = Math.round((uEng._ctxUsed(after) || 0) / (uEng._ctxLimit() || 1) * 100);
               if (ws.readyState === 1) ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 已按你的要求手动压缩上下文（水位 " + beforePct + "% → " + afterPct + "%）", cls: "tl-info" }));
             } else if (ws.readyState === 1) {
-              ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 未压缩：自动压缩已关闭，或历史条数不足以压缩", cls: "tl-warn" }));
+              /* 别把三种不同的原因糊成一句"已关闭"：compactHistory 压不动时会先落一条原因
+                 （摘要没生成 / 摘要不比原文短），这里只负责指过去。 */
+              ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 没有换掉任何历史：原因见上面一条（自动压缩已关闭 / 可压区太小 / 本次压不动）", cls: "tl-warn" }));
             }
           } catch (e) {
             if (ws.readyState === 1) ws.send(JSON.stringify({ type: "term.line", text: "[Agent] 压缩失败：" + e.message, cls: "tl-err" }));
@@ -2126,7 +2588,9 @@ wss.on("connection", (ws) => {
       case "term.exec": {
         const tabId = m.tabId || "default";
         if (typeof m.cmd === "string" && m.cmd.trim() && !term.busyFor(tabId)) {
-          term.run(tabId, m.cmd.slice(0, 500)).then(() => {
+          // C-H2：WS 手敲终端路径按 AI 严档执行（sudo/系统目录写入/全局安装/批量删除等拦截），
+          // 与 terminal.js:118 AI 内部路径的 strict 语义对齐。
+          term.run(tabId, m.cmd.slice(0, 500), null, { strict: true }).then(() => {
             snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
             uEng.pushChanges(false);
           });
@@ -2144,53 +2608,67 @@ wss.on("connection", (ws) => {
         break;
 
       /* ----- 文件操作协议（编辑器可写的核心） ----- */
+      /* 用户侧的保存/新建/删除/重命名也压进 /undo 栈（修 C-M1）：原先只有 AI 路径有检查点，
+         用户在编辑器里手改的东西一律撤不回来。
+         但 _snapshotBefore / _pushCheckpoint 定义在 LlmAgent 上，演示引擎没有这两个方法
+         （server/agent-demo.js 只继承 AgentBase）。不认能力就直接调，
+         后果是没配 Key 的默认体验里用户每按一次 Ctrl+S 都收到一条「服务内部异常」，
+         而且写在调用之后——文件也根本没存下去。 */
       case "file.save":
         safe(() => {
+          const snap = userSnaps(uEng, [m.path]);
           files.write(m.path, String(m.content));
+          userCheckpoint(uEng, snap, "用户保存 " + m.path);
           codeIndex.queueFileUpdate(WS_DIR, m.path);
           uEng.fileChanged(m.path);
           uEng.pushChanges(false);
           broadcast({ type: "file.saved", path: m.path });
-        }, ws);
+        }, ws, m.type);
         break;
       case "file.create":
         safe(() => {
+          const snap = userSnaps(uEng, [m.path]);
           files.create(m.path, m.content || "");
+          userCheckpoint(uEng, snap, "用户新建 " + m.path);
           codeIndex.queueFileUpdate(WS_DIR, m.path);
           uEng.fileChanged(m.path);
           uEng.pushChanges(false);
           snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
-        }, ws);
+        }, ws, m.type);
         break;
       case "file.delete":
         safe(() => {
+          const snap = userSnaps(uEng, [m.path]);
           files.remove(m.path);
+          userCheckpoint(uEng, snap, "用户删除 " + m.path);
           codeIndex.removeFile(WS_DIR, m.path);
           uEng.pushChanges(false);
           snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
-        }, ws);
+        }, ws, m.type);
         break;
       case "file.rename":
         safe(() => {
+          const snap = userSnaps(uEng, [m.path, m.newPath]);
           files.rename(m.path, m.newPath);
+          userCheckpoint(uEng, snap, "用户重命名 " + m.path + " → " + m.newPath);
           codeIndex.removeFile(WS_DIR, m.path);
           codeIndex.queueFileUpdate(WS_DIR, m.newPath);
           uEng.pushChanges(false);
-          broadcast({ type: "fs.sync", files: snapshotFiles(), renamed: { from: m.path, to: m.newPath } });
-        }, ws);
+          snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2, renamed: { from: m.path, to: m.newPath } }));
+        }, ws, m.type);
         break;
       case "file.mkdir":
         safe(() => {
           files.mkdir(m.path);
           snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
-        }, ws);
+        }, ws, m.type);
         break;
 
       case "search":
         safe(() => {
           const results = files.search(String(m.query || ""), 200);
           ws.send(JSON.stringify({ type: "search.result", query: m.query, results }));
-        }, ws);
+        }, ws, m.type);
         break;
 
       case "reset":
@@ -2206,8 +2684,8 @@ wss.on("connection", (ws) => {
             broadcast({ type: "term.line", text: "[pancode] 工作区已恢复到基线状态", cls: "tl-info" }, msgKey);
             broadcast({ type: "agent.reset" }, msgKey);
             snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
-          }).catch((e) => console.error("[reset] discardAll 失败:", e));
-        }, ws);
+          }).catch((e) => log.tag("git").error("reset: discardAll 失败 " + e));
+        }, ws, m.type);
         break;
 
       /* 新建对话：仅清空 AI 对话上下文，不丢弃文件改动 */
@@ -2224,7 +2702,7 @@ wss.on("connection", (ws) => {
           if (typeof uEng.saveConversations === "function") uEng.saveConversations();
           broadcast({ type: "agent.reset" }, msgKey);
           broadcast({ type: "term.line", text: "[pancode] 已开始新对话，AI 上下文已清空（文件改动保留）", cls: "tl-info" }, msgKey);
-        }, ws);
+        }, ws, m.type);
         break;
 
       /* C6：切换对话 — 把服务端 AI 上下文同步到前端选中的会话 */
@@ -2241,7 +2719,7 @@ wss.on("connection", (ws) => {
               risk: (uEng.convRisk && uEng.convRisk[String(m.convId)]) || null,
             }));
           }
-        }, ws);
+        }, ws, m.type);
         break;
 
       /* C6：删除对话 — 同步清理服务端上下文，避免残留占用 */
@@ -2250,7 +2728,7 @@ wss.on("connection", (ws) => {
           if (typeof uEng.dropConversation === "function" && m.convId) {
             uEng.dropConversation(String(m.convId));
           }
-        }, ws);
+        }, ws, m.type);
         break;
 
       /* 中断当前 Agent 运行 */
@@ -2262,7 +2740,7 @@ wss.on("connection", (ws) => {
             broadcast({ type: "agent.state", running: false, label: "AI 空闲", convId: m.convId }, msgKey);
             broadcast({ type: "agent.done", round: uEng.round, convId: m.convId }, msgKey);
           }
-        }, ws);
+        }, ws, m.type);
         break;
 
       /* ----- 人工确认：AI 工具的写/删/执行需用户批准（审批队列按用户隔离） ----- */
@@ -2294,7 +2772,7 @@ wss.on("connection", (ws) => {
           } else {
             broadcast({ type: "patch.applied", paths: [], convId, empty: true }, msgKey);
           }
-        }, ws);
+        }, ws, m.type);
         break;
       case "patch.reject":
         safe(() => {
@@ -2302,7 +2780,7 @@ wss.on("connection", (ws) => {
           const paths = Array.isArray(m.paths) ? m.paths : [];
           if (typeof uEng.rejectPatch === "function") uEng.rejectPatch(convId, paths);
           broadcast({ type: "patch.rejected", paths, convId, all: !paths.length }, msgKey);
-        }, ws);
+        }, ws, m.type);
         break;
     }
   });
@@ -2329,33 +2807,57 @@ const wsHeartbeat = setInterval(() => {
 }, WS_PING_MS);
 wsHeartbeat.unref();   // 不阻止进程退出（优雅关闭路径无需等待心跳）
 
-/* A7：清理上次异常退出遗留的原子写临时文件（pancode.config.json.<pid>.tmp），避免根目录残留 */
+/* A7：清理上次异常退出遗留的原子写临时文件。
+   原实现只认根目录一个模式 /^pancode\.config\.json\.\d+\.tmp$/，
+   而 atomicWrite 的临时名是 "<目标名>.<pid>.tmp"（server/safe-write.js:22），
+   凡是走 safe-write 的落盘点都会留孤儿——实测 .pancode/{skills,memory,
+   progression,automations/*} 下就有一批，压根不会被这个正则碰到。
+   现在交给 safe-write 的通用清扫：递归 + 按 pid 判活，
+   另一个还在跑的 pancode 实例正在用的 .tmp 不会被误删。 */
 function cleanupTmpOrphans() {
   try {
-    const dir = configMod.ROOT;
-    for (const f of fs.readdirSync(dir)) {
-      if (/^pancode\.config\.json\.\d+\.tmp$/.test(f)) {
-        try { fs.unlinkSync(path.join(dir, f)); console.log("[pancode] 清理残留临时文件:", f); } catch (e) {}
-      }
+    const sw = require("./safe-write");
+    // 配置目录与 .pancode 全树都扫：前者是配置落盘，后者是记忆/技能/进度/自动化
+    const targets = [configMod.ROOT, path.join(configMod.ROOT, ".pancode")];
+    let removed = 0, kept = 0;
+    for (const t of targets) {
+      if (!fs.existsSync(t)) continue;
+      const r = sw.sweepTmpOrphans(t);
+      removed += r.removed.length; kept += r.kept.length;
     }
-  } catch (e) {}
+    if (removed) log.tag("boot").info("清理残留临时文件 " + removed + " 个" + (kept ? "（另有 " + kept + " 个属于仍在运行的进程，保留）" : ""));
+    else if (kept) log.tag("boot").info(kept + " 个临时文件属于仍在运行的进程，保留");
+  } catch (e) { log.tag("boot").warn("清理残留临时文件失败 " + e); }
 }
 cleanupTmpOrphans();
 
+/* 截图目录按 TTL 清理 —— 与对话历史同一做法：只删超期的，不做"看起来没用了就删"的推断。
+   不接这一步的话 shotsTtlDays 就只是个写在配置里的数字，而浏览器/桌面任务每轮都能产几十张图。 */
+function cleanupShots() {
+  try {
+    const shots = require("./computer/shots");
+    const r = shots.prune((configMod.load().computer || {}).shotsTtlDays);
+    if (r.removed) log.tag("boot").info("清理超期截图 " + r.removed + " 张（保留 " + ((configMod.load().computer || {}).shotsTtlDays || shots.DEFAULT_TTL_DAYS) + " 天内）");
+  } catch (e) { log.tag("boot").warn("清理截图目录失败 " + e); }
+}
+cleanupShots();
+
 server.listen(cfg.port, "127.0.0.1", () => {
   const info = configMod.publicInfo(cfg);
+  // 这四行是给人看的开机横幅，刻意不进日志器：日志行一律带时间戳和级别前缀，
+  // 横幅要的是"打开终端一眼看清服务起在哪、挂的是哪个目录"，加了前缀反而难读。
   console.log("pancode v" + VERSION + " 已启动: http://localhost:" + cfg.port);
   console.log("workspace: " + WS_DIR);
   const gi = git.info();
   console.log("Git: " + (gi.git ? ("已启用（基线 = HEAD" + (gi.sub ? "，工作区在仓库的 " + gi.sub + " 子目录" : "") + "）") : "未启用（基线 = 启动快照）"));
   console.log("Agent 引擎: " + (info.mode === "llm" ? "真实 LLM（" + info.model + "）" : "内置演示引擎（配置 API Key 后自动切换真实 LLM）"));
   // 启动已启用的 MCP 服务器（非阻塞：按服务器响应速度异步就绪，不影响主流程）
-  try { mcpManager.connectAll(); } catch (e) { console.warn("[mcp] 初始化失败:", e.message); }
+  try { mcpManager.connectAll(); } catch (e) { log.tag("mcp").warn("初始化失败 " + e); }
 });
 
 /* 优雅关闭：中止 Agent → 杀终端子进程 → 关 WS → 停 watch → 关 HTTP，避免孤儿进程 / 端口残留 */
 function shutdown(sig) {
-  console.log("\n[pancode] 收到 " + sig + "，正在优雅关闭…");
+  log.tag("boot").info("收到 " + sig + "，正在优雅关闭…");
   // 多用户：中止 + 刷盘所有用户引擎（默认 engine 也在 userEngines 里，anon key）
   for (const eng of userEngines.values()) {
     try { if (eng && typeof eng.abort === "function") eng.abort(); } catch (e) {}
@@ -2363,9 +2865,13 @@ function shutdown(sig) {
   }
   try { if (term && typeof term.closeAll === "function") term.closeAll(); } catch (e) {}      // 杀掉全部终端子进程，避免孤儿
   try { auth.flushSessions(); } catch (e) {}                        // 会话同步落盘：合并窗里没来得及写的登录态不能随进程丢
+  try { usageStore.flush(); } catch (e) {}   // 用量账本自己有 5s 合并窗，退出前把最后这一笔推下去（面板"今天花了多少"不能少一段）
   try { if (mcpManager) mcpManager.disconnectAll(); } catch (e) {}   // 关闭全部 MCP 子进程，避免孤儿
   try { for (const c of wss.clients) { try { c.close(); } catch (e) {} } } catch (e) {}
   try { if (files) files.stopWatch(); } catch (e) {}
+  /* 桌面控制的常驻 PowerShell 不会自己走：worker 是子进程，父进程直接 exit 就会留孤儿，
+     而它持有 UIA 引用缓存与 ref 序号，下一次开机看到的"上一个进程的窗口"会全是废 ref。 */
+  try { require("./computer/uia-worker").stop("服务退出"); } catch (e) {}
   try { server.close(() => process.exit(0)); } catch (e) { process.exit(0); }
   setTimeout(() => process.exit(0), 3000).unref();   // 兜底：3s 内未退出则强制退出
 }
@@ -2374,8 +2880,11 @@ function shutdown(sig) {
 function logFatal(where, err) {
   try {
     const msg = (err && err.stack) ? err.stack : String(err);
-    console.error("[pancode] " + where + ": " + msg);
-    broadcast({ type: "op.error", error: "服务内部异常（" + where + "），已自动恢复；如频繁出现请查看后台日志。" });
+    const reqId = log.newReqId();
+    /* 堆栈进结构化上下文而不是正文：正文要保持一行可读，
+       而这条堆栈是这次崩溃事后唯一剩下的东西（/api/logs 里按 reqId 就能捞到）。 */
+    log.tag("fatal").withReqId(reqId).error(where + ": " + (err && err.message ? err.message : String(err)), { stack: msg });
+    broadcast({ type: "op.error", error: "服务内部异常（" + where + "），已自动恢复；reqId=" + reqId + "，可在诊断面板「服务日志」里查到这一条。", reqId });
   } catch (e) {}
 }
 process.on("unhandledRejection", (reason) => logFatal("unhandledRejection", reason));

@@ -33,12 +33,16 @@ Thumbs.db
 .pancode/
 scripts/verify_*.js
 scripts/_verify_out/
+# 探针沙箱：每次 create() 自己 mkdtemp 出来的夹具、备份与一次性 codemod（约 29MB）
+# 常驻的四条 i18n 静态门不在这里，它们在 scripts/i18n-*.js
+scripts/_sandbox/
 
 # 第三方 AI 工具本地产物（Claude Code 等配置，不入库）
 .claude/
 
 # AI 工具本地产物（会话记忆 / 规则缓存，不入库）
 .omc/
+.qoder/
 .workbuddy/
 # Local tool artifacts / temp scripts
 .arts/

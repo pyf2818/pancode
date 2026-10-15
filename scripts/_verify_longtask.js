@@ -128,9 +128,11 @@ function openZombie(port, token) {
   });
   sock.on("error", (e) => { z.detail += " / sock error: " + e.message; });
   sock.once("connect", () => {
-    sock.write("GET /?token=" + encodeURIComponent(token) + " HTTP/1.1\r\n"
+    sock.write("GET / HTTP/1.1\r\n"
       + "Host: 127.0.0.1:" + port + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-      + "Sec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n");
+      + "Sec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n"
+      /* 服务端已不收 ?token=（修 C-B2：query 会进浏览器历史与访问日志），令牌改当子协议申请 */
+      + "Sec-WebSocket-Protocol: bearer." + encodeURIComponent(token) + "\r\n\r\n");
   });
   return new Promise((res, rej) => {
     resolveZ = res;
@@ -369,7 +371,7 @@ section("2) 审批与选项等待（可配时限 + 不残留计时器）");
   try {
     const tok = boot.token;
     // (a) 正常客户端：Node 的 ws 库自动回 pong —— 等同浏览器行为
-    const good = new ws("ws://127.0.0.1:" + boot.port + "/?token=" + encodeURIComponent(tok));
+    const good = new ws("ws://127.0.0.1:" + boot.port + "/", ["bearer." + encodeURIComponent(tok)]);
     let helloSeen = null;
     good.on("message", (b) => { try { const j = JSON.parse(b); if (j.type === "hello") helloSeen = j; } catch (e) {} });
     await new Promise((res, rej) => { good.once("open", res); good.once("error", rej); });
