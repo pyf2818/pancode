@@ -159,8 +159,7 @@ window.__cjk = function (rootSel) {
       const bar = window.__vis("#planBar");
       const input = document.getElementById("chatInputAgents").getBoundingClientRect();
       const btn = window.__vis("#btnPlanToggle");
-      const nb = window.__vis("#btnNewPlan");
-      return { bar, btn, nb, barBottom: bar.bottom, inputTop: Math.round(input.top),
+      return { bar, btn, barBottom: bar.bottom, inputTop: Math.round(input.top),
         count: (document.getElementById("planBarCount") || {}).textContent,
         pct: (document.getElementById("planBarPct") || {}).textContent,
         fill: (document.getElementById("planBarFill") || {}).style.width,
@@ -173,7 +172,9 @@ window.__cjk = function (rootSel) {
       geo.count === "1/3" && geo.pct === "33%" && geo.fill === "33%", J({ count: geo.count, pct: geo.pct, fill: geo.fill }));
     ok("清单默认收起、按钮 aria-expanded=false（点开才摊）",
       geo.popClosed === true && geo.expanded === "false", J({ popClosed: geo.popClosed, expanded: geo.expanded }));
-    ok("「新建计划」的 + 还在胶囊条右侧", geo.nb.shown, J(geo.nb));
+    ok("手动新建计划的「+」已撤下（计划由 Agent 建，不在输入框上方留手动入口）",
+      await page.evaluate(() => !document.getElementById("btnNewPlan")),
+      "仍在：" + await page.evaluate(() => !!document.getElementById("btnNewPlan")));
 
     section("② 点开看进程：弹层、几何、外部点击收起");
     await page.click("#btnPlanToggle");

@@ -755,8 +755,6 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .pb-pct{font-family:var(--mono);font-size:10.5px;color:var(--accent);min-width:34px;text-align:right}
 .pb-chev{display:inline-flex;transition:transform .18s ease}
 .plan-bar.open .pb-chev{transform:rotate(180deg)}
-.plan-bar-new{display:flex;padding:6px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text-dim);cursor:pointer;flex-shrink:0}
-.plan-bar-new:hover{border-color:var(--accent);color:var(--text)}
 .plan-pop{position:absolute;left:14px;right:14px;bottom:100%;margin-bottom:2px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);z-index:var(--z-pop);padding:8px;max-height:42vh;overflow:auto}
 .plan-pop.hidden{display:none}
 .plan-pop .ag-plan-box{max-height:none;overflow:visible;padding-right:0}

@@ -357,7 +357,6 @@ const LANGS = {
     sessions: "会话",
     newSessionTip: "新建会话",
     searchSessionsPh: "搜索会话…",
-    newPlanTip: "手动创建计划",
     orchHistory: "编排历史",
     expandCollapseTip: "展开/折叠",
     agentSessions: "Agent 会话",
@@ -368,11 +367,6 @@ const LANGS = {
     planStatusActive: "进行中",
     planStepsDone: "{done}/{total} 步骤完成",
     planProgress: "计划进度",
-    newPlanTitlePrompt: "计划标题：",
-    newPlanTitleDefault: "手动计划",
-    newPlanTasksPrompt: "任务步骤（每行一个）：",
-    newPlanTasksDefault: "步骤一\n步骤二\n步骤三",
-    newPlanFailed: "创建计划失败",
     stepPillJumpTip: "点击跳到本轮第一条步骤",
     stepPillSteps: "步骤",
     stepPillFiles: "{n} 个文件已修改",
@@ -2106,7 +2100,6 @@ const LANGS = {
     sessions: "Sessions",
     newSessionTip: "New session",
     searchSessionsPh: "Search sessions…",
-    newPlanTip: "Create a plan manually",
     orchHistory: "Orchestration history",
     expandCollapseTip: "Expand / collapse",
     agentSessions: "Agent sessions",
@@ -2116,11 +2109,6 @@ const LANGS = {
     planStatusActive: "In progress",
     planStepsDone: "{done}/{total} steps done",
     planProgress: "Plan progress",
-    newPlanTitlePrompt: "Plan title:",
-    newPlanTitleDefault: "Manual plan",
-    newPlanTasksPrompt: "Steps (one per line):",
-    newPlanTasksDefault: "Step one\nStep two\nStep three",
-    newPlanFailed: "Failed to create the plan",
     stepPillJumpTip: "Click to jump to this round's first step",
     stepPillSteps: "Steps",
     stepPillFiles: "{n} files changed",
@@ -3561,3 +3549,4 @@ window.getLang = getLang;
 window.setLang = setLang;
 window.applyI18n = applyI18n;
 window.onLang = onLang;
+

@@ -341,7 +341,7 @@
 
 1. **演示引擎下任务计划整条不可用**：`PlanStore` 在 `buildEngine` 里是跨用户共享的（`_engineAssets.plan`），但只有 `LlmAgent` 把它接到 `this.plan`（`server/agent-llm.js:1646`）。没配 API Key 的装机 —— 桌面端开箱就是这个 —— `engine.plan` 是 undefined，`/api/plans` 一律回"引擎未就绪"、计划条永远不出现。现在挪进 `AgentBase` 构造（`this.plan = ctx.sharedPlan || null`）：计划是"项目级"资产，跟引擎是不是真 LLM 无关。
 2. **`update_plan_task` 前端发了服务端没人接**：全仓只有 `public/app.js` 一处发它，WS 分支里没这个 case —— 点计划条目打勾只是画在界面上，刷新按服务端为准又弹回。现在接住、落 `PlanStore.updateTask`，再把 `plan.updated` 按发起者 userKey 推回。
-3. **手动"+"新建计划走的也是死消息**：`btnNewPlan` 发 `{type:"tool_call"}`，服务端 WS 分支同样从没接过 `tool_call`。改走已有的 `POST /api/plans`（落盘 + 推回 `plan.created`，界面按同一条路径渲染）。顺手给 `/api/plans` 与 `/api/plans/:id/complete` 的 broadcast 补上 `tokenUserKey(tokenOf(req))` —— 不带 key 的 broadcast 发给所有连接，别人的计划会串进你的窗口。
+3. **手动"+"新建计划走的也是死消息**：`btnNewPlan` 发 `{type:"tool_call"}`，服务端 WS 分支同样从没接过 `tool_call` —— 点它只会在控制台留一条没人理的广播。当天先改成走真 `POST /api/plans`，随后按用户判断**整个入口撤下**：计划是 Agent 面对复杂任务时自己建的东西，输入框上方留一个"手填步骤"的加号是把编排器当待办清单用。`/api/plans` 两条路由的 broadcast 顺手补上 `tokenUserKey(tokenOf(req))` —— 不带 key 是发给所有连接的，别人的计划会串进你的窗口。
 4. **`diffStat` 的 CRLF 缺陷服务端也有一份，而且那份才是主源**：`server/agent-base.js` 里那把尺子是改动数的单一实现（`agent-base.js` 的 changes 事件、`patch.js` 的审阅统计都用它），前端 `public/js/utils.js` 只是同逻辑的第二份。上一轮只修了前端那份 —— 用户截图那个 `+1291 −1287` 走的正是服务端。两边现在都先 `\r\n → \n` 再切行。
 
 **打包为什么改道（`npm run dist` 现走 `scripts/dist.js`）**：electron-builder 的 Windows 流程是"在 `release/win-unpacked.tmp` 铺好整棵树 → 删旧 `win-unpacked` → 把 `.tmp` 改名过去"，改名/删除要求树里没有文件被别的进程以"不许删"的方式打开。实测用 Restart Manager 查到握着 `release/win-unpacked.tmp/resources/default_app.asar` 的是 **IDE 自己（Qoder）**——它监听工作区、会打开新出现的文件。于是连撞两次：
