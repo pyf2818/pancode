@@ -35,6 +35,12 @@ const DEFAULTS = {
   port: 8766,
   workspace: "workspace",
   recentWorkspaces: [],   // 最近打开过的文件夹（绝对路径）
+  /* 长任务的两条命门（判据在 server/agent-llm.js 的看门狗里）：
+       agentStallMs = 连续多久毫无进展才算卡死；agentMaxMs = 单任务最长墙钟兜底。
+     默认 6 分钟 / 8 小时。以前这里只有墙钟一条、且默认 30 分钟，注释还写着"可配"而配置里
+     根本没有这一项 —— 等于任何跑满半小时的任务必被掐死，"跑七八小时"是设计上进不去的。 */
+  agentStallMs: 6 * 60 * 1000,
+  agentMaxMs: 8 * 60 * 60 * 1000,
   llm: {
     baseURL: "",          // 例如 https://api.openai.com/v1 或任何 OpenAI 兼容网关
     apiKey: "",
@@ -344,6 +350,13 @@ function saveAgentSettings(cfg, patch) {
     if (Array.isArray(p.permissions.allow)) cfg.permissions.allow = p.permissions.allow.filter(Boolean).map(String);
     if (Array.isArray(p.permissions.deny)) cfg.permissions.deny = p.permissions.deny.filter(Boolean).map(String);
     if (typeof p.permissions.strictCommand === "boolean") cfg.permissions.strictCommand = p.permissions.strictCommand;
+  }
+  /* 长任务预算：非法值一样要吭一声，不许静默收下（同 permissions.mode 的口径） */
+  for (const [k, lo, hi] of [["agentStallMs", 60000, 60 * 60000], ["agentMaxMs", 5 * 60000, 48 * 3600000]]) {
+    if (p[k] === undefined) continue;
+    const n = Number(p[k]);
+    if (Number.isFinite(n) && n >= lo && n <= hi) cfg[k] = Math.round(n);
+    else log.tag("config").warn("忽略非法的 " + k + "=" + p[k] + "（允许 " + lo + "–" + hi + " 毫秒）");
   }
   if (p.hooks && typeof p.hooks === "object" && Array.isArray(p.hooks.pre)) {
     cfg.hooks.pre = p.hooks.pre

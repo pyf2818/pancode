@@ -56,6 +56,7 @@ const { PatchEngine, parsePatchText } = require("./patch");
 const { TOOL_HANDLERS } = require("./tools");
 const rulesLib = require("./rules");
 const { classifyLlmError } = require("./app-error");
+const watchdog = require("./run-watchdog");
 
 /* ============================================================
    历史 tool_call 净化（防御性）
@@ -1942,6 +1943,15 @@ ${taskSummary}
       }
     }
     this.running = false;
+    /* 用户点「停止」= 明确不要它自己往下跑。以前这里只掐 abortRef，_goal 还挂着，
+       于是收尾判据一看"目标还在、不是异常退出"，800ms 后 Goal 自动续跑又把任务叫醒 ——
+       停止按钮按不住一个正在自驱的长任务。停就把它停干净：摘目标、清该会话的续跑计数、落盘。 */
+    if (this._goal) {
+      this._goal = "";
+      if (this._goalState) this._goalState[convId || this._currentConv || "default"] = undefined;
+      try { this._saveGoal(); } catch (e) { /* 落盘失败也要停，内存里已经清了 */ }
+      this.emit({ type: "goal.settled", turns: 0, convId: convId || this._currentConv, cleared: true });
+    }
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
       // 同步广播收尾：审批卡（ap_*）与选项卡（ch_*）进入「已中断」状态，避免前端永远显示等待中
@@ -3217,18 +3227,27 @@ ${taskSummary}
      再走 _aggressiveTrim 更贵也更慢。停的只是「摘要那一遍」，microcompact 与 400 兜底照走；
      用户手动 /compact（force）会把断路器和解复位，仍然能压。 */
   _compactAbandoned(history, why, extra) {
-    this._compactNoop = (this._compactNoop || 0) + 1;
-    this._traceEvent("context.compact_noop", Object.assign({ why, streak: this._compactNoop }, extra || {}));
-    this._decision({ kind: "compact", action: "abandoned", reason: why, detail: Object.assign({ streak: this._compactNoop }, extra || {}) });
+    /* 断路器按会话分桶。它原先挂在引擎对象上，而一个引擎服务这个用户的所有会话 ——
+       一条会话压不动就把自动摘要对**所有**会话关掉，多会话并行时互相封死，
+       表现是"另一条长任务跑着跑着上下文就不压了"。
+       取会话 id 走 currentConv()（AsyncLocalStorage 优先）：并行跑的时候 `_currentConv` 会被别的会话切走，
+       用它记账等于把 A 的断路器扣到 B 头上。 */
+    const ck = this.currentConv();
+    this._compactNoop = this._compactNoop || {};
+    this._compactStopped = this._compactStopped || {};
+    this._compactNoop[ck] = (this._compactNoop[ck] || 0) + 1;
+    const streak = this._compactNoop[ck];
+    this._traceEvent("context.compact_noop", Object.assign({ why, streak }, extra || {}));
+    this._decision({ kind: "compact", action: "abandoned", reason: why, detail: Object.assign({ streak }, extra || {}) });
     this.emit({ type: "term.line", text: "[Agent] 本次压缩无收益（" + why + "），已放弃替换", cls: "tl-warn" });
-    if (this._compactNoop >= COMPACT_NOOP_BREAKER && !this._compactStopped) {
-      this._compactStopped = true;
-      this._decision({ kind: "compact", action: "abandoned", reason: "连续 " + this._compactNoop + " 次压不动，已暂停自动摘要（断路器）", detail: { breaker: true } });
+    if (streak >= COMPACT_NOOP_BREAKER && !this._compactStopped[ck]) {
+      this._compactStopped[ck] = true;
+      this._decision({ kind: "compact", action: "abandoned", reason: "连续 " + streak + " 次压不动，已暂停自动摘要（断路器）", detail: { breaker: true } });
       this.emit({
-        type: "context.compact_breaker", streak: this._compactNoop, why,
+        type: "context.compact_breaker", streak, why,
       });
       this.emit({ type: "term.line",
-        text: "[Agent] 连续 " + this._compactNoop + " 次压缩都压不动，已暂停自动摘要（多半是任务本身太长，或「模型上下文窗口」配得偏小）。"
+        text: "[Agent] 连续 " + streak + " 次压缩都压不动，已暂停自动摘要（多半是任务本身太长，或「模型上下文窗口」配得偏小）。"
           + "上下文继续涨到上游真报错时，会走兜底整组丢弃最旧轮次——那一次是真丢原文。"
           + "想接着压就输 /compact（会重新启用），或开个新会话。", cls: "tl-warn" });
     }
@@ -3287,8 +3306,11 @@ ${taskSummary}
     if (!opts.force && used <= spec.thresholdTokens) return history;
     /* 断路器：force（用户手动 /compact）把计数和停手标志一起复位再压——压成功一次
        就说明还能压，自动那一遍不该继续被上一次失败关着；上面那半截 microcompact 已经走完了。 */
-    if (opts.force) { this._compactNoop = 0; this._compactStopped = false; }
-    else if (this._compactStopped) return history;
+    const ck = this.currentConv();
+    this._compactNoop = this._compactNoop || {};
+    this._compactStopped = this._compactStopped || {};
+    if (opts.force) { this._compactNoop[ck] = 0; this._compactStopped[ck] = false; }
+    else if (this._compactStopped[ck]) return history;
     const beforeEst = this._estTokens(history);   // 与 after 同口径（都只算 history），用于 shrink 判定
     // 保留量按预算比例给（16%）而不是固定条数：固定 10 条在 1M 窗口下压得太狠、
     // 在 8K 窗口下又几乎压不动，只有比例能随模型伸缩。
@@ -3321,7 +3343,7 @@ ${taskSummary}
     if (after >= beforeEst) {
       return this._compactAbandoned(history, "摘要不比原文短", { before: beforeEst, after, forced: !!opts.force });
     }
-    this._compactNoop = 0;   // 这一次真压下来了，连续计数清零
+    this._compactNoop[ck] = 0;   // 这一次真压下来了，本会话的连续计数清零（别人的不清）
     /* 压掉的是原文、留下的是摘要——这条记录是"为什么现在看不见第 N 轮说过的话"的唯一答案。
        不写进决策链，事后只能看到一段摘要，分不清是模型忘了还是被压了。 */
     this._decision({ kind: "compact", action: "compressed",
@@ -3614,6 +3636,11 @@ ${taskSummary}
   async _execToolIntoSlot(e, slots) {
     const result = await this._runToolGuarded(e.callName, e.args);
     e.result = result;
+    /* 每个改盘工具跑完都记一次"最近进度"：停滞看门狗（handleChat 里那条）据此判断这一轮
+       是不是真的还在往前走。一次工具执行本身最多几分钟，永远不会单独撞满 6 分钟窗口。
+       按会话分开记 —— 多会话并行时，别处的活动不许替这一条会话掩盖它自己已经卡死。 */
+    this._lastToolAt = this._lastToolAt || {};
+    this._lastToolAt[this._currentConv || "default"] = Date.now();
     let riskNote = "";
     /* 风险回灌（pancode 原创）：改盘后把静态风险评估结论一并告诉模型。
        主流 agent 只把风险给人看，Agent 自己"不知道刚才那刀有多深"；
@@ -3621,7 +3648,7 @@ ${taskSummary}
        只有改盘类工具会走到这里，而它们永远在独占段，pushChanges 不会被并发调。 */
     if (MUTATING_TOOLS.has(e.callName)) {
       try {
-        await this.pushChanges(false);
+        await this.pushChanges(false, [e.args && e.args.path]);
         const rs = this._lastRiskSummary;
         if (rs && rs.level !== "low" && rs.focus.some((f) => f.path === (e.args.path || ""))) {
           riskNote = "\n\n" + require("./risk").forAgent({ level: rs.level, score: rs.score, focus: rs.focus.filter((f) => f.path === (e.args.path || "")) });
@@ -4012,49 +4039,81 @@ ${taskSummary}
     let toolLoop = { fp: null, count: 0 };
     let failStreak = 0;
 
-    // W11：Agent 循环看门狗——单任务最大墙钟时长（默认 30 分钟，可经 cfg.agentMaxMs 配置）。
-    // 到点置 abortRef 让主循环在下一轮检查点优雅中断，防止失控长循环卡死主服务。
-    const _wd = setTimeout(() => {
+    /* W11 的看门狗以前是"单任务最多 30 分钟墙钟"，而注释里那个"可经 cfg.agentMaxMs 配置"
+       是假的 —— config.js 和设置里都没有这一项，于是任何一轮跑满 30 分钟必被掐死，
+       "连续跑七八小时"在设计上进不去（这就是"长任务经常断"里最直白的一条）。
+       真正危险的不是跑得久，是停着不动。所以拆成两条：
+         · 停滞看门狗：连续 agentStallMs（默认 6 分钟）毫无进展（新轮次 / 工具完成 / 流里出字）才中断；
+         · 墙钟兜底：agentMaxMs（默认 8 小时）到点仍中断，防真失控的死循环一直烧钱。
+       两个值现在真的可以在 pancode.config.json 里配。 */
+    const startedAt = Date.now();
+    let lastProgress = Date.now();
+    const noteProgress = () => { lastProgress = Date.now(); };
+    const _wd = setInterval(() => {
+      if (abortRef.value) return;
+      const why = watchdog.decideWatchdog({
+        startedAt, lastProgress, lastToolAt: (this._lastToolAt || {})[convId], cfg: this.cfg,
+      });
+      if (!why) return;
       abortRef.value = true;
-      this.emit({ type: "term.line", text: "[Agent] 已达最大运行时长上限，准备中断任务", cls: "tl-warn" });
-    }, (this.cfg.agentMaxMs || 30 * 60 * 1000));
+      this.emit({ type: "term.line", text: "[Agent] " + why + "，中断任务", cls: "tl-warn" });
+      this.emit({ type: "agent.state", running: true, labelKey: "running", convId });
+    }, 15000);
 
     // 临时设置 _currentConv（供 this.plan.getActive 等使用）
     const prevConv = this._currentConv;
     this._currentConv = convId;
 
-    const { clean, block } = this._resolveMentions(text);
-    /* 用户显式挑的 Skill：正文只进模型看到的那份历史，不进用户那句话。
-       旧做法是在前端把整份 body 前置拼进消息文本——气泡里糊一大段模板、
-       每轮上下文都重复带着它，而且"用技能"这件事必须靠输入框里有字才成立。
-       ⚠ 判"有没有打字"不能用 clean：_resolveMentions 会把空消息兜成 "(见下方引用上下文)"，
-       拿它判空永远为真，于是"只挂技能没打字"这条路径根本走不通。 */
-    const bare = !String(text || "").trim();
-    const picked = opts.skillId ? this.skills.getById(opts.skillId) : null;
-    if (opts.skillId && !picked) {
-      this.emit({ type: "op.error", error: "这个 Skill 已经不在了，本条消息没有带上它", userHint: "Skill 未生效（" + opts.skillId + "）：请到 Skills 面板重新选择" });
-      if (bare) {
-        /* 一个字的消息都没有、技能又是空的 → 这一轮没有任何内容可发。
-           收摊要按 finally 里那套来：看门狗不摘掉就会在 30 分钟后对着一个已结束的会话报中断。 */
-        clearTimeout(_wd);
-        this.runningConvs.delete(convId);
-        this._currentConv = prevConv;
-        this.state(false, "AI 空闲");
-        return;
+    /* 从这里到 convContext.run 的 finally 挂上之前，任何一处抛错都会留下三个后患：
+       会话永远留在 runningConvs（之后发给它的每条消息都只进队列、永不执行）、
+       看门狗定时器一直空转、以及一个没人接的 rejection（调用点不 .catch）。
+       表现就是"这条会话看着还在跑，其实早就死了"。 */
+    const abortEarly = (err) => {
+      try { clearInterval(_wd); } catch (e) {}
+      this.runningConvs.delete(convId);
+      delete this._convAborts[convId];
+      this._currentConv = prevConv;
+      this.state(false, "AI 空闲");
+      log.tag("agent").error("准备阶段抛错（已收口，不留僵尸会话）：" + (String((err && err.stack) || err).slice(0, 300)));
+      this.emit({ type: "agent.error", kind: "unknown", message: String((err && err.message) || err), hint: "任务在准备阶段就失败了（还没调用模型），没有消耗 token。重发一条即可。" });
+      this.emit({ type: "agent.done", round: 0, convId, aborted: false });
+    };
+    let clean = "", block = "", bare = false, picked = null, skillText = "", said = "", content = "";
+    try {
+      ({ clean, block } = this._resolveMentions(text));
+      /* 用户显式挑的 Skill：正文只进模型看到的那份历史，不进用户那句话。
+         旧做法是在前端把整份 body 前置拼进消息文本——气泡里糊一大段模板、
+         每轮上下文都重复带着它，而且"用技能"这件事必须靠输入框里有字才成立。
+         ⚠ 判"有没有打字"不能用 clean：_resolveMentions 会把空消息兜成 "(见下方引用上下文)"，
+         拿它判空永远为真，于是"只挂技能没打字"这条路径根本走不通。 */
+      bare = !String(text || "").trim();
+      picked = opts.skillId ? this.skills.getById(opts.skillId) : null;
+      if (opts.skillId && !picked) {
+        this.emit({ type: "op.error", error: "这个 Skill 已经不在了，本条消息没有带上它", userHint: "Skill 未生效（" + opts.skillId + "）：请到 Skills 面板重新选择" });
+        if (bare) {
+          /* 一个字的消息都没有、技能又是空的 → 这一轮没有任何内容可发。
+             收摊要按 finally 里那套来：看门狗不摘掉就会一直对着一个已结束的会话报中断。 */
+          clearInterval(_wd);
+          this.runningConvs.delete(convId);
+          this._currentConv = prevConv;
+          this.state(false, "AI 空闲");
+          return;
+        }
       }
-    }
-    if (picked) this.skills.recordUse(picked.id);
-    const skillText = picked ? this.skills.formatBodyFor(picked) : "";
-    this._maybeRemember(text);
+      if (picked) this.skills.recordUse(picked.id);
+      skillText = picked ? this.skills.formatBodyFor(picked) : "";
+      this._maybeRemember(text);
+      said = bare && picked ? "请按上面这份 Skill 的步骤开始处理当前任务。" : clean;
+      content = this._buildUserContent((skillText ? "【本轮采用 Skill：" + picked.name + "】\n" + skillText + "\n\n" : "") + said + (block ? "\n\n" + block : ""), attachments);
+      history.push({ role: "user", content });
+    } catch (e) { abortEarly(e); return; }
     this.emit({ type: "user.msg", text, convId, skill: picked ? picked.name : "" });
     this.state(true, "AI 思考中");
 
-    const said = bare && picked ? "请按上面这份 Skill 的步骤开始处理当前任务。" : clean;
-    const content = this._buildUserContent((skillText ? "【本轮采用 Skill：" + picked.name + "】\n" + skillText + "\n\n" : "") + said + (block ? "\n\n" + block : ""), attachments);
-    history.push({ role: "user", content });
 
     // 用 convContext.run 包裹：深层调用（execTool/emit/_runToolGuarded）自动获取 convId + abortRef
     // getHist 用闭包而不是快照值：history 在任务里会被压缩/截断换成新数组，深层调用每次都要读到当下那份
+    let runErr = false;   // 这一轮是不是异常收口 —— 给后面的「计划没走完」提示让路，别在错误卡上再叠一句
     await convContext.run({ convId, abortRef, getHist: () => history }, async () => {
       history = await this.compactHistory(history) || history;
       this.emit({ type: "context.usage", used: this._ctxUsed(history), budget: this._ctxLimit(), est: !(this._lastPrompt && this._lastPromptArr === history) });
@@ -4110,6 +4169,12 @@ ${taskSummary}
       try {
         for (;;) {
           rounds++;
+          noteProgress();
+          /* 每轮把当前历史写回会话表并触发一次防抖落盘。以前整轮只在 finally 落一次：
+             进程被强杀 / Electron 崩了，跑了几小时的对话现场全丢
+             （文件改动有 shadow-git 兜着，历史没有）。 */
+          this.conversations.set(convId, { history, round, ts: Date.now(), changes: this.convChanges[convId] || [] });
+          this._persistConversations();
           if (abortRef.value) { await this.say("已中断"); break; }
           if (rounds > this.cfg.llm.maxToolRounds) {
             await this.say("已达到单任务最大工具调用轮数（" + this.cfg.llm.maxToolRounds + "），先停在这里。如果还需要继续，请在「设置 → 模型」调高「单任务最大工具轮次」，或直接再发一条消息接着做。");
@@ -4151,13 +4216,19 @@ ${taskSummary}
           let tk = null, mg = null;
           let llmErr = null;
           let ctxRecovered = false;   // 每轮至多做一次"超限→压缩→重试"，避免死循环
-          for (let attempt = 0; attempt < 3; attempt++) {
+          /* 梯子按错误性质分档，不再一律"3 次、5 秒 + 10 秒就放弃"：
+               网络 / 流被掐 / 5xx → 5 次，退避 3·6·12·24 秒（累计约 45 秒 + 每次请求本身）
+               配额 429          → 3 次（llm.js 内部已经按 Retry-After 退过，别叠成十分钟）
+               密钥 / 模型名不对  → 1 次，重试一万次也是错的，只是白等
+             七八小时的长任务里上游抖一下是常态，以前那一抖就把整条任务判死、还要人来点重试。 */
+          let maxAttempts = 3;
+          for (let attempt = 0; attempt < maxAttempts; attempt++) {
             try {
               /* 传 signal：把 abortRef 接进 llm.js 的读循环。这是「用户点停止却在烧 token」那条缺陷的修法 ——
                  以前 abort(convId) 只置 abortRef.value，而 llm.js 完全没有取消入口，
                  正在跑的那次生成必然跑完。信号取消时 llm.js 抛 LlmAbortedError，下面单独接住静默收场。 */
               r = await chatStream(this.cfg.llm, messages, activeTools, {
-                onReasoning: (d) => { if (!tk) tk = this.thinkStart(); tk.delta(d); },
+                onReasoning: (d) => { noteProgress(); if (!tk) tk = this.thinkStart(); tk.delta(d); },
                 // 限流退避：往 thinking 里塞一句（旧行为，保留给不看 UI 的场景），
                 // 同时发一条 agent.state 让工具栏显示倒计时。
                 onBackoff: (b) => {
@@ -4168,6 +4239,7 @@ ${taskSummary}
                   this.emit({ type: "agent.backoff", waitSec: b.waitSec, attempt: b.attempt, maxAttempts: b.maxAttempts, convId });
                 },
                 onContent: (d) => {
+                  noteProgress();
                   if (tk) { tk.end(); tk = null; }
                   if (!mg) mg = this.msgStart();
                   mg.delta(d);
@@ -4190,10 +4262,11 @@ ${taskSummary}
                 break;   // r 保持 null → 下面 throw 前的状态检查要能区分
               }
               llmErr = e;
+              const kindNow = classifyLlmError(e, e.message);
               // 上游因上下文超限返回 4xx（"maximum context length" 等）：强制压缩历史后立即重试，
               // 而不是让整任务失败——goal 长任务在历史膨胀时最常在此处中断（模型本身正常可用）
               // 判据与卡片分类同一出处（classifyLlmError）：否则会出现"卡片说配额/卡片说压缩"各说各话
-              const isCtxRecoverable = classifyLlmError(e, e.message) === "context";
+              const isCtxRecoverable = kindNow === "context";
               if (isCtxRecoverable && !ctxRecovered) {
                 history = await this.compactHistory(history, { force: true }) || history;
                 this._aggressiveTrim(history);
@@ -4204,8 +4277,18 @@ ${taskSummary}
                 this.emit({ type: "agent.state", running: true, labelKey: "running", convId });   // 退避提示让位给正常运行态
                 continue;
               }
-              if (attempt < 2) {
-                const wait = Math.pow(2, attempt) * 5;
+              /* 分档：密钥/模型名不对一次都不该多试；配额交给 llm.js 内部的 Retry-After；
+                 其余（网络、流被掐、5xx、未知）都是"再等一下可能就好了"，给到 5 次。 */
+              if (kindNow === "key" || kindNow === "model") maxAttempts = 1;
+              else if (kindNow === "quota") maxAttempts = 3;
+              else maxAttempts = 5;
+              if (attempt < maxAttempts - 1) {
+                const wait = Math.min(24, Math.pow(2, attempt) * 3);
+                /* 重试前必须收掉这一口已经开着的卡：tk/mg 在 attempt 循环外面，不收的话
+                   下一口继续往同一张卡里续写，用户看到的是"半句 + 整句"拼在一起。
+                   收掉之后旧卡留着（那就是模型真说过的半句），新卡另起，中间有一行重试提示。 */
+                if (tk) { tk.end(); tk = null; }
+                if (mg) { mg.end(); mg = null; }
                 this.emit({ type: "term.line", text: "[Agent] LLM 调用失败（" + e.message.slice(0, 80) + "），第 " + (attempt + 1) + " 次重试，等待 " + wait + " 秒…", cls: "tl-warn" });
                 // 这段退避同样可中断：等待途中点停止不该再等完剩下的秒数
                 const waited = await sleepAbortable(wait * 1000, abortRef.signal);
@@ -4392,6 +4475,7 @@ ${taskSummary}
           });
         }
     } catch (err) {
+      runErr = true;   // 异常收口：下面的「计划没走完」提示就不叠在错误卡后面了
       const msg = (err && err.message ? err.message : String(err)).toLowerCase();
       const kind = classifyLlmError(err, msg);
       const hint = ({
@@ -4407,7 +4491,7 @@ ${taskSummary}
       // 可恢复类错误（配额/网络/上下文）都提供「重试」入口
       await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network" || kind === "context") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
     } finally {
-        clearTimeout(_wd);
+        clearInterval(_wd);
         try { this._emitArtifacts(convId); } catch (e) { /* 产物聚合失败不影响任务收尾 */ } // W6：中断/异常也聚合已写产物
         // 保存局部 history 到 conversations Map
         this.conversations.set(convId, { history, round, ts: Date.now(), changes: this.convChanges[convId] || [] });
@@ -4437,6 +4521,24 @@ ${taskSummary}
           }
         }
         this.state(false);
+        /* 普通模式（没开 Goal）跑到一半自己停了：这条会话还挂着计划、且有步骤没勾掉时，
+           以前是静默收尾 —— 用户只能自己发现"3/9 之后再没动静"，然后手动补一句"继续"。
+           这里不猜要不要自动续跑（那是 Goal 的职责），至少把停在哪、还剩什么讲明白。
+           放在 agent.done 之前发：错误卡那条路径就是先 say 再收口，顺序跟着它，别让消息排在"结束"之后。 */
+        if (!runErr && !abortRef.value && !this._goal && this.plan && this.plan.getActive) {
+          try {
+            const p = this.plan.getActive(convId);
+            const tasks = p && Array.isArray(p.tasks) ? p.tasks : [];
+            const pend = tasks.filter((x) => x.status !== "done" && x.status !== "skipped");
+            if (tasks.length && pend.length) {
+              const left = pend.slice(0, 3).map((x) => x.text).join("；");
+              const more = pend.length > 3 ? " 等 " + pend.length + " 步" : "";
+              this.emit({ type: "term.line", text: "[Agent] 任务停在计划 " + (tasks.length - pend.length) + "/" + tasks.length + "，未完成：" + left + more, cls: "tl-warn" });
+              await this.say("我先停在这里：计划还有 " + pend.length + " 步没完成 —— " + left + more
+                + "。\n\n要我接着做就说一声；想让我一路自己跑完，点上方「Goal」把目标交给我自动续跑。");
+            }
+          } catch (e) { /* 提示失败不影响收口 */ }
+        }
         this.emit({ type: "agent.done", round, convId, aborted: abortRef.value === true });
       }
     });
@@ -4473,7 +4575,8 @@ ${taskSummary}
         this.emit({ type: "goal.continue", turn: g.turns, max: GOAL_MAX_TURNS, reason: why, convId });
         this.emit({ type: "term.line", text: "[Goal] 第 " + g.turns + "/" + GOAL_MAX_TURNS + " 轮续跑：" + why.slice(0, 90), cls: "tl-info" });
         setTimeout(() => {
-          this.handleChat("【Goal 自动续跑 · 第 " + g.turns + " 轮】目标：" + this._goal + "\n" + why + "\n继续自主推进，不要停下来问我；完成一步就用 update_plan 标记，全部完成后结束。", { convId });
+          this.handleChat("【Goal 自动续跑 · 第 " + g.turns + " 轮】目标：" + this._goal + "\n" + why + "\n继续自主推进，不要停下来问我；完成一步就用 update_plan 标记，全部完成后结束。", { convId })
+            .catch((e) => log.tag("agent").error("Goal 续跑抛错：" + String((e && e.stack) || e).slice(0, 300)));
         }, 800);
       } else if (g.turns > 1) {
         this.emit({ type: "goal.settled", turns: g.turns, convId });

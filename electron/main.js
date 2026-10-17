@@ -4,7 +4,7 @@
    再用 Chromium 窗口加载本地页面，网页秒变桌面应用。
    ============================================================ */
 "use strict";
-const { app, BrowserWindow, shell, nativeTheme, Tray, nativeImage, Notification, dialog, Menu, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, nativeTheme, Tray, nativeImage, Notification, dialog, Menu, ipcMain, clipboard } = require("electron");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -44,9 +44,12 @@ app.commandLine.appendSwitch("no-sandbox");
 let win = null;
 let tray = null;
 let trayOk = false;          // 托盘没建成时绝不能"关窗不退出"——那会变成看不见又关不掉的后台进程
+let pageReady = false;       // 渲染端页面加载完没有（托盘"打开某条会话"要等它）
+let pendingOpenConv = "";    // 页面还没好时先记下要点开的会话，did-finish-load 里补发
 let quitting = false;        // 只有走「退出并终止所有任务」才置位
 let winIpcBound = false;     // ipcMain 是进程级单例：这个标志必须是模块级的，绑在 createWindow 里等于每次重建窗口都再叠一组监听
 let lastRows = [];
+let lastTrayDump = "";       // 上次打给探针的托盘菜单快照，用来去重
 let pollTimer = null;
 
 /* 启动底色跟随系统主题（对齐 styles.css --bg：dark #0a0e13 / light #fafdfb），避免开窗闪错色 */
@@ -145,7 +148,16 @@ async function createWindow() {
   /* 比"显形"再往前一步：页面（HTML + JS）真的加载完了。
      不用 WS 连接数当判据是因为全新数据根下应用会先出登录页，不连 WS 是设计行为，
      那测的是登录态而不是"界面起没起来"。 */
-  win.webContents.once("did-finish-load", () => console.log("[pc] 页面加载完成"));
+  win.webContents.once("did-finish-load", () => {
+    pageReady = true;
+    console.log("[pc] 页面加载完成");
+    /* 托盘点了某条任务但窗口当时还没起来（被销毁过 / 冷启动）：等页面就绪再补发一次 */
+    if (pendingOpenConv) {
+      const id = pendingOpenConv; pendingOpenConv = "";
+      try { win.webContents.send("pc-open-conv", id); } catch (e) { /* 页面正好被关，放弃这一次 */ }
+    }
+  });
+  win.webContents.once("did-navigate", () => { pageReady = false; });
 
   /* 外部链接交给系统默认浏览器打开 */
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -179,6 +191,17 @@ async function createWindow() {
     }
     // cancel：什么都不做，窗口留着
   };
+  /* 答完之后的处理抽出来：真对话框和探针注入走同一条路。
+     上一版没抽这层，结果"记住我的选择"坏了很久都没人发现 —— 读返回值时把 Electron 的
+     checkboxChecked 拼成了另一个同族字段名，永远是 undefined，勾了也不落盘，
+     而判据本身（close-policy.js）有单测、一直是绿的。集成点不测，就等于没修。 */
+  const handleCloseAnswer = (res) => {
+    if (!res) return;
+    const dec = closePolicy.decideClose({
+      pref: desktopPref(), quitting, trayOk, choice: res.response, remember: res.checkboxChecked === true,
+    });
+    applyClose(dec);
+  };
   win.on("close", (e) => {
     const pref = desktopPref();
     if (quitting || !trayOk || pref !== "ask") {
@@ -189,25 +212,35 @@ async function createWindow() {
       return;
     }
     e.preventDefault();                            // 这次关闭先按住，等用户答完再决定
+    /* 探针用：不弹原生模态框（没人能自动化点它），直接把答案喂进同一条处理路径 */
+    const probeAns = process.env.PANCODE_PROBE_CLOSE_ANSWER;
+    if (probeAns !== undefined && probeAns !== "") {
+      console.log("[pc] 探针注入关窗答案 " + probeAns + "（记住=" + (process.env.PANCODE_PROBE_CLOSE_REMEMBER === "1") + "）");
+      handleCloseAnswer({ response: Number(probeAns), checkboxChecked: process.env.PANCODE_PROBE_CLOSE_REMEMBER === "1" });
+      return;
+    }
     const box = closePolicy.closeDialog(taskWatch.countRunning(lastRows));
     const host = win && !win.isDestroyed() ? win : undefined;
-    Promise.resolve(dialog.showMessageBox(host, box)).then((res) => {
-      if (!res) return;
-      const dec = closePolicy.decideClose({
-        pref, quitting, trayOk, choice: res.response, remember: res.checkboxValue,
-      });
-      if (dec.action === "allow") { if (win && !win.isDestroyed()) win.close(); return; }
-      applyClose(dec);
-    }).catch((err) => {
+    Promise.resolve(dialog.showMessageBox(host, box)).then(handleCloseAnswer).catch((err) => {
       console.error("[electron] 关窗对话框没弹出来（" + (err && err.message) + "），这次不关，避免误杀后台任务");
     });
   });
 
   /* 探针专用：到点直接关窗，用来验「关窗 ≠ 退出」这条承诺（scripts/_verify_desktop.js）。
-     只在环境变量存在时生效，正常启动路径完全不受影响。 */
-  const probeCloseMs = Number(process.env.PANCODE_PROBE_CLOSE_MS || 0);
-  if (probeCloseMs > 0) {
-    setTimeout(() => { try { if (win && !win.isDestroyed()) win.close(); } catch (e) {} }, probeCloseMs);
+     只在环境变量存在时生效，正常启动路径完全不受影响。
+     支持逗号分隔的多个时刻：「记住我的选择」那条路要关两次窗——第一次问、答完并落盘，
+     第二次**不该再问**。单个时刻只能验到第一次，第二次才是那个真正的判据。 */
+  const probeCloseMs = String(process.env.PANCODE_PROBE_CLOSE_MS || "")
+    .split(",").map((s) => Number(s.trim())).filter((n) => n > 0);
+  for (const ms of probeCloseMs) {
+    setTimeout(() => {
+      try {
+        /* 先唤回再关：用户第二次点 ✕ 之前一定是从托盘把窗口捞回来的，
+           藏着直接 close() 不是真实路径（hide 状态下 close 事件的行为和可见态不一样）。 */
+        showWindow();
+        if (win && !win.isDestroyed()) win.close();
+      } catch (e) {}
+    }, ms);
   }
 
   /* 窗口可能在后端就绪之前就被关掉（用户抢那 1–2 秒，或探针到点关窗）。
@@ -264,20 +297,106 @@ function showWindow() {
   createWindow();
 }
 
+/* 托盘点某条任务 = 唤回窗口并跳到那条会话。
+   窗口可能正藏着（挂后台是常态）、可能已被销毁要重建、也可能页面还没加载完 ——
+   最后那种只能先记下，等 did-finish-load 再补发，否则 IPC 发进一个还没接听的渲染进程。 */
+function openConversation(convId) {
+  if (!convId) return;
+  /* 这一行同时是验收心跳：托盘点击没有真鼠标，能证明的边界到"主进程确实把这一条送进渲染进程"为止，
+     渲染端跳转由 scripts/_verify_trayjump.js 用假 pancodeWin 桥在真实 app.js 上验。 */
+  console.log("[pc] 托盘跳会话 " + convId + "（页面就绪=" + pageReady + "）");
+  showWindow();
+  if (!win || win.isDestroyed()) return;
+  console.log("[pc] 唤回窗口后可见=" + win.isVisible());
+  if (!pageReady || win.webContents.isLoading()) { pendingOpenConv = convId; return; }
+  try { win.webContents.send("pc-open-conv", convId); } catch (e) { pendingOpenConv = convId; }
+}
+
 function trayMenu() {
-  return Menu.buildFromTemplate([
-    { label: taskWatch.trayStatusLine(lastRows), enabled: false },
-    { type: "separator" },
-    { label: "打开 pancode 窗口", click: showWindow },
-    { label: "退出 pancode（终止所有任务）", click: () => quitWithTasks() },
-  ]);
+  const t = [{ label: taskWatch.trayStatusLine(lastRows), enabled: false }];
+  /* 分组列表：卡住要批的排最前。挂后台的人回到托盘第一眼要看到的是"有一条等你"，
+     而不是"最近发生了什么"。点一条 = 唤回窗口 + 打开那条会话。 */
+  for (const sec of taskWatch.traySections(lastRows)) {
+    t.push({ type: "separator" });
+    t.push({ label: sec.title, enabled: false });
+    for (const it of sec.items) {
+      t.push({ label: it.label, enabled: !it.disabled, click: () => openConversation(it.convId) });
+    }
+  }
+  t.push({ type: "separator" });
+  t.push({ label: "打开 pancode 窗口", click: showWindow });
+  t.push({ label: "打开工作区文件夹", click: openWorkspaceDir });
+  t.push({ label: "复制诊断信息（反馈问题用）", click: copyDiagnostics });
+  t.push({ type: "separator" });
+  t.push({ label: "退出 pancode（终止所有任务）", click: () => quitWithTasks() });
+  return Menu.buildFromTemplate(t);
+}
+
+function openWorkspaceDir() {
+  let dir = "";
+  try { dir = (backend && backend.workspaceDir && backend.workspaceDir()) || ""; } catch (e) { dir = ""; }
+  if (!dir) { trayNote("后端还没就绪", "工作区路径要等引擎起来才知道，稍后再试一次。"); return; }
+  Promise.resolve(shell.openPath(dir)).then((err) => {
+    if (err) trayNote("打不开工作区文件夹", String(err).slice(0, 160));
+  });
+}
+
+/* 内测阶段最缺的不是日志系统，是"用户怎么把现场交给我"。
+   日志环是内存的（重启即空），所以这里趁进程还活着把 warn/error 抄成一段文本进剪贴板。
+   注意任务标题是用户原话的前 80 字 —— 复制出来的东西含它，通知里明说一句。 */
+function copyDiagnostics() {
+  let snap = null;
+  try { snap = backend && backend.diagSnapshot ? backend.diagSnapshot() : null; } catch (e) { snap = null; }
+  if (!snap) { trayNote("诊断信息没取到", "后端还没就绪，稍后再试一次。"); return; }
+  const L = [];
+  L.push("pancode 诊断快照 " + new Date().toISOString());
+  L.push("版本 " + snap.version + " / API " + snap.apiStamp + " / Electron " + process.versions.electron + " / Node " + process.versions.node);
+  L.push("平台 " + process.platform + " " + process.arch + " / 窗口 " + (win && !win.isDestroyed() ? "在" : "已关（挂后台）") + " / 托盘 " + (trayOk ? "在" : "无"));
+  L.push("工作区 " + (snap.workspace || "?") + " / 关窗偏好 " + desktopPref() + " / 连接数 " + snap.wsClients);
+  const e = snap.engine || {};
+  L.push("引擎 " + (e.mode || "?") + " 模型 " + (e.model || "-") + " 地址 " + (e.baseURL || "-"));
+  const rows = snap.tasks || [];
+  L.push("");
+  L.push("任务（标题取自你的指令原文，分享前可自行删改）：");
+  if (!rows.length) L.push("  （空）");
+  for (const r of rows.slice(0, 20)) {
+    L.push("  [" + r.status + "] " + String(r.title || "").slice(0, 60) + " | 工具 " + (r.tools || 0)
+      + (r.origin === "automation" ? " | 自动化" : "")
+      + (r.waitingFor ? " | 等你批：" + String(r.waitingFor).slice(0, 40) : "")
+      + (r.error ? " | 错：" + String(r.error).replace(/\s+/g, " ").slice(0, 120) : ""));
+  }
+  const logs = snap.logs || [];
+  L.push("");
+  L.push("最近告警/错误（内存环，最多 150 条，重启即空）：");
+  if (!logs.length) L.push("  （没有 warn 以上级别的日志）");
+  for (const g of logs.slice(-60)) {
+    L.push("  " + new Date(g.ts || g.at || Date.now()).toISOString() + " [" + (g.level || "?") + "/" + (g.mod || g.module || "?") + "] "
+      + String(g.msg || g.message || "").replace(/\s+/g, " ").slice(0, 200));
+  }
+  const text = L.join("\n");
+  try { clipboard.writeText(text); } catch (err) { trayNote("剪贴板写入失败", String((err && err.message) || err).slice(0, 120)); return; }
+  console.log("[pc] 诊断信息已复制到剪贴板（" + text.length + " 字，任务 " + rows.length + " 条，日志 " + logs.length + " 条）");
+  trayNote("诊断信息已复制", "共 " + text.length + " 字（含最近告警）。直接粘贴给开发者即可。");
+}
+
+function trayNote(title, body) {
+  try { if (Notification.isSupported()) new Notification({ title, body, silent: true }).show(); } catch (e) { /* 通知发不出去就算了，不影响菜单动作 */ }
 }
 
 function refreshTray() {
   if (!tray || !trayOk) return;
   try {
     tray.setToolTip("pancode — " + taskWatch.trayStatusLine(lastRows));
-    tray.setContextMenu(trayMenu());
+    const menu = trayMenu();
+    tray.setContextMenu(menu);
+    /* 托盘菜单是原生弹层：Playwright 点不到、截图也拍不进（它在窗口之外）。
+       所以探针能断言的最强证据是"这一份菜单项确实被装配出来了"——分组顺序、每组条数上限、
+       底部几条动作项，全在这一行里。只在 PANCODE_PROBE_TRAY_DUMP=1 时打印，
+       且只在内容真的变了时打印，免得 3 秒一轮把日志刷满。 */
+    if (process.env.PANCODE_PROBE_TRAY_DUMP) {
+      const dump = menu.items.map((it) => it.label || "—").join(" | ");
+      if (dump !== lastTrayDump) { lastTrayDump = dump; console.log("[pc] 托盘菜单：" + dump); }
+    }
   } catch (e) { /* 托盘刷新失败不影响后端 */ }
 }
 
@@ -335,6 +454,18 @@ function createTray() {
     tray.on("click", showWindow);
     refreshTray();
     scheduleNext(3000);
+    /* 探针专用：到点走一遍"点了托盘里某条任务"的真处理函数。
+       原生菜单收不到合成鼠标事件，所以这里直接调 click 里那同一个函数——
+       验的是 openConversation 这条链（唤回窗口 + 发通道），不是另写一条测试路径。 */
+    const clickMs = Number(process.env.PANCODE_PROBE_TRAY_CLICK_MS || 0);
+    if (clickMs > 0) {
+      setTimeout(() => {
+        const row = lastRows.find((r) => taskWatch.isLive(r)) || lastRows[0];
+        if (!row) { console.log("[pc] 探针模拟托盘点击：任务表还是空的"); return; }
+        console.log("[pc] 探针模拟托盘点击 " + row.convId + " [" + row.status + "]");
+        openConversation(row.convId);
+      }, clickMs);
+    }
   } catch (e) {
     trayOk = false;   // 无托盘环境（精简 Linux / 远程桌面）：退回"关窗即退出"，不能留个关不掉的后台
     console.error("[electron] 托盘创建失败，关闭窗口将同时退出应用：", e.message);
@@ -345,11 +476,17 @@ function createTray() {
    默认取 userData。**显式给了 PANCODE_DATA_DIR 就听它的，并把 userData 一起搬过去**——
    两件事都是实测逼出来的：① 不搬的话验收探针直接写在用户真实的 %AppData%\pancode 上，
    "沙箱数据根"那句是假话；② userData 相同 ⇒ 单实例锁相同 ⇒ 探针想验第二个实例
-   （关窗偏好=quit 那条路）会被锁直接弹掉，永远验不到。必须在 whenReady 之前做。 */
-if (app.isPackaged) {
+   （关窗偏好=quit 那条路）会被锁直接弹掉，永远验不到。必须在 whenReady 之前做。
+   ⚠ 这一段以前挂在 `if (app.isPackaged)` 里面：dev 态探针给了 PANCODE_DATA_DIR 却只搬后端、
+   不搬 userData，于是渲染进程 localStorage / 缓存 / GPU 着色器全落进真实的 %AppData%\pancode，
+   而且和装着的那个实例抢同一把单实例锁。注释写着的事实，代码里根本没执行。 */
+{
   const given = process.env.PANCODE_DATA_DIR;
-  if (given) { try { app.setPath("userData", given); } catch (e) { console.error("[electron] userData 改不动：" + e.message); } }
-  else process.env.PANCODE_DATA_DIR = app.getPath("userData");
+  if (given) {
+    try { app.setPath("userData", given); } catch (e) { console.error("[electron] userData 改不动：" + e.message); }
+  } else if (app.isPackaged) {
+    process.env.PANCODE_DATA_DIR = app.getPath("userData");
+  }
 }
 
 app.whenReady().then(() => {

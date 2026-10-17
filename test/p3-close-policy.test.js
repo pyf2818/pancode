@@ -76,6 +76,9 @@ describe("closeDialog：文案要说清「挂后台会怎样」", () => {
     expect(box.defaultId).toBe(0);
     expect(box.cancelId).toBe(2);
     expect(box.checkboxLabel).toContain("记住");
+    // 记完之后要说清去哪改主意，否则"记住"变成"再也改不了"
+    expect(box.detail).toContain("设置");
+    expect(box.detail).toContain("关闭窗口");
   });
 });
 
@@ -165,5 +168,28 @@ describe("config.saveDesktop：偏好写盘", () => {
     expect(j).toBeTruthy();
     expect(j.permissions && j.permissions.mode).toBe("auto");
     expect(j.context && j.context.budgetTokens).toBe(654321);
+  });
+});
+
+/* 集成点守卫：判据单测全绿，"记住我的选择"照样坏了很久 —— 因为主进程读的是
+   res.checkboxValue，而 Electron 的返回值字段叫 checkboxChecked。原生模态框没人能
+   自动化点它，所以对这条路径唯一可行的静态守卫就是：读 main.js 的源码，认它接的是哪个字段。 */
+describe("electron/main.js 的接线：字段名错了，判据再对也没用", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "electron", "main.js"), "utf8");
+
+  it("remember 取的是 checkboxChecked，不是 checkboxValue", () => {
+    expect(src).toMatch(/remember:\s*res\.checkboxChecked/);
+    expect(src).not.toMatch(/checkboxValue/);
+  });
+
+  it("真对话框和探针注入共用同一个处理函数（不许两条路径各写一份判据）", () => {
+    expect(src).toMatch(/const handleCloseAnswer = \(res\) =>/);
+    expect(src).toMatch(/showMessageBox\(host, box\)\)\.then\(handleCloseAnswer\)/);
+    expect(src).toMatch(/PANCODE_PROBE_CLOSE_ANSWER/);
+    expect(src.match(/handleCloseAnswer/g).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("记住之后真的写偏好，且写的是这一次实际选的那条", () => {
+    expect(src).toMatch(/if \(dec\.rememberPref\) \{\s*setDesktopPref\(dec\.rememberPref\)/);
   });
 });

@@ -47,4 +47,56 @@ function trayStatusLine(rows) {
   return n + " 个任务进行中";
 }
 
-module.exports = { isLive, countRunning, justSettled, notifyText, trayStatusLine, LIVE };
+/* 托盘菜单的分组。顺序是"要你动手的排最前"，不是按时间：
+   挂后台的人回到托盘第一眼要看到的是"有一条卡在你这儿"，而不是"最近发生了什么"。 */
+const TRAY_GROUPS = [
+  { key: "waiting", title: "等你批", pick: (r) => r.status === "waiting" },
+  { key: "running", title: "在跑", pick: (r) => r.status === "running" || r.status === "queued" },
+  { key: "unfinished", title: "上次没跑完", pick: (r) => r.status === "interrupted" },
+  { key: "settled", title: "最近收口", pick: (r) => ["done", "failed", "aborted"].indexOf(r.status) >= 0 },
+];
+const TRAY_MAX_PER_GROUP = 6;
+
+function fmtShort(ms) {
+  const s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0") + "s";
+  return Math.floor(s / 3600) + "h" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m";
+}
+
+/* 一行菜单项：标题 + 为什么值得点开它。工具/轮次数不放进来 ——
+   托盘菜单宽度有限，而"跑了多少"不是决定要不要回去看一眼的因素，"卡在哪"才是。 */
+function trayLine(r) {
+  const title = String(r.title || "").replace(/\s+/g, " ").trim().slice(0, 42) || r.convId;
+  const bits = [];
+  if (r.origin === "automation") bits.push("自动化");
+  if (r.status === "waiting") bits.push("等你批：" + (String(r.waitingFor || "").slice(0, 24) || "一个动作"));
+  else if (r.status === "queued") bits.push("排队中");
+  else if (r.status === "failed") bits.push("出错：" + (String(r.error || "").replace(/\s+/g, " ").slice(0, 28) || "见会话"));
+  else if (r.status === "aborted") bits.push("已中断");
+  else if (r.status === "interrupted") bits.push("进程退出时中断");
+  const from = r.startedAt || r.lastEventAt || 0;
+  if (from) {
+    const to = r.endedAt && r.endedAt > from ? r.endedAt : Date.now();
+    if (r.status === "running" || r.status === "waiting" || r.status === "queued") bits.push("已 " + fmtShort(to - from));
+    else if (r.endedAt > from) bits.push(fmtShort(r.endedAt - from));
+  }
+  return bits.length ? title + " — " + bits.join(" · ") : title;
+}
+
+function traySections(rows, now) {
+  const list = rows || [];
+  const out = [];
+  for (const g of TRAY_GROUPS) {
+    const picked = list.filter(g.pick).sort((a, b) => (b.lastEventAt || 0) - (a.lastEventAt || 0));
+    if (!picked.length) continue;
+    const shown = picked.slice(0, TRAY_MAX_PER_GROUP).map((r) => ({
+      convId: r.convId, status: r.status, label: trayLine(r, now),
+    }));
+    if (picked.length > shown.length) shown.push({ label: "还有 " + (picked.length - shown.length) + " 条…", disabled: true });
+    out.push({ key: g.key, title: g.title + " " + picked.length, items: shown });
+  }
+  return out;
+}
+
+module.exports = { isLive, countRunning, justSettled, notifyText, trayStatusLine, traySections, trayLine, fmtShort, LIVE, TRAY_GROUPS, TRAY_MAX_PER_GROUP };

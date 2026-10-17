@@ -18,6 +18,12 @@ contextBridge.exposeInMainWorld("pancodeWin", {
     ipcRenderer.on("pc-win:max", wrapped);
     return () => ipcRenderer.removeListener("pc-win:max", wrapped);
   },
+  /* 托盘点了某条任务 → 唤回窗口并跳到那条会话。这里只递 id，跳不跳、怎么跳是渲染端的事。 */
+  onOpenConv: (fn) => {
+    const wrapped = (_e, id) => { try { fn(String(id || "")); } catch (e) {} };
+    ipcRenderer.on("pc-open-conv", wrapped);
+    return () => ipcRenderer.removeListener("pc-open-conv", wrapped);
+  },
 });
 
 contextBridge.exposeInMainWorld("pancodeDesktop", { platform: process.platform });

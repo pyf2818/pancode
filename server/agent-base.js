@@ -117,22 +117,53 @@ class AgentBase {
     });
   }
 
-  /* 全量改动列表（基于 Git/快照基线） → 推给前端，并附每个文件的改动风险分 */
-  async pushChanges(card) {
+  /* 全量改动列表（基于 Git/快照基线） → 推给前端，并附每个文件的改动风险分。
+
+     这条以前是 8 小时任务的隐形杀手：每个改盘类工具跑完都调一次，而它对**全部累计脏文件**
+     逐个 `git show HEAD:<path>`（实测 126ms/次）+ 读全文 + 评分，串行。50 个脏文件 × 200 次
+     工具调用 = 一万次子进程、二十多分钟纯等待，而且成本随任务时长线性涨 —— 表现就是"越跑越慢、
+     最后像卡死"。现在：① 并发跑（上限 8，不至于把 git 压垮）；② 按"内容长度 + mtime"缓存每个
+     文件的结果，只重算这次真被碰过的那几个；③ 脏文件集合一变或缓存超过 15 秒就整体重算一次，
+     所以外部改文件、终端里 commit 最多迟到 15 秒，不会永远看不见。 */
+  async pushChanges(card, hintPaths) {
     const risk = require("./risk");
-    const pre = [];
-    for (const ch of await this.git.changes()) {
+    const changed = await this.git.changes();
+    const now = Date.now();
+    if (!this._chCache) this._chCache = new Map();
+    if (now - (this._chCacheAt || 0) > 15000) this._chCache.clear();
+    this._chCacheAt = now;
+    const seen = new Set(changed.map((c) => c.path));
+    for (const k of Array.from(this._chCache.keys())) if (!seen.has(k)) this._chCache.delete(k);
+    const need = new Set(Array.isArray(hintPaths) ? hintPaths.filter(Boolean) : []);
+
+    const one = async (ch) => {
+      let stamp = "gone";
+      try {
+        const s = require("fs").statSync(this.files.safePath(ch.path));
+        stamp = s.size + ":" + Math.round(s.mtimeMs);
+      } catch (e) { /* 文件被删了就是 gone */ }
+      const hit = this._chCache.get(ch.path);
+      if (hit && hit.stamp === stamp && !need.has(ch.path)) return hit.entry;
       let cur = "", base = await this.git.baseline(ch.path);
-      if (ch.status !== "D") { try { cur = this.files.read(ch.path); } catch (e) { continue; } }
+      if (ch.status !== "D") { try { cur = this.files.read(ch.path); } catch (e) { return null; } }
       const st = diffStat(base === null ? "" : base, cur);
-      pre.push({ path: ch.path, status: ch.status, add: st.add, del: st.del, base: base === null ? "" : base, cur });
-    }
-    const hasTestTouch = pre.some((p) => /\.(test|spec)\.[jt]sx?$|(^|\/)(tests?|__tests__|spec)\//i.test(p.path));
+      const entry = { path: ch.path, status: ch.status, add: st.add, del: st.del, base: base === null ? "" : base, cur };
+      this._chCache.set(ch.path, { stamp, entry });
+      return entry;
+    };
+    /* 小并发：串行是 N×126ms，全并发会把 git 子进程一次拉满，8 是够用的折中。
+       结果按下标回填而不是 push —— 并发完成顺序不定，列表顺序要跟着 git 的口径走。 */
+    const pre = new Array(changed.length).fill(null);
+    let next = 0;
+    const worker = async () => { while (next < changed.length) { const i = next++; pre[i] = await one(changed[i]); } };
+    await Promise.all(Array.from({ length: Math.min(8, changed.length) }, worker));
+    const hasTestTouch = pre.some((p) => p && /\.(test|spec)\.[jt]sx?$|(^|\/)(tests?|__tests__|spec)\//i.test(p.path));
     const list = [], risks = [];
     for (const p of pre) {
+      if (!p) continue;
       const r = risk.assess({
         path: p.path, base: p.base, cur: p.cur, add: p.add, del: p.del, status: p.status,
-        changedFiles: pre.length, hasTestTouch,
+        changedFiles: changed.length, hasTestTouch,
       });
       risks.push(r);
       list.push({ path: p.path, status: p.status, add: p.add, del: p.del, risk: r.level, riskScore: r.score, riskReasons: r.reasons });

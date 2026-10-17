@@ -181,7 +181,7 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
   // 1) 连接 + 首字：默认 60s，超时视为服务无响应
   // 2) 流进行中：改为空闲超时（默认 90s 无任何数据才算挂起），有数据持续流动则不限总时长
   const connectMs = Math.max(15000, Number(cfg.connectTimeout) || 60000);
-  const idleMs = Math.max(20000, Number(cfg.idleTimeout) || 90000);
+  const idleMs = Math.max(5000, Number(cfg.idleTimeout) || 90000);
   /* ctl 的生命周期改成"整个请求"（原来只到响应头）：这样 extSignal 一 abort，
      fetch 的 body 流会立刻以 AbortError 结束，读循环自然被唤醒 —— 不需要在读循环里另开轮询。
      两段超时仍然分开：连接计时器照旧在拿到响应头后清除，避免长生成被整体超时误杀。 */
@@ -237,6 +237,10 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
     // 解析不出来才退回指数退避。以前只用 parseInt，HTTP-date 会被算成 NaN。
     let waitSec = parseRetryAfter(retryAfter);
     if (!Number.isFinite(waitSec) || waitSec <= 0) waitSec = Math.min(30, Math.pow(2, attempt) * 3);
+    /* 封顶 120 秒：以前上游给多大就睡多大，一个畸形/恶意的 Retry-After: 3600 会让这一口裸睡一小时，
+       还把同端点+模型的退避桶一起推后（其它会话在 waitBackoff 里陪着等）。
+       120 秒足够跨过常见的 60 秒 RPM 窗口，再长就该让它失败、由上层换模型或人来处理。 */
+    waitSec = Math.min(120, Math.max(1, waitSec));
     // 抖动：多个会话的退避窗口同时到期时，同步重试会把网关再打一次。
     // ±20% 抖动把重试时刻摊开；+500ms 兜底，避免窗口末尾贴着边界重试。
     const jitterMs = waitSec * 1000 * (0.8 + Math.random() * 0.4);
@@ -351,6 +355,12 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
     _idleErr = new Error("LLM 流空闲超时（" + Math.round(idleMs / 1000) + "s 无数据），流可能已挂起");
   }
   armIdle();
+  /* 只有拿到 finish_reason 才算这一口真的说完了。
+     旧判据是「finish || content || toolCalls」—— 半截正文、半截工具参数都算数，于是流被
+     空闲超时或网络掐断时，调用方拿到的是"看起来正常结束"的一次生成：没有 tool_calls 就
+     直接收尾，任务停在计划 3/9 却被记成完成（用户截图里那条即此形）。
+     下面三处都只认 finish_reason，其余一律抛错，交给 agent 层的重试梯子。 */
+  const trulyDone = () => !!acc.finish;
   /* 整段读循环放进 try/finally：ext 监听必须活到请求真正结束为止。
      之前我把 unlinkExt() 撒在各个分支上（429 递归前、stream_options 递归前、!res.ok 前），
      漏一处就等于中途把监听摘了 —— 表现是"停止按钮偶尔没反应"，而且极难定位。
@@ -369,20 +379,20 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
         throw new LlmAbortedError();
       }
       if (_idleErr) {
-        // 空闲超时触发的 cancel 会 reject read()：已收到实质内容则保留部分结果，否则报空闲超时
-        if (acc.finish || acc.content || acc.toolCalls.length) {
+        // 空闲超时触发的 cancel 会 reject read()：只有真拿到 finish_reason 才算说完，否则报空闲超时
+        if (trulyDone()) {
           if (idleTimer) clearTimeout(idleTimer);
-          if (cb && cb.onReasoning) cb.onReasoning("[SSE 流空闲超时，已保留已收到的部分结果]");
+          if (cb && cb.onReasoning) cb.onReasoning("[SSE 流空闲超时，收尾时已收到 finish_reason，按完成处理]");
           break;
         }
         if (idleTimer) clearTimeout(idleTimer);
         throw _idleErr;
       }
       // SSE 流中途断开（ECONNRESET / socket hang up / 网络抖动）
-      // 若已收到 finish_reason 或有实质内容，当作正常完成返回（避免重试导致前端内容重复）
-      if (acc.finish || acc.content || acc.toolCalls.length) {
+      // 同上：没有 finish_reason 的半截内容不是完成，抛出去让上层重试，别把断句当答案
+      if (trulyDone()) {
         if (idleTimer) clearTimeout(idleTimer);
-        if (cb && cb.onReasoning) cb.onReasoning("[SSE 流中断，已保留已收到的部分结果]");
+        if (cb && cb.onReasoning) cb.onReasoning("[SSE 流中断，收尾时已收到 finish_reason，按完成处理]");
         break;
       }
       if (idleTimer) clearTimeout(idleTimer);
@@ -398,8 +408,8 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
       if (extSignal && extSignal.aborted) throw new LlmAbortedError();
       // 空闲超时触发的 cancel 会让 read() 以 done:true 结束而非抛错，在此显式提示
       if (_idleErr) {
-        if (acc.finish || acc.content || acc.toolCalls.length) {
-          if (cb && cb.onReasoning) cb.onReasoning("[SSE 流空闲超时，已保留已收到的部分结果]");
+        if (trulyDone()) {
+          if (cb && cb.onReasoning) cb.onReasoning("[SSE 流空闲超时，收尾时已收到 finish_reason，按完成处理]");
         } else {
           throw _idleErr;
         }

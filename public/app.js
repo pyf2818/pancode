@@ -2359,8 +2359,6 @@ async function shotBlobUrl(name) {
 }
 
 function handleEvent(ev) {
-  /* 任务收件箱：状态一变就（合并地）重拉一次任务表，比纯轮询跟手 */
-  if (typeof tiOnEvent === "function") { try { tiOnEvent(ev); } catch (e) {} }
   /* 多会话并行：聊天 DOM 类消息按 convId 写入对应会话的 pane（后台会话实时可见），
      其余消息（文件/终端/计划/编排等全局 UI）直接分发 */
   const CHAT_DOM_TYPES = new Set(["user.msg", "think.start", "think.delta", "think.end", "msg.start", "msg.delta", "msg.end", "tool.start", "tool.body", "tool.image", "tool.end", "tool.ask_choice", "agent.error"]);
@@ -4275,6 +4273,16 @@ function deleteConv(id) {
     else startNewConv(true);
   }
   renderConvList();
+}
+
+/* 托盘点了某条任务：唤回窗口 + 切到 Agents + 打开那条会话。
+   主进程那边已经排过队（页面没就绪会补发），所以这里能假定应用已经起来。 */
+if (window.pancodeWin && typeof window.pancodeWin.onOpenConv === "function") {
+  window.pancodeWin.onOpenConv((id) => {
+    if (!id) return;
+    try { if (state.mode !== "agents") switchMode("agents"); } catch (e) {}
+    try { openConv(id); } catch (e) { console.warn("[ui] 托盘跳会话失败 " + id + "：" + (e && e.message)); }
+  });
 }
 
 function startNewConv(announce) {

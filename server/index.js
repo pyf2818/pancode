@@ -206,7 +206,17 @@ function observeTask(ev, userKey) {
       case "chat.queued": taskBoard.note(userKey, convId, { queueLen: ev.position }); break;
       case "chat.dequeued": taskBoard.note(userKey, convId, { queueLen: ev.remaining }); break;
       case "agent.error": taskBoard.end(userKey, convId, "failed", { error: String(ev.message || "").slice(0, 300) }); break;
-      case "agent.done": taskBoard.end(userKey, convId, ev.aborted ? "aborted" : "done", { waitingFor: "" }); break;
+      case "agent.done": {
+        /* 出错收口时 finally 照样会发一条 agent.done —— 那句是"这一轮结束了"，不是"成功了"。
+           以前它无条件把 failed 盖回 done，于是跑挂的任务在任务表 / 托盘 / 系统通知里全变成"完成"，
+           用户只能看见"计划 3/9 之后就没动静"，这就是"经常无故中断"里被吞掉的那一半。
+           已经判失败的行保持 failed；下一轮 begin() 会把 error 清掉，不会串台。 */
+        const cur = taskBoard._find(userKey, convId);
+        const keep = !!(cur && cur.status === "failed");
+        taskBoard.end(userKey, convId, keep ? "failed" : (ev.aborted ? "aborted" : "done"),
+          keep ? { waitingFor: "" } : { waitingFor: "", error: "" });
+        break;
+      }
     }
   } catch (e) { /* 任务表绝不反过来影响主链路 */ }
 }
@@ -2503,7 +2513,8 @@ wss.on("connection", (ws) => {
            （对齐 Claude Code 的 slash command——/skill-name 可以不带参数）。 */
         if (txt.trim() || skillId) {
           // 多会话并行：不切换会话，直接传 convId 给 handleChat（按连接绑定的用户实例）
-          uEng.handleChat(txt, { convId: m.convId, attachments: Array.isArray(m.attachments) ? m.attachments : [], skillId });
+          uEng.handleChat(txt, { convId: m.convId, attachments: Array.isArray(m.attachments) ? m.attachments : [], skillId })
+            .catch((e) => log.tag("agent").error("handleChat 抛错（会话已收口，不会留下永远在跑的假行）：" + String((e && e.stack) || e).slice(0, 300)));
         }
         break;
       }
@@ -2914,10 +2925,25 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 /* 桌面主进程（electron/main.js）与后端同进程，这几个入口是给它直接调的，别改回 HTTP：
    /api/tasks 在登录闸门后面，而主进程手里没有 userToken——以前它每 3 秒轮一次一直吃 401，
    结果是托盘状态行永远报"没有任务在跑"、任务收口的系统通知从来没弹出来过（窗口挂着后台也没用）。 */
+const readTaskRows = () => { try { return taskBoard ? taskBoard.snapshot(null) : []; } catch (e) { return []; } };
 module.exports = {
   shutdown,
   getTaskBoard: () => taskBoard,
-  taskRows: () => { try { return taskBoard ? taskBoard.snapshot(null) : []; } catch (e) { return []; } },
+  taskRows: readTaskRows,
   desktopPref: () => (cfg.desktop && cfg.desktop.closeAction) || "ask",
   setDesktopPref: (v) => { try { return configMod.saveDesktop(cfg, { closeAction: v }).closeAction; } catch (e) { return ""; } },
+  workspaceDir: () => WS_DIR,
+  /* 托盘「复制诊断信息」的数据源。日志环是内存的（刻意不落盘，重启即空），
+     所以出问题后要趁进程还活着抄走 —— 这也是内测阶段唯一能把"我这崩了"变成可查证据的路径。
+     注意 tasks 里带的是用户指令的前 80 字：复制出来的文本会含它，文案里要提醒一句。 */
+  diagSnapshot: () => {
+    let logs = [];
+    try { logs = log.readRing({ limit: 150, level: "warn" }) || []; } catch (e) { logs = []; }
+    let engine = null;
+    try { engine = configMod.publicInfo(cfg); } catch (e) { engine = null; }
+    return {
+      version: VERSION, apiStamp: API_STAMP, workspace: WS_DIR,
+      wsClients: clients.size, engine, tasks: readTaskRows(), logs,
+    };
+  },
 };

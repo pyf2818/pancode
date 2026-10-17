@@ -420,6 +420,7 @@ describe("compactHistory — 摘要模板与断路器（P1-B6）", () => {
 
   it("断路器：连续两次自动压缩压不动，就不再花第三次模型调用", async () => {
     const a = agent(overBudget());
+    a._currentConv = "cA";                     // 断路器按会话分桶，这里显式站在某一条会话里
     const m = fakeModel(""); m.install(a);
     const h = heavy(6);
     expect(a._estTokens(h)).toBeGreaterThan(a._compactSpec().thresholdTokens);  // 夹具自检：确实超线
@@ -427,7 +428,7 @@ describe("compactHistory — 摘要模板与断路器（P1-B6）", () => {
     await a.compactHistory(h);
     await a.compactHistory(h);
     expect(m.calls).toBe(2);
-    expect(a._compactStopped).toBe(true);
+    expect(a._compactStopped.cA).toBe(true);
     expect(a.emitted.some((e) => e.type === "context.compact_breaker")).toBe(true);
     const line = a.emitted.filter((e) => e.type === "term.line" && /暂停自动摘要/.test(e.text || "")).pop();
     expect(line).toBeTruthy();
@@ -437,19 +438,35 @@ describe("compactHistory — 摘要模板与断路器（P1-B6）", () => {
     expect(JSON.stringify(h)).toBe(snap);         // 停手不等于偷偷改历史
   });
 
+  it("断路器只管压不动的那条会话：另一条照样该压（一个引擎服务这个用户的所有会话）", async () => {
+    const a = agent(overBudget());
+    const m = fakeModel(""); m.install(a);
+    a._currentConv = "cA";
+    await a.compactHistory(heavy(6));
+    await a.compactHistory(heavy(6));
+    expect(a._compactStopped.cA).toBe(true);
+    const before = m.calls;
+    a._currentConv = "cB";                        // 切到另一条并行会话
+    await a.compactHistory(heavy(6));
+    expect(m.calls).toBe(before + 1);             // cA 的断路器不许把 cB 也关掉
+    expect(a._compactStopped.cA).toBe(true);
+    expect(a._compactStopped.cB).toBeFalsy();
+  });
+
   it("手动 /compact 会复位断路器：压成功一次，自动那一遍重新开工", async () => {
     const a = agent(overBudget());
+    a._currentConv = "cA";
     const box = { calls: 0 };
     let mode = "fail";
     a._chatStream = async () => { box.calls++; return { content: mode === "fail" ? "" : goodSummary }; };
     const h = heavy(6);
     await a.compactHistory(h);
     await a.compactHistory(h);
-    expect(a._compactStopped).toBe(true);
+    expect(a._compactStopped.cA).toBe(true);
     mode = "ok";
     const out = await a.compactHistory(h, { force: true });   // 用户明确要压，就真压
     expect(out).not.toBe(h);
-    expect(a._compactStopped).toBe(false);
+    expect(a._compactStopped.cA).toBe(false);
     const before = box.calls;
     await a.compactHistory(h);                                // 自动那一遍恢复工作
     expect(box.calls).toBe(before + 1);
@@ -457,16 +474,17 @@ describe("compactHistory — 摘要模板与断路器（P1-B6）", () => {
 
   it("压下来一次就把连续计数清零，不会攒到断路器上", async () => {
     const a = agent(overBudget());
+    a._currentConv = "cA";
     const box = { calls: 0 };
     let reply = "啰嗦".repeat(40000);              // 第一次：摘要比原文还长 → 无收益
     a._chatStream = async () => { box.calls++; return { content: reply }; };
     const h = heavy(6);
     await a.compactHistory(h);
-    expect(a._compactNoop).toBe(1);
-    expect(a._compactStopped).toBeFalsy();         // 一次失败不该就停手
+    expect(a._compactNoop.cA).toBe(1);
+    expect(a._compactStopped.cA).toBeFalsy();         // 一次失败不该就停手
     reply = goodSummary;                           // 第二次：真的压下来了
     const out = await a.compactHistory(h);
     expect(out).not.toBe(h);
-    expect(a._compactNoop).toBe(0);
+    expect(a._compactNoop.cA).toBe(0);
   });
 });
