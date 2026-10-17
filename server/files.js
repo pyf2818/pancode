@@ -367,8 +367,13 @@ class FileStore {
   }
 
   /* ---------- 外部变更监听 ---------- */
+  /* 回调收到的是一批相对路径（防抖窗口内所有事件的并集）。
+     以前只把最后一个 rel 传出去，而调用方拿到也不看，直接全量重读 ≤500 个文件再整包广播；
+     八小时任务里测试/格式化这类外部改盘很频繁，等于每 120ms 防抖到期就全文重读一遍。
+     空串代表"这条事件说不清改了谁"（fs.watch 有时会只给目录事件），调用方必须据此走全量。 */
   startWatch(onChange) {
     this.onExternalChange = onChange;
+    this._pendingChanges = new Set();
     const watchDir = (dir) => {
       if (this.watchers.has(dir) || this.watchers.size >= MAX_WATCH_DIRS) return;
       let w;
@@ -378,11 +383,16 @@ class FileStore {
           const rel = fname ? this.rel(path.join(dir, String(fname))) : null;
           // 忽略 2 秒内自身写入
           if (rel && this._selfWrites.has(rel) && Date.now() - this._selfWrites.get(rel) < 2000) return;
+          this._pendingChanges.add(rel || "");
           clearTimeout(this._debounce);
           this._debounce = setTimeout(() => {
             // 目录结构可能变化，重扫并补挂监听
             this._watchAllDirs(watchDir);
-            if (this.onExternalChange) this.onExternalChange(rel);
+            if (this.onExternalChange) {
+              const batch = Array.from(this._pendingChanges);
+              this._pendingChanges = new Set();
+              this.onExternalChange(batch);
+            }
           }, 120);
         });
         w.on("error", () => {});

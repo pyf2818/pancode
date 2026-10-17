@@ -3316,17 +3316,30 @@ ${taskSummary}
     // 在 8K 窗口下又几乎压不动，只有比例能随模型伸缩。
     const sel = this._selectRetainByTokens(history, spec.retainTokens);
     if (sel.head.length < 2) return history;      // 可压区太小，压了也白压
-    const head = sel.head, recent = sel.recent;
+    const ledger = require("./user-ledger");
+    /* 台账每轮压缩后被放在摘要之后，随着轮次推进会落进可压区（甚至 recent 里）。
+       先把这条读掉、再从两侧剔掉：不读沿革就断档，不剔就会出现两条台账、或被当普通
+       system 消息摘要掉（靠"电话游戏"传下去，越传越短）。 */
+    const prevLedgerMsg = ledger.findLedger(history);
+    const headNoLedger = ledger.stripLedger(sel.head);
+    const recent = ledger.stripLedger(sel.recent);
     /* 关键旧消息保留（P1-5/F4）：只保留「用户意图」。
        原来这里还会捞出命中关键词（已写入/失败/apply_edit…）的 role:"tool" 结果 ——
-       但 criticalKept 永远带不回它对应的 assistant.tool_calls（isCritical 对 assistant
-       恒为 false），于是每命中一次就产出一枚孤儿 tool 消息，压缩后第一次请求必然不成对。
-       tool 结果里的事实由摘要模板负责，不做逐条保留。 */
-    const isCritical = (m) => m.role === "user";
-    const criticalKept = head.filter(isCritical);                 // 用户消息始终保留
-    /* 摘要输入是整个 head（含 user 消息）：模板要求逐条列【全部用户消息】并引用原话，
-       把 user 消息从输入里摘掉，模型就只能凭空编。保留侧原样带着它们，不多花一份钱。 */
-    const summary = await this._summarize(head);
+       但永远带不回它对应的 assistant.tool_calls（对 assistant 恒为 false），于是每命中一次
+       就产出一枚孤儿 tool 消息，压缩后第一次请求必然不成对。tool 结果里的事实由摘要模板负责。
+       而"所有用户消息一律原文保留"在七八小时任务里同样致命：保留侧单调涨，
+       迟早 after >= beforeEst 判成"摘要不比原文短"→ 连续两次触发断路器 → 自动摘要对该会话关闭
+       → 上下文一路涨到上游 400。Goal 自动续跑每轮还多注入一条长用户消息，涨得更快。
+       现在按预算只留最近几条原文，更早的折成一行进台账——字没丢，那一轮的全文仍在摘要输入里。 */
+    const bud = ledger.budgetsOf(spec.retainTokens);
+    const estText = (t) => this._estTokens([{ content: t }]);
+    const picked = ledger.pickKeepUsers(headNoLedger.filter((m) => m.role === "user"), bud.keepUsersTokens, estText);
+    const prevLedger = ledger.parseLedger(prevLedgerMsg && prevLedgerMsg.text);
+    const ledgerText = ledger.buildLedger(prevLedger, picked.dropped, { budgetTokens: bud.ledgerTokens, est: estText });
+    const ledNow = ledger.parseLedger(ledgerText);
+    /* 摘要输入是整个可压区（含 user 消息）：模板要求逐条列【全部用户消息】并引用原话，
+       把 user 消息从输入里摘掉，模型就只能凭空编。台账那条不参与——它是我们自己维护的。 */
+    const summary = await this._summarize(headNoLedger);
     if (!summary) {
       return this._compactAbandoned(history, "摘要没能生成（模型没回或调用失败）", { before: beforeEst, forced: !!opts.force });
     }
@@ -3334,7 +3347,8 @@ ${taskSummary}
       /* 提醒和摘要挂在同一条消息上，不另起一条：多一条 system 就多一个可能被上游挑刺的位置，
          而这条提醒的作用域本来就只到「读懂上面那段摘要」。 */
       { role: "system", content: SUMMARY_PREFIX + summary + "\n\n" + COMPACT_POST_REMINDER },
-      ...criticalKept,
+      ...(ledgerText ? [{ role: "system", content: ledgerText }] : []),
+      ...picked.keep,
       ...recent,
     ];
     const after = this._estTokens(newHist);
@@ -3345,26 +3359,30 @@ ${taskSummary}
     }
     this._compactNoop[ck] = 0;   // 这一次真压下来了，本会话的连续计数清零（别人的不清）
     /* 压掉的是原文、留下的是摘要——这条记录是"为什么现在看不见第 N 轮说过的话"的唯一答案。
-       不写进决策链，事后只能看到一段摘要，分不清是模型忘了还是被压了。 */
+       不写进决策链，事后只能看到一段摘要，分不清是模型忘了还是被压了。
+       降级成台账行的那些用户消息也算"压掉了"，但 ledgerLines/ledgerFolded 说清它们去了哪里。 */
+    const droppedCount = headNoLedger.length - picked.keep.length;
     this._decision({ kind: "compact", action: "compressed",
-      reason: (opts.force ? "用户 /compact" : "水位过线自动") + "：压掉 " + (head.length - criticalKept.length) + " 条，保留 " + recent.length + " 条",
-      detail: { before: beforeEst, after, dropped: head.length - criticalKept.length, keptCritical: criticalKept.length, forced: !!opts.force } });
+      reason: (opts.force ? "用户 /compact" : "水位过线自动") + "：压掉 " + droppedCount + " 条，保留 " + recent.length + " 条" + (ledNow.folded ? "，沿革台账里已折 " + ledNow.folded + " 条用户要求" : ""),
+      detail: { before: beforeEst, after, dropped: droppedCount, keptCritical: picked.keep.length, ledgerLines: ledNow.lines.length, ledgerFolded: ledNow.folded, forced: !!opts.force } });
     /* 换成新数组之后，实测锚点量的还是压缩前那一整包：不废掉的话下一轮的 used
        依旧停在高位，刚压完又立刻再压一遍 —— 正是断路器要拦的那种"成功的无用功"。 */
     this._dropCtxAnchor();
     this.emit({
       type: "context.compact",
       before: used, after, budget: spec.thresholdTokens,
-      dropped: head.length - criticalKept.length,
-      keptCritical: criticalKept.length,
+      dropped: droppedCount,
+      keptCritical: picked.keep.length,
+      ledgerLines: ledNow.lines.length,
+      ledgerFolded: ledNow.folded,
       keptRecent: recent.length,
       forced: !!opts.force,
       summary: summary.slice(0, 1200),
     });
-    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(after/1000) + "k，保留最近 " + sel.recentGroups + " 轮共 " + recent.length + " 条 + 关键消息）", cls: "tl-info" });
-    // 压缩后同时归纳记忆
+    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(after/1000) + "k，保留最近 " + sel.recentGroups + " 轮共 " + recent.length + " 条 + " + picked.keep.length + " 条用户原文" + (ledNow.lines.length ? " + 沿革台账 " + ledNow.lines.length + " 行" : "") + "）", cls: "tl-info" });
+    // 压缩后同时归纳记忆（拿掉台账那条：它是我们自己写的摘要产物，不该再被提炼成记忆）
     if (this.cfg.memory && this.cfg.memory.enabled) {
-      this._consolidateMemory(head);
+      this._consolidateMemory(headNoLedger);
     }
     return newHist;
   }

@@ -501,6 +501,10 @@ function agentSettings(cfg) {
     lsp: cfg.lsp,
     pricing: cfg.pricing,
     timeouts: cfg.timeouts,
+    /* 长任务看门狗的两个键也要回给界面。上一轮 agentMaxMs 的教训就是"注释写着可配置、
+       实际既没有键也没有入口"——能配的东西必须看得见当前值，否则用户只能猜。 */
+    agentStallMs: cfg.agentStallMs,
+    agentMaxMs: cfg.agentMaxMs,
   };
 }
 

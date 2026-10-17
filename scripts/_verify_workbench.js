@@ -332,10 +332,15 @@ async function main() {
       };
     });
     ok("Agent 分区渲染「长任务时限」分组", limits.found === true);
-    ok("三个时限输入都在", limits.found && limits.labels.length === 3, JSON.stringify(limits.labels));
-    ok("输入值取自服务端真实设置（600/1200/120）", (limits.vals || []).join(",") === "600,1200,120", JSON.stringify(limits.vals));
+    ok("五个时限输入都在（三个原有 + 看门狗两个）", limits.found && limits.labels.length === 5, JSON.stringify(limits.labels));
+    ok("输入值取自服务端真实设置（600/1200/120 + 停滞 6 分钟 + 墙钟 8 小时）",
+      (limits.vals || []).join(",") === "600,1200,120,6,8", JSON.stringify(limits.vals));
     ok("审批时限的说明讲清了后果", /你拒绝了|自动放弃/.test(limits.descs || ""), (limits.descs || "").slice(0, 90));
     ok("命令时限的说明指向后台进程方案", /start_process/.test(limits.descs || ""), (limits.descs || "").slice(0, 90));
+    /* 看门狗这两个键以前只在配置文件里：跑得越久越需要调它们，而"能配却看不见"
+       正是 agentMaxMs 那个缺陷（注释写着可配置、实际根本没这个键）的温床。 */
+    ok("停滞阈值的说明讲清「只要还在动就不算停」", /还在动|没有任何进展/.test(limits.descs || ""), (limits.descs || "").slice(-260));
+    ok("墙钟上限的说明承诺到点会说原因、不是静默停", /不是静默停止|说明原因/.test(limits.descs || ""), (limits.descs || "").slice(-140));
     await page.locator("#wbBody .wb-group", { hasText: "长任务时限" }).locator("input[type=number]").nth(1).fill("1800");
     await page.keyboard.press("Enter");
     await wait(500);
@@ -348,7 +353,36 @@ async function main() {
         .find((x) => /长任务时限/.test((x.querySelector(".wb-group-title") || {}).textContent || ""));
       return g ? [...g.querySelectorAll("input[type=number]")].map((e) => e.value).join(",") : null;
     });
-    ok("面板上的值与服务端一致（不会显示成没生效）", reloaded === "600,1800,120", String(reloaded));
+    ok("面板上的值与服务端一致（不会显示成没生效）", reloaded === "600,1800,120,6,8", String(reloaded));
+    /* 两个新键各改一次：单位换算（分钟→毫秒、小时→毫秒）与落库、回填都得对上。
+       上一版把"能改"写在注释里却没有入口，就是这个换算与键名从没被任何一层验过。 */
+    const stallInput = page.locator("#wbBody .wb-group", { hasText: "长任务时限" }).locator("input[type=number]").nth(3);
+    await stallInput.fill("10");
+    await page.keyboard.press("Enter");
+    await wait(450);
+    const maxInput = page.locator("#wbBody .wb-group", { hasText: "长任务时限" }).locator("input[type=number]").nth(4);
+    await maxInput.fill("12");
+    await page.keyboard.press("Enter");
+    await wait(500);
+    const persisted2 = await req("GET", "/api/config", null, token);
+    ok("停滞 10 分钟存成 600000 毫秒（单位换算在界面这一侧，服务端只认毫秒）",
+      persisted2.agent && persisted2.agent.agentStallMs === 600000,
+      JSON.stringify(persisted2.agent && persisted2.agent.agentStallMs));
+    ok("墙钟 12 小时存成 43200000 毫秒",
+      persisted2.agent && persisted2.agent.agentMaxMs === 43200000,
+      JSON.stringify(persisted2.agent && persisted2.agent.agentMaxMs));
+    const reloaded2 = await page.evaluate(() => {
+      const g = [...document.querySelectorAll("#wbBody .wb-group")]
+        .find((x) => /长任务时限/.test((x.querySelector(".wb-group-title") || {}).textContent || ""));
+      return g ? [...g.querySelectorAll("input[type=number]")].map((e) => e.value).join(",") : null;
+    });
+    ok("重新画出来的面板显示 10 分钟 / 12 小时（回填走的是同一份配置）", reloaded2 === "600,1800,120,10,12", String(reloaded2));
+    /* 越界值不许静默收下：服务端会 warn 并保留原值（与 permissions.mode 同一口径） */
+    const clamped = await req("POST", "/api/config", { section: "agent", patch: { agentStallMs: 1000, agentMaxMs: 999999999999 } }, token);
+    const afterClamp = await req("GET", "/api/config", null, token);
+    ok("两个越界值一起提交时，原值都保住（600000 / 43200000），不是收下再说没生效",
+      clamped.ok === true && afterClamp.agent.agentStallMs === 600000 && afterClamp.agent.agentMaxMs === 43200000,
+      JSON.stringify(afterClamp.agent && { s: afterClamp.agent.agentStallMs, m: afterClamp.agent.agentMaxMs }));
     await page.screenshot({ path: path.join(OUT, "wb_longtask_limits.png") }).catch(() => {});
     await page.evaluate(() => window.closeWorkbench());   // 全屏工作台会拦住聊天区点击，先关掉
     await wait(250);

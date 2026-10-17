@@ -853,6 +853,14 @@ function wbRenderAgent(box) {
   g3.appendChild(wbInput(t("wbAgentwbInputT137"), t("wbAgentwbInputT138"),
     to.toolSec == null ? 120 : to.toolSec,
     (v) => wbSave("agent", { timeouts: { toolSec: v } }), { min: 15, max: 3600, step: 15 }, "tool 工具 guard 兜底"));
+  /* 看门狗的两个旋钮（server/run-watchdog.js）：跑得久不是问题，停着不动才是。
+     以前只有配置文件能改，而"能配却看不见"正是上一轮 agentMaxMs 那种缺陷的温床。 */
+  g3.appendChild(wbInput(t("wbAgentStallMin"), t("wbAgentStallMinTip"),
+    Math.min(60, Math.max(1, Math.round((Number(ag.agentStallMs) || 360000) / 60000))),
+    (v) => wbSave("agent", { agentStallMs: Math.round(Number(v) * 60000) }), { min: 1, max: 60, step: 1 }, "stall watchdog 停滞 卡住 看门狗 分钟"));
+  g3.appendChild(wbInput(t("wbAgentMaxHours"), t("wbAgentMaxHoursTip"),
+    Math.min(48, Math.max(0.5, Math.round(((Number(ag.agentMaxMs) || 28800000) / 3600000) * 2) / 2)),
+    (v) => wbSave("agent", { agentMaxMs: Math.round(Number(v) * 3600000) }), { min: 0.5, max: 48, step: 0.5 }, "max wall clock 墙钟 上限 小时 长任务"));
   box.appendChild(g3);
 }
 

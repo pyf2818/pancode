@@ -487,4 +487,135 @@ describe("compactHistory — 摘要模板与断路器（P1-B6）", () => {
     expect(out).not.toBe(h);
     expect(a._compactNoop.cA).toBe(0);
   });
+
+  /* ============================================================
+     沿革台账接进压缩之后要验的四件事（马拉松那一档）。
+     旧的"用户消息一律原文保留"不会报错，它只是让保留侧单调涨：
+     涨到某一次 after >= beforeEst，就判成"摘要不比原文短"，连续两次触发断路器，
+     自动摘要对这个会话永久关闭 —— 八小时任务就是在这里断的。
+     ============================================================ */
+  const { USER_LEDGER_PREFIX, parseLedger } = require("../server/user-ledger");
+  /* 一轮 = 一条长用户消息（Goal 自动续跑那种长度）+ 一个写类工具结果（便宜的那一遍帮不上） */
+  function marathon(n, from) {
+    const h = [];
+    for (let i = from || 0; i < (from || 0) + n; i++) {
+      h.push({ role: "user", content: "M" + i + " " + "这条要求由 Goal 自动续跑注入，带着目标与上一轮的判断，写得很长。".repeat(8) });
+      h.push(asst([T("g" + i, "write_file")]));
+      h.push(tool("g" + i, "ROUND-" + i + " " + big(80)));
+    }
+    return h;
+  }
+  const ledgersIn = (h) => h.filter((m) => m && m.role === "system" && String(m.content || "").indexOf(USER_LEDGER_PREFIX) === 0);
+
+  it("马拉松：反复压缩每一次都在缩，用户侧的保留量始终有界", async () => {
+    const a = agent(overBudget());
+    a._currentConv = "cRun";
+    a._chatStream = async () => ({ content: goodSummary });
+    const spec = a._compactSpec();
+    const bud = require("../server/user-ledger").budgetsOf(spec.retainTokens);
+    let h = marathon(10);
+    let seen = 10;
+    for (let pass = 0; pass < 4; pass++) {
+      const before = a._estTokens(h);
+      const out = await a.compactHistory(h);                        // 自动那一遍（不 force，断路器该响就得响）
+      expect(out).not.toBe(h);
+      const after = a._estTokens(out);
+      expect(after).toBeLessThan(before);                            // 每一次都真的压下去了，不是"成功的无用功"
+      expect(a._compactStopped.cRun).toBeFalsy();
+      const led = ledgersIn(out);
+      expect(led.length).toBe(1);
+      /* 台账自己有硬上限；用户原文的条数也不随总轮数线性涨（旧写法是"见过几条留几条"）。
+         比"每一次都比上一次小"更该断的是这个：最近几轮的原文本来就该占位，
+         不该跟着涨的是**被永久保留的那一侧**。 */
+      expect(a._estTokens([led[0]])).toBeLessThanOrEqual(bud.ledgerTokens + 60);
+      expect(out.filter((m) => m.role === "user").length).toBeLessThanOrEqual(14);
+      expect(out.filter((m) => m.role === "user").length).toBeLessThan(seen);
+      h = out.concat(marathon(4, 10 + pass * 4));                    // 接着跑几轮，攒新的长要求
+      seen += 4;
+    }
+    expect(a.emitted.filter((e) => e.type === "context.compact_breaker").length).toBe(0);
+  });
+
+  it("台账只有一条，且用户要求要么留原文、要么在台账里、要么计入折叠条数", async () => {
+    const a = agent(overBudget());
+    a._currentConv = "cLedger";
+    a._chatStream = async () => ({ content: goodSummary });
+    let h = marathon(12);
+    let seen = 12;
+    for (let pass = 0; pass < 3; pass++) {
+      h = await a.compactHistory(h);
+      const led = ledgersIn(h);
+      expect(led.length).toBe(1);                                    // 第二条就是"没剥离旧台账"的接线事故
+      const p = parseLedger(led[0].content);
+      expect(p.lines.length).toBeGreaterThan(0);
+      const keptUsers = h.filter((m) => m.role === "user").length;
+      expect(keptUsers + p.lines.length + p.folded).toBe(seen);       // 守恒：静默丢掉任何一条这里就红
+      h = h.concat(marathon(5, 12 + pass * 5));
+      seen += 5;
+    }
+  });
+
+  it("台账不参与工具配对，压缩后第一次请求照样严格成对", async () => {
+    const a = agent(overBudget());
+    a._currentConv = "cPair";
+    a._chatStream = async () => ({ content: goodSummary });
+    const out = await a.compactHistory(marathon(14));
+    expect(pairErrors(out)).toEqual([]);
+    const led = ledgersIn(out);
+    expect(led.length).toBe(1);
+    expect(led[0].content).not.toMatch(/^\s*(assistant|tool):/);      // 台账是我们写的 system，不是转录片段
+    expect(out[0].role).toBe("system");                                // 摘要仍然在最前
+    expect(out[1]).toBe(led[0]);                                       // 台账紧跟摘要，不混进原文中间
+    expect(out.some((m) => m.role === "user" && /M13 /.test(String(m.content)))).toBe(true);  // 最近那条必须还是原文
+  });
+
+  it("没有更早的用户要求时不许凭空多一条台账 system 消息", async () => {
+    const a = agent(overBudget());
+    a._currentConv = "cNone";
+    a._chatStream = async () => ({ content: goodSummary });
+    const out = await a.compactHistory(heavy(6));                      // heavy 的用户消息都很短，预算装得下
+    expect(ledgersIn(out).length).toBe(0);
+  });
+
+  /* 长任务里工具结果会被 microcompact 换成一行占位，于是"保留侧的大头"只剩用户消息。
+     这条夹具就是把那个状态直接摆出来：25 条长用户要求（每条 ~270 token）+ 已清理的只读工具结果。
+     旧写法在这儿的下场是 after >= beforeEst（摘要那点字数根本换不回 25 条原文），
+     判成"摘要不比原文短"→ 连续两次触发断路器 → 这个会话从此不自动压缩，
+     水位一路涨到上游 400。这一条就是那半句"越长的任务越容易断"的判据。 */
+  function postMicro(n) {
+    const h = [];
+    for (let i = 0; i < n; i++) {
+      h.push({ role: "user", content: "M" + i + " " + "这条要求由 Goal 自动续跑注入，带着目标与上一轮的判断，写得很长。".repeat(30) });
+      h.push(asst([T("r" + i, "read_file")]));
+      h.push(tool("r" + i, "[已清理 24000 字符的工具结果（read_file）：src/f" + i + ".js]"));
+    }
+    return h;
+  }
+
+  it("工具结果清光之后：靠台账才压得动，旧写法在这里会把自动压缩永久关掉", async () => {
+    const a = agent(overBudget());
+    a._currentConv = "cMicro";
+    a._chatStream = async () => ({ content: goodSummary });
+    const h0 = postMicro(25);
+    const before = a._estTokens(h0);
+    const out = await a.compactHistory(h0);                             // 自动那一遍：不 force，断路器该响就得响
+    expect(out).not.toBe(h0);                                           // 旧写法在这里直接返回同一个数组
+    expect(a._estTokens(out)).toBeLessThan(before);
+    expect(a._compactStopped.cMicro).toBeFalsy();
+    expect(a.emitted.filter((e) => e.type === "context.compact_breaker").length).toBe(0);
+    const led = ledgersIn(out);
+    expect(led.length).toBe(1);
+    const p = parseLedger(led[0].content);
+    const kept = out.filter((m) => m.role === "user").length;
+    expect(p.lines.length + p.folded).toBeGreaterThan(0);               // 确实折掉了东西，不是全留着
+    expect(kept + p.lines.length + p.folded).toBe(25);                   // 守恒：一条都不会静默消失
+    /* 再来一轮长的，第二次压缩照样压得动（旧写法第二遍就会去碰断路器） */
+    const h1 = out.concat(postMicro(8));
+    const before1 = a._estTokens(h1);
+    const out1 = await a.compactHistory(h1);
+    if (out1 !== h1) expect(a._estTokens(out1)).toBeLessThan(before1);
+    expect(a._compactStopped.cMicro).toBeFalsy();
+    const led1 = ledgersIn(out1);
+    expect(led1.length).toBeLessThanOrEqual(1);                          // 两条台账 = 旧的那条没被剥离
+  });
 });

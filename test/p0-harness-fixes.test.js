@@ -224,13 +224,27 @@ describe("compactHistory — 触发、配对、shrink", () => {
     expect(out[0].content).toContain("[历史摘要]");
   });
 
-  it("压缩后仍保留用户意图（user 消息一条不少）", async () => {
+  it("压缩后用户意图一条都不会凭空消失（原文 / 台账行 / 已折叠条数，三处必居其一）", async () => {
+    const { USER_LEDGER_PREFIX, parseLedger } = require("../server/user-ledger");
     const a = makeAgent({ llm: { contextWindow: 4000 } });
     a._summarize = async () => "摘要";
     const h = bigHistory();
     const out = await a.compactHistory(h);
-    const before = h.filter((m) => m.role === "user").length;
-    expect(out.filter((m) => m.role === "user").length).toBe(before);
+    const seenUsers = h.filter((m) => m.role === "user").length;
+    const led = out.filter((m) => m.role === "system" && String(m.content || "").indexOf(USER_LEDGER_PREFIX) === 0);
+    expect(led.length).toBeLessThanOrEqual(1);
+    const p = led[0] ? parseLedger(led[0].content) : { folded: 0, lines: [] };
+    const kept = out.filter((m) => m.role === "user").length;
+    expect(kept + p.lines.length + p.folded).toBe(seenUsers);
+    /* 这条原来断言的是"user 消息一条不少"（防的是压缩把用户意图整段丢掉，那个 P0 是真的）。
+       现在保留侧必须**有界**——否则八小时任务会涨到"摘要不比原文短"、触发断路器、
+       自动压缩对这个会话永久关闭（判据在 test/p1-compact-budget.test.js 的马拉松那一节）。
+       所以口径从"条数不变"换成"守恒 + 降级的那条看得见"：不是少留了就行，是少留的那些必须还在。 */
+    expect(p.lines.length + p.folded).toBeGreaterThan(0);
+    const head = String(h[0].content).slice(0, 12);
+    const survived = out.some((m) => m.role === "user" && String(m.content).indexOf(head) === 0)
+      || p.lines.some((l) => l.indexOf(head) >= 0);
+    expect(survived).toBe(true);
   });
 
   it("shrink 检查：摘要比原文还长时放弃替换", async () => {

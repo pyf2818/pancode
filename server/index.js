@@ -289,9 +289,7 @@ function mountWorkspace(dir) {
   term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"), cfg.permissions.strictCommand !== false);
   procs = new ProcessLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
   buildEngine();
-  files.startWatch(() => {
-    snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
-  });
+  files.startWatch((batch) => { syncAfterExternalChange(batch).catch((e) => log.tag("fs").warn("外部改动同步失败: " + e.message)); });
   log.tag("workspace").info("workspace 已挂载: " + WS_DIR);
 }
 
@@ -354,11 +352,47 @@ async function snapshotFilesIncremental(paths) {
   return out;
 }
 
+/* 外部改盘之后的同步：能只读被点名的那几个文件，就绝不重读整棵树。
+
+   判据只有一个问题——**文件集合变了吗**。没变（用户在别的编辑器里改、测试写回既有文件、
+   格式化插件跑了一遍）就只读那几个被点名的路径，广播带 incremental 让前端合并；
+   变了（新增 / 删除 / 改名）必须走全量，因为前端的增量分支只覆盖传入路径、不会删掉消失的文件
+   （app.js:2183），漏一次删除界面上就还留着一个点得开的幽灵文件。
+
+   以前这里不看事件说了什么，一律全量：≤500 个文件逐个 readFileSync + 整包 JSON 广播给所有连接。
+   七八小时的任务里外部改盘是几十次起步，这一条就是"越跑越卡"里属于快照那半截的成因。
+   _syncedPaths 记的是"前端此刻手里那份集合"；file.create/delete/reset 那些分支也发全量但没来更新它，
+   代价是下一次外部改动多走一次全量——只是少省一点，绝不会算错，所以不在这儿重复维护。 */
+let _syncedPaths = null;
+async function syncAfterExternalChange(batch) {
+  const { planSync } = require("./sync-plan");
+  const paths = Array.isArray(batch) ? batch : [];
+  const cur = new Set(files.list());
+  const plan = planSync(paths, _syncedPaths, cur);
+  /* 语义索引以前只吃显式写盘那几条路径（file.save / applyPatch / 工具直写），
+     外部改动从不喂进去 —— Agent 在别的进程刚改过的代码上，检索到的还是旧内容。 */
+  for (const p of paths) if (p) { try { codeIndex.queueFileUpdate(WS_DIR, p); } catch (e) { /* 索引没建过就是空操作 */ } }
+  if (plan.mode === "none") return;
+  if (plan.mode === "incremental") {
+    const out = await snapshotFilesIncremental(plan.changed);
+    _syncedPaths = cur;
+    broadcast({ type: "fs.sync", files: out, incremental: true });
+    return;
+  }
+  const out = await snapshotFiles();
+  _syncedPaths = cur;
+  broadcast({ type: "fs.sync", files: out });
+}
+
 async function helloPayload(eng, userKey) {
   const e = eng || engine;
+  const fileMap = await snapshotFiles();
+  /* hello 带的就是全量，顺手把"前端手里那份集合"记下来：
+     不记的话第一条外部改动永远走全量，判据等于白改。 */
+  _syncedPaths = new Set(Object.keys(fileMap));
   return {
     type: "hello",
-    files: await snapshotFiles(),
+    files: fileMap,
     running: e.running,
     round: e.round,
     engine: configMod.publicInfo(cfg),
