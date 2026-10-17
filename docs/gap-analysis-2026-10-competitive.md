@@ -355,6 +355,33 @@
 
 ---
 
+### 3.13 Agents 左栏改成「任务 / 会话」收件箱（2026-10-17）
+
+**为什么改这一处**：`server/tasks.js` 那张任务表早就在记"谁在跑、谁卡在审批、上次哪条没跑完"，事件流一路喂着它，`/api/tasks` 与握手里的 `hello.tasks` 也都通着 —— 但**前端一行都没接**，全项目只有 Electron 托盘那行"在跑 N"读它。也就是说桌面外壳已经知道的答案，界面反而答不出来。这一轮把这份既有数据接成左栏的一等公民，后端只补了两个字段（`snapshot()` 里的 `waitingFor` / `error`，见 `server/tasks.js:120`）。
+
+**形态**：`#agSessions` 顶上换成一段 segmented 控件（任务 / 会话），默认落在**任务**；会话列表原样搬进第二页，`#btnNewConv` 跟着页签走（任务页不收"+"，不在任务页发新建会话的指令）。编排历史仍留在侧栏底部，不在这两页里。卡片点一下 = `openConv(convId)`，当前会话那张标 `current` 并给一个 chevron。
+
+**刷新口径**：事件驱动（`app.js` 的 `handleEvent` 第一行调 `tiOnEvent`，400ms 合并，一轮里 `tool.end` 能连来几十条）+ 6 秒兜底轮询，两条都过 `tiVisible()`：页签不在任务、窗口不在 Agents、`document` 不可见 —— 任一不满足就不打网络。这条不是洁癖：`_verify_taskinbox.js` ⑥ 用 7 秒静默窗口量过，CODE 模式下 0 次请求，切回来立刻有。
+
+**顺带抓出的四条"切语言刷成假状态"**（都是截图目视看到的，四条扫描器量不到）：
+
+| 现象 | 根因 | 收口 |
+|---|---|---|
+| 已登录，切一次语言顶栏变回「未登录 / Not logged in」 | `#tbUserTxt` 挂了 `data-i18n`，而 `applyI18n()` 会把每个 `[data-i18n]` 的 `textContent` **无条件**刷成词条 —— JS 写的用户名被静态扫描抹掉 | 摘掉 `data-i18n`，文案归 `setAuthUserUI()` 所有，空值走 `t("notLoggedIn")`，并注册 `onLang` 重画 |
+| 英文界面顶栏漏「AI 分析任务中」 | 演示引擎 `state(true, "AI 分析任务中")` 是服务端中文，`tr()` 查不到键时**原样返回**，`||` 链就此短路 | `paintState()` 判定"没查到"就退回通用文案；中文态仍显示服务端那句具体的话 |
+| 英文界面编排历史空态是中文 | 空态本身走了 `t()`，但 `renderOrchHistory()` 没挂在 `onLang` 上；且它装在 `data-i18n-skip` 容器里，中文扫描按设计跳过 → **扫描器的盲区** | `onLang` 里补一条重画；探针改成"只切语言、不手动重画"来量这条钩子 |
+| 开机就挣两条 401 | `tiSetPane` 在脚本加载时抢跑 `fetch("/api/tasks")`，`onLang` 注册即执行又抢跑一次 `/api/orch/history`，那一刻 `AUTH.token` 还是空串 | `tiFetch` 无 token 直接返回；编排历史那条加"已经画过东西才重画"的门。回归由 `_verify_uitaste` 的"整轮零页面报错"守住 |
+
+同类隐患用一次性静态扫描列了全表（`data-i18n` 元素 ∩ JS 直接写它的 `textContent`）：除上面三处，还有 `#btnAutoNew`（写死中文"收起表单"）、`#orchTitle`（中文兜底）、`#onboardNext`（最后一步的"完成"被刷回"下一步"）、登录框五个字段（`AUTH_TEXT` 在脚本加载时算死，切语言后停在旧语言）。全部改成现取词条 + 开着的时候随 `onLang` 重画。
+
+**验证**：`scripts/_verify_taskinbox.js` 39 条断言，已接进 `test:verify`（47 → 48 步）。全链 48 步一次跑绿，`_verify_layout` 156、`_verify_plandock` 51、`_verify_gearmenu` 47、`_verify_i18n` 17、`_verify_uitaste` 45 都没被侧栏改版碰坏。
+
+**这一轮新学的两条探针纪律**（写进记忆页 `pancode-probe-discipline.md`）：
+1. **截图写完要认文件名唯一**：⑤ 里两行都往 `taskinbox_en.png` 写，第二行是切回中文之后写的 —— 于是"英文零中文"那条断言全绿，而屏幕上那张"英文截图"整页中文。目视复核抓到的是**证据本身是假的**。现在截图统一走 `shot()`，写失败会吭声，且每张文件名各自唯一。
+2. **状态驱动的假数据会被真轮询冲掉**：喂进 `TI.rows` 的六行假状态，6 秒兜底轮询一到就换成服务端真数据。所以"摆状态 + 量"必须在**同一次 `page.evaluate` 里**做完，中间让出一个 tick 就量到的是真数据（④ 一开始正是这样过了，⑤ 第一版这样红了）。
+
+---
+
 ## 4. 与竞品的定位差异（不是所有「差距」都该补）
 
 对标时有三处 **pancode 的选择是合理的**，不应照抄竞品：

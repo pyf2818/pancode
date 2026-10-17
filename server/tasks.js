@@ -109,6 +109,9 @@ class TaskBoard {
       convId: r.convId, title: r.title, status: r.status, origin: r.origin || "chat",
       startedAt: r.startedAt, endedAt: r.endedAt, lastEventAt: r.lastEventAt,
       turns: r.turns || 0, tools: r.tools || 0, queueLen: r.queueLen || 0,
+      /* 收件箱要答的是"这条为什么不动了"：等你批的是哪个动作、失败在哪。
+         不带这两行的话，waiting 与 failed 在界面上和"就是慢"长得一模一样。 */
+      waitingFor: titleOf(r.waitingFor), error: titleOf(r.error),
     }));
   }
 

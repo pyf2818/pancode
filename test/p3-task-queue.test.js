@@ -77,9 +77,12 @@ describe("TaskBoard：行状态", () => {
     b.begin("u1", "c1", "x".repeat(200));
     const s = b.snapshot("u1")[0];
     expect(Object.keys(s).sort()).toEqual(
-      ["convId", "endedAt", "lastEventAt", "origin", "queueLen", "startedAt", "status", "title", "tools", "turns"].sort());
+      ["convId", "endedAt", "error", "lastEventAt", "origin", "queueLen", "startedAt", "status", "title", "tools", "turns", "waitingFor"].sort());
     expect(s.title.length).toBeLessThanOrEqual(80);
     expect(s.origin).toBe("chat");
+    // 前端任务收件箱靠这两字段说清"这条为什么不动"，它们同样按 80 字截断，不会把整段输出灌进握手
+    expect(s.waitingFor).toBe("");
+    expect(s.error).toBe("");
   });
 
   it("自动化任务是工作区级的：别的用户也看得见，普通会话的行不外泄", () => {

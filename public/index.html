@@ -78,7 +78,7 @@
     </div>
     <span id="tbAgentState" class="agent-state idle"><span class="dot"></span><span data-i18n="aiIdle">AI 空闲</span></span>
     <button id="btnLangToggle" class="tb-lang" title="Switch language"><span data-i18n="langToggle">EN</span></button>
-    <span id="tbUserBtn" class="tb-user" data-i18n-title="clickToAuth" title="点击登录/注册"><i data-ico="robot"></i><span id="tbUserTxt" data-i18n="notLoggedIn">未登录</span></span>
+    <span id="tbUserBtn" class="tb-user" data-i18n-title="clickToAuth" title="点击登录/注册"><i data-ico="robot"></i><span id="tbUserTxt"></span></span>
   </div>
 </div>
 
@@ -218,12 +218,20 @@
 <!-- ======================= Agents Window ======================= -->
 <div id="agentsWindow" class="window" style="display:none">
   <aside id="agSessions">
-    <div class="ag-side-row">
-      <div class="ag-side-title" data-i18n="sessions">会话</div>
+    <!-- 任务 / 会话 二选一：任务是"派出去的活到哪一步了"（一等公民），
+         会话是它的现场。新建会话的 + 挪到这一段右边，任务页时收起 —— 不在任务页发会话的指令。 -->
+    <div class="ag-seg">
+      <div class="ag-seg-tabs" role="tablist">
+        <button class="ag-seg-btn active" id="segTasks" data-pane="tasks" role="tab" aria-selected="true" data-i18n="taskInbox">任务</button>
+        <button class="ag-seg-btn" id="segSessions" data-pane="sessions" role="tab" aria-selected="false" data-i18n="sessions">会话</button>
+      </div>
       <button id="btnNewConv" class="ag-side-btn" data-i18n-title="newSessionTip" title="新建会话"><i data-ico="plus"></i></button>
     </div>
-    <input id="convSearch" class="conv-search" data-i18n-ph="searchSessionsPh" placeholder="搜索会话…" />
-    <div id="agSessionList" class="ag-sess-scroll" data-i18n-skip></div>
+    <div id="agPaneTasks" class="ag-inbox ag-sess-scroll" data-i18n-skip></div>
+    <div id="agPaneSessions" class="ag-pane" hidden>
+      <input id="convSearch" class="conv-search" data-i18n-ph="searchSessionsPh" placeholder="搜索会话…" />
+      <div id="agSessionList" class="ag-sess-scroll" data-i18n-skip></div>
+    </div>
     <div class="ag-side-row ag-side-sep">
       <div class="ag-side-title" data-i18n="orchHistory">编排历史</div>
       <button id="btnToggleOrchHist" class="ag-side-btn" data-i18n-title="expandCollapseTip" title="展开/折叠"><i data-ico="chevD"></i></button>
@@ -693,5 +701,6 @@
   <script src="js/workbench.js"></script>
   <script src="js/assets-center.js"></script>
   <script src="js/gear-menu.js"></script>
+  <script src="js/task-inbox.js"></script>
 </body>
 </html>

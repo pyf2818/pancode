@@ -27,3 +27,10 @@ function maybeOnboard() { if (!localStorage.getItem("cw-onboarded")) showOnboard
 $("onboardSkip").onclick = hideOnboarding;
 $("onboardPrev").onclick = () => { if (_obStep > 0) { _obStep--; renderOnboard(); } };
 $("onboardNext").onclick = () => { if (_obStep < _obSteps.length - 1) { _obStep++; renderOnboard(); } else hideOnboarding(); };
+
+/* 最后一步按钮该写"完成"，但 #onboardNext 挂着 data-i18n：切语言时静态扫描会把它刷回"下一步"。
+   引导开着时按当前步重画一遍（onLang 的回调跑在 applyI18n 之后，覆盖得到）。 */
+if (typeof onLang === "function") onLang(() => {
+  const m = document.getElementById("onboardModal");
+  if (m && m.style.display && m.style.display !== "none") renderOnboard();
+});

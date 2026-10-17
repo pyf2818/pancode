@@ -38,8 +38,17 @@ function autoToggleForm(show) {
   const f = $("autoForm");
   if (show === undefined) show = f.style.display === "none";
   f.style.display = show ? "block" : "none";
-  $("btnAutoNew").textContent = show ? "收起表单" : "＋ 新建任务";
+  $("btnAutoNew").textContent = show ? t("autoCollapse") : t("autoNew");
 }
+/* 这个按钮挂了 data-i18n：切语言时静态扫描会无条件把它刷成"＋ 新建任务"，
+   表单正开着的时候就成了假文案。刷完按当前开合状态改回来。 */
+if (typeof onLang === "function") onLang(() => {
+  const f = typeof $ === "function" ? $("autoForm") : document.getElementById("autoForm");
+  if (f && f.style.display === "block") {
+    const b = typeof $ === "function" ? $("btnAutoNew") : document.getElementById("btnAutoNew");
+    if (b) b.textContent = t("autoCollapse");
+  }
+});
 
 async function loadAutomations() {
   const box = $("autoList");

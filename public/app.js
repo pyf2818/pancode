@@ -2359,6 +2359,8 @@ async function shotBlobUrl(name) {
 }
 
 function handleEvent(ev) {
+  /* 任务收件箱：状态一变就（合并地）重拉一次任务表，比纯轮询跟手 */
+  if (typeof tiOnEvent === "function") { try { tiOnEvent(ev); } catch (e) {} }
   /* 多会话并行：聊天 DOM 类消息按 convId 写入对应会话的 pane（后台会话实时可见），
      其余消息（文件/终端/计划/编排等全局 UI）直接分发 */
   const CHAT_DOM_TYPES = new Set(["user.msg", "think.start", "think.delta", "think.end", "msg.start", "msg.delta", "msg.end", "tool.start", "tool.body", "tool.image", "tool.end", "tool.ask_choice", "agent.error"]);
@@ -3169,7 +3171,14 @@ function paintSbEld() {
 let lastStateArgs = null;
 function paintState(running, label, labelKey, labelVars) {
   lastStateArgs = { running, label, labelKey, labelVars };
-  const txt = (labelKey ? t(labelKey, labelVars) : null) || tr(label) || (running ? t("running") : t("aiIdle"));
+  /* 演示引擎的 state 标签是服务端中文，tr() 查不到键会原样返回 —— 英文界面下就把"AI 分析任务中"
+     直接漏到顶栏（截图目视抓到的，探针扫的是左栏容器，量不到这里）。查不到时退回通用文案。 */
+  let txt = labelKey ? t(labelKey, labelVars) : null;
+  if (!txt && label) {
+    const mapped = tr(label);
+    if (mapped !== label || getLang() === "zh") txt = mapped;
+  }
+  if (!txt) txt = running ? t("running") : t("aiIdle");
   const tb = $("tbAgentState");
   if (tb) {
     tb.className = "agent-state " + (running ? "running" : "idle");
@@ -3373,7 +3382,7 @@ function bindOrchResize() {
 function onOrchStart(ev) {
   orchSteps = {};
   const overlay = $("orchOverlay");
-  $("orchTitle").textContent = ev.title || "多 Agent 编排";
+  $("orchTitle").textContent = ev.title || t("orchTitle");
   $("orchSummary").style.display = "none";
   const steps = (ev.steps || []).map((s) => Object.assign({}, s, { status: "pending" }));
   steps.forEach((s) => { orchSteps[s.id] = { name: s.name, status: "pending" }; });
@@ -4448,10 +4457,13 @@ function rememberToken(token, username, persist) {
 function setAuthUserUI(name) {
   const txt = $("tbUserTxt"), btn = $("tbUserBtn");
   if (!txt || !btn) return;
-  txt.textContent = name || "未登录";
+  txt.textContent = name || t("notLoggedIn");
   btn.classList.toggle("logged", !!name);
 }
 setAuthUserUI(userAuth.username);
+/* 这段文字是 JS 写的，不能挂 data-i18n：applyI18n 会把每个 [data-i18n] 的 textContent 无条件刷成
+   词条，切一次语言就把已登录的用户名刷回"未登录"（截图目视抓到的，是个假状态，不只是没翻译）。 */
+if (typeof onLang === "function") onLang(() => setAuthUserUI(userAuth.username));
 
 async function checkAuth() {
   if (!userAuth.token) { setAuthUserUI(""); return false; }
@@ -4491,12 +4503,15 @@ $("authTogglePass").onclick = () => {
 };
 
 let authMode = "login";
-const AUTH_TEXT = {
-  login: { title: t("authWelcome"), sub: t("authSub"), submit: t("authSubmitLogin"), switchLabel: t("authSwitchToRegister"), switchBtn: t("authBtnRegister") },
-  register: { title: t("apSetAuthUserUItitleT72"), sub: t("apSetAuthUserUIsubT2"), submit: t("authSubmitRegister"), switchLabel: t("authSwitchToLogin"), switchBtn: t("authBtnLogin") },
-};
+/* 词条必须现取，不能在脚本加载时算好存着：那样英文界面下打开登录框，
+   标题/按钮会停在开机那一刻的语言。 */
+function authText(mode) {
+  return mode === "register"
+    ? { title: t("apSetAuthUserUItitleT72"), sub: t("apSetAuthUserUIsubT2"), submit: t("authSubmitRegister"), switchLabel: t("authSwitchToLogin"), switchBtn: t("authBtnLogin") }
+    : { title: t("authWelcome"), sub: t("authSub"), submit: t("authSubmitLogin"), switchLabel: t("authSwitchToRegister"), switchBtn: t("authBtnRegister") };
+}
 function paintAuthMode() {
-  const t = AUTH_TEXT[authMode];
+  const t = authText(authMode);
   $("authTitle").textContent = t.title;
   $("authSub").textContent = t.sub;
   $("authSubmit").textContent = t.submit;
@@ -4507,6 +4522,12 @@ function paintAuthMode() {
 }
 $("authSwitch").onclick = () => { authMode = authMode === "login" ? "register" : "login"; paintAuthMode(); };
 function authModeSwitch(mode) { authMode = mode === "register" ? "register" : "login"; paintAuthMode(); }
+/* 这几个字段挂了 data-i18n，静态扫描会把它们刷回"登录"那套；注册模式正开着时要按当前模式重画。
+   onLang 的回调在 applyI18n 之后跑，所以这里覆盖得到。 */
+if (typeof onLang === "function") onLang(() => {
+  const m = $("authModal");
+  if (m && m.style.display && m.style.display !== "none") paintAuthMode();
+});
 
 function authFail(msg) {
   const st = $("authStatus");
@@ -4691,6 +4712,9 @@ let goalText = "";             // 当前目标文本（服务端回推 goal.set 
 if (typeof onLang === "function") {
   onLang(() => { if (currentPlan) renderPlan(currentPlan); });
   onLang(() => { if (state.mode === "agents") renderConvList(); });
+  /* 编排历史的空态/范围行是 JS 现造的，切语言要重画。但 onLang 注册即执行一次，
+     那一刻 token 还没落地，去拉 /api/orch/history 只会给自己挣一条 401 —— 已经画过东西才重画。 */
+  onLang(() => { const h = $("agOrchHistory"); if (h && h.children.length) renderOrchHistory(); });
 }
 
 function setGoalMode(active) {
