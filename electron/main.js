@@ -99,6 +99,9 @@ async function createWindow() {
     minWidth: 960,
     minHeight: 600,
     title: "pancode",
+    /* 窗口/任务栏图标：不设的话开发态直接显示 Electron 默认图标，打包态才退回 exe 内嵌的。
+       与托盘同一个文件（托盘那段的教训：直接喂 ico 在部分 Windows 主题下拿空图，用 png 缩）。 */
+    icon: path.join(__dirname, "..", "assets", "icon-1024.png"),
     backgroundColor: bgFor(),
     autoHideMenuBar: true,
     /* 无边框：页面自己就是标题栏。留着原生边框会出现两条标题栏——
