@@ -345,10 +345,21 @@ section("2) 审批与选项等待（可配时限 + 不残留计时器）");
   /* ---------- 5) 子智能体中断信号 ---------- */
   section("5) 子智能体中断信号按会话取");
   const src = fs.readFileSync(path.join(ROOT, "server", "agent-llm.js"), "utf8");
-  const body = src.slice(src.indexOf("async runSubAgent"), src.indexOf("_acquireSubLock"));
+  /* 这一段是"扫源码"型判据，边界一旦 indexOf 落空（-1）就会静默退化成"整份文件都算 body"，
+     于是两条断言都变得 trivially true —— P5 拆掉 _acquireSubLock 时就是这样差点瞎掉。
+     所以边界取不到就直接判红，不留"看起来过了"的余地。 */
+  const FROM = src.indexOf("async runSubAgent(");
+  const TO = src.indexOf("_isolateSubRun(iso, sub, solo)");
+  ok("源码边界还在（runSubAgent 与 _isolateSubRun 都能定位到）", FROM >= 0 && TO > FROM,
+    "FROM=" + FROM + " TO=" + TO);
+  const body = FROM >= 0 && TO > FROM ? src.slice(FROM, TO) : "";
   ok("runSubAgent 内不再读引擎级 this._abort 做循环判定",
     !/if \(this\._abort\)/.test(body), (body.match(/if \(this\._abort\)/g) || []).join());
   ok("runSubAgent 用 convContext 的 abortRef", /convContext\.getStore\(\)/.test(body) && /abortRef\.value/.test(body));
+  /* P5 新增的两条规矩也要有源码级钉子（行为级在 _verify_subboard.js）：
+     整盘互斥锁必须真的从代码里没了，而不是还留着只是没人调。 */
+  ok("整盘子智能体互斥锁已拆除（并行不再排队）", !/_acquireSubLock|_subLock/.test(src), src.match(/_acquireSubLock|_subLock/g) || "");
+  ok("改盘前按文件认领，收尾才释放", /_claimForSub/.test(body) && /_releaseClaims\(sub\)/.test(src));
 
   /* ---------- 6) WebSocket 心跳 ---------- */
   section("6) WebSocket 心跳判死条件");

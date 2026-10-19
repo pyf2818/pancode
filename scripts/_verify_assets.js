@@ -229,8 +229,29 @@ async function main() {
     r = await req("POST", "/api/memory", { type: "lesson", topic: "验证用例", content: "端点验证：记忆写入需带价值分。", valueScore: 5, sticky: true });
     ok("POST /api/memory 写入成功", r.json.ok === true && !!r.json.entry.id, r.json.error);
     const memId = r.json.entry && r.json.entry.id;
-    ok("sticky 条目标为将注入", r.json.entry && r.json.entry.injected === true);
+    /* P6 口径：sticky 只豁免裁剪，不再等于"正文每轮在场"。
+       普通 lesson 即使 sticky 也只进索引；正文常驻的只有反例 / 方案权衡 / 禁忌偏好。 */
+    ok("sticky 的普通 lesson 标为「只在索引」而非正文常驻",
+      r.json.entry && r.json.entry.lane === "index" && r.json.entry.injected === false,
+      JSON.stringify({ lane: r.json.entry && r.json.entry.lane, injected: r.json.entry && r.json.entry.injected }));
     ok("strength 是数值", typeof (r.json.entry && r.json.entry.strength) === "number");
+
+    r = await req("POST", "/api/memory", { type: "error", topic: "被拒操作/反例", content: "端点验证：这条是被否过的做法，正文应当常驻。", valueScore: 5 });
+    const guardId = r.json.entry && r.json.entry.id;
+    ok("反例条目标为正文常驻", r.json.ok === true && r.json.entry.lane === "guard" && r.json.entry.injected === true,
+      JSON.stringify({ lane: r.json.entry && r.json.entry.lane, injected: r.json.entry && r.json.entry.injected }));
+    r = await req("GET", "/api/memory");
+    ok("stats 同时给出常驻条数与在索引里的条数",
+      typeof (r.json.stats || {}).injected === "number" && typeof (r.json.stats || {}).indexed === "number",
+      JSON.stringify(r.json.stats || {}));
+    /* 面板里搜一次不等于"这条记忆被用上了"：accessCount 一涨，半衰期和排名就自己抬上去，
+       于是"搜过的永远是那几条"（#31 的回路）。这里连搜两次量给它看。 */
+    r = await req("GET", "/api/memory?q=" + encodeURIComponent("端点验证"));
+    const ac1 = ((r.json.entries || []).find((e) => e.id === guardId) || {}).accessCount;
+    r = await req("GET", "/api/memory?q=" + encodeURIComponent("端点验证"));
+    const ac2 = ((r.json.entries || []).find((e) => e.id === guardId) || {}).accessCount;
+    ok("面板检索不加强度（搜两次 accessCount 一次都不涨）",
+      typeof ac1 === "number" && ac2 === ac1, "第一次 " + ac1 + "，第二次 " + ac2);
 
     r = await req("PUT", "/api/memory/" + memId, { content: "端点验证：记忆已被编辑。", valueScore: 3 });
     ok("PUT 编辑记忆", /已被编辑/.test((r.json.entry || {}).content || ""), r.json.error);
@@ -257,6 +278,8 @@ async function main() {
     ok("prune 返回 removed/archived", r.json.ok === true && typeof r.json.removed === "number", r.json.error);
     r = await req("DELETE", "/api/memory/" + memId);
     ok("DELETE 记忆", r.json.ok === true);
+    r = await req("DELETE", "/api/memory/" + guardId);
+    ok("DELETE 常驻探针条目（残渣不清会一直占着下一轮的硬提醒）", r.json.ok === true);
 
     /* ---------- 专家 / 角色 ---------- */
     section("专家与角色（Experts）");

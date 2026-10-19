@@ -1340,7 +1340,7 @@ function configSnapshot() {
   const ruleCount = collectRuleRecords([]).length;
   return {
     engine: configMod.publicInfo(cfg),
-    llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens },
+    llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens, vision: cfg.llm.vision === true },
     agent: configMod.agentSettings(cfg),
     embedding: configMod.embeddingInfo(cfg),
     mcp: { configured: (cfg.mcp && Array.isArray(cfg.mcp.servers)) ? cfg.mcp.servers : [], running: mcpManager.statusList() },
@@ -1421,7 +1421,7 @@ app.get("/api/config/export", (req, res) => {
   try {
     const dump = {
       _kind: "pancode-config", _version: VERSION, _exportedAt: new Date().toISOString(),
-      llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens },
+      llm: { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens, vision: cfg.llm.vision === true },
       agent: configMod.agentSettings(cfg),
       embedding: { endpoint: cfg.embedding.endpoint, model: cfg.embedding.model, dim: cfg.embedding.dim },
       mcp: { servers: (cfg.mcp && cfg.mcp.servers) || [] },
@@ -1458,8 +1458,18 @@ const MEM_TYPES = ["preference", "lesson", "pattern", "decision", "error", "skil
 function memScopeStore(scope) {
   return scope === "user" ? _engineAssets.userMemory : _engineAssets.memory;
 }
+/* 面板问"这条会不会进上下文"，只能问存储层，不能自己按强度再猜一遍：
+   P6 起常驻的正文只剩硬提醒那几条，其余全部只在索引里占一行。
+   自己猜的口径迟早会和真注入的口径分叉，而分叉的表现就是面板说"会注入"、模型却没看到。 */
+function memCtxSets(store) {
+  const sets = { guard: new Set(), index: new Set() };
+  try { (store.guardForContext ? store.guardForContext(999) : []).forEach((e) => sets.guard.add(e.id)); } catch (err) {}
+  try { (store.indexForContext ? store.indexForContext(999) : []).forEach((e) => sets.index.add(e.id)); } catch (err) {}
+  return sets;
+}
 /* 把内部衰减权重翻成面板看得懂的话：强度档 / 距归档天数 / 是否快被遗忘 */
-function enrichMem(e) {
+function enrichMem(e, sets) {
+  sets = sets || { guard: new Set(), index: new Set() };
   let w = 0;
   try { w = MemoryStore.strength(e); } catch (err) { w = 0; }
   const anchor = e.lastAccessAt || e.ts || 0;
@@ -1467,17 +1477,18 @@ function enrichMem(e) {
   let ttl = 90;
   try { ttl = MemoryStore.ttlOf(e.type); } catch (err) {}
   const sticky = !!e.sticky;
+  const resident = sets.guard.has(e.id);
   return Object.assign({}, e, {
     strength: Math.round(w * 10) / 10,
     tier: w >= 4 ? "high" : w >= 1 ? "mid" : "low",
     ageDays,
     ttlDays: ttl,
     sticky,
-    /* 「会进上下文」的口径跟着 #31 的分道改：地板从 1 提到 1.5，且区分
-       常驻（偏好/归纳产物，无条件在场）与按相关性（本轮词元命中才进）。
-       面板上只写"强度达标"是不诚实的——达标不等于每轮都被读进去。 */
-    lane: (e.type === "preference" || e.source === "consolidate" || e.source === "sediment" || e.sticky) ? "resident" : "relevant",
-    injected: !e.archived && w >= 1.5,
+    /* lane 三档，跟提示词装配一一对应：
+       guard = 正文常驻（被否过的做法与禁忌）；index = 只有目录行，正文要模型自己查；
+       none  = 强度不达标或索引预算没排到，只有 search_memory 按关键词才找得到。 */
+    lane: resident ? "guard" : sets.index.has(e.id) ? "index" : "none",
+    injected: resident,
     risk: !sticky && w < 2.5 ? (w < 0.5 ? "drop" : "archive") : "keep",
   });
 }
@@ -1495,10 +1506,12 @@ app.get("/api/memory", (req, res) => {
     const store = memScopeStore(scope);
     if (!store) return res.json({ ok: false, error: "记忆库未就绪" });
     const keep = (e) => wantArch === "all" || !!e.archived === !!wantArch;
+    const sets = memCtxSets(store);
     let raw;
     if (q && wantArch !== true) {
       // hitsOnly：不传的话 search() 会把"零命中"的条目按衰减强度补位返回，搜索结果里混进无关记忆
-      raw = store.search(q, { type: opts.type, limit: 500, hitsOnly: true }).filter(keep).slice(0, opts.limit);
+      // noTouch：用户在面板里搜一次不是"这条记忆被用上了"，加分会让搜一次就长生
+      raw = store.search(q, { type: opts.type, limit: 500, hitsOnly: true, noTouch: true }).filter(keep).slice(0, opts.limit);
     } else {
       // 归档视图 / 空检索：走 list 再按关键词粗筛（search 对归档条目已隐身）
       const kw = q.toLowerCase();
@@ -1506,8 +1519,8 @@ app.get("/api/memory", (req, res) => {
         .filter((e) => !kw || (e.topic + " " + e.content).toLowerCase().includes(kw))
         .slice(0, opts.limit);
     }
-    const entries = raw.map(enrichMem);
-    const all = store.list({ archived: "all", limit: 500 }).map(enrichMem);
+    const entries = raw.map((e) => enrichMem(e, sets));
+    const all = store.list({ archived: "all", limit: 500 }).map((e) => enrichMem(e, sets));
     const byType = {};
     for (const t of MEM_TYPES) byType[t] = all.filter((e) => e.type === t).length;
     res.json({
@@ -1518,7 +1531,8 @@ app.get("/api/memory", (req, res) => {
         byType,
         archived: all.filter((e) => e.archived).length,
         sticky: all.filter((e) => e.sticky).length,
-        injected: all.filter((e) => e.injected).length,
+        injected: all.filter((e) => e.lane === "guard").length,
+        indexed: all.filter((e) => e.lane === "index").length,
         atRisk: all.filter((e) => e.risk !== "keep").length,
         avgStrength: Math.round((all.reduce((n, e) => n + e.strength, 0) / (all.length || 1)) * 10) / 10,
       },
@@ -1527,10 +1541,18 @@ app.get("/api/memory", (req, res) => {
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 /* 最近一轮真正注入进上下文的是哪几条（"存了几百条但没人知道用没用上"的解药） */
+/* 最近一轮真正读进上下文的记忆（"存了几百条但没人知道用没用上"的解药）。
+   P6 起台账有两类：guard=常驻提醒（正文每轮在场）、pull=模型自己调 search_memory 取的。 */
 app.get("/api/memory/used", (req, res) => {
   try {
     const used = (engine && engine._usedMemory) || [];
-    res.json({ ok: true, entries: used.map((e) => ({ id: e.id, type: e.type, topic: e.topic, content: e.content, scope: e.scope || "project" })) });
+    res.json({
+      ok: true,
+      entries: used.map((e) => ({
+        id: e.id, type: e.type, topic: e.topic, content: e.content,
+        scope: e.scope || "project", via: e.via || "guard",
+      })),
+    });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 app.post("/api/memory", (req, res) => {
@@ -1544,7 +1566,7 @@ app.post("/api/memory", (req, res) => {
     if (sticky) meta.sticky = true;
     const entry = store.add(MEM_TYPES.includes(type) ? type : "lesson", topic || "", content, meta);
     if (!entry) return res.status(400).json({ ok: false, error: "内容不能为空" });
-    res.json({ ok: true, entry: enrichMem(entry) });
+    res.json({ ok: true, entry: enrichMem(entry, memCtxSets(store)) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 /* 治理：主动裁剪（低强度归档/删除）与清除归档 */
@@ -1569,7 +1591,7 @@ app.post("/api/memory/:id/archive", (req, res) => {
     const archived = req.body ? req.body.archived !== false : true;
     const entry = store.update(req.params.id, { archived });
     if (!entry) return res.status(404).json({ ok: false, error: "条目不存在" });
-    res.json({ ok: true, entry: enrichMem(entry) });
+    res.json({ ok: true, entry: enrichMem(entry, memCtxSets(store)) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.delete("/api/memory/:id", (req, res) => {
@@ -1584,7 +1606,7 @@ app.put("/api/memory/:id", (req, res) => {
     const store = memScopeStore(req.body && req.body.scope);
     const entry = store.update(req.params.id, req.body || {});
     if (!entry) return res.status(404).json({ ok: false, error: "条目不存在" });
-    res.json({ ok: true, entry: enrichMem(entry) });
+    res.json({ ok: true, entry: enrichMem(entry, memCtxSets(store)) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 

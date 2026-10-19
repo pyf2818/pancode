@@ -2,8 +2,10 @@
 /* ============================================================
    电脑控制工具族：走 UI Automation 读窗口与控件，动作优先用控件模式。
 
-   与浏览器那套同一条纪律：**交给模型的一律是文本**（元素树 / 控件文本），
-   截图只落盘给用户看。理由见 server/computer/uia.ps1 顶部。
+   默认交给模型的是一律是文本（元素树 / 控件文本），截图只落盘给用户看。
+   例外只有一个，且必须显式：desktop_screenshot 带 for_model:true 且配置 llm.vision 已开时，
+   这张 PNG 才作为像素随下一次请求交给模型 —— 给的是"自绘界面读不到控件"那种死角用的，
+   正常窗口仍然优先元素树（理由见 server/computer/uia.ps1 顶部与 server/computer/vision.js）。
 
    优先 UIA 模式、坐标点击只作兜底，这一点很重要：
    InvokePattern / TogglePattern / ValuePattern 点的是控件对象本身，
@@ -13,6 +15,7 @@
 const path = require("path");
 const worker = require("../computer/uia-worker");
 const shots = require("../computer/shots");
+const vision = require("../computer/vision");
 
 const MAX_TEXT = 12000;
 
@@ -54,7 +57,8 @@ function ref(v) {
 
 const HANDLERS = {
   desktop_screenshot: async (agent, args) => {
-    const t = agent.tool("tool", "桌面·截图", args.window_ref ? "某个窗口" : "整屏");
+    const forModel = args.for_model === true;
+    const t = agent.tool("tool", "桌面·截图", args.window_ref ? "某个窗口" : "整屏" + (forModel ? " · 交给模型" : ""));
     let abs;
     try { abs = path.join(shots.convDir(agent._currentConv), shots.fileName(args.name || "screen", "png")); }
     catch (e) { t.done(false, "落盘失败"); return "截图无法落盘：" + e.message; }
@@ -65,8 +69,15 @@ const HANDLERS = {
     const rel = path.relative(shots.root(), abs).split(path.sep).join("/");
     if (t.image) t.image(rel);
     t.body("截图：" + rel + "（" + r.data.w + "×" + r.data.h + "）");
-    t.done(true, "已截图");
-    return "已截图 " + r.data.w + "×" + r.data.h + "，存到 " + rel + "（界面里这张卡片下方可直接看到）。\n注意：这张图只有用户能看见，模型不看像素 —— 要判断屏幕状态请继续用 desktop_windows / desktop_snapshot 的元素树。自绘界面的窗口可能截得到、但读不到控件，那属正常。";
+    const cap = String(args.caption || args.name || "桌面截图").slice(0, 120);
+    const vis = forModel ? vision.attach(agent, { abs, rel, caption: cap }) : null;
+    t.done(true, vis && vis.v.ok ? "已截图·已交模型" : "已截图");
+    const geo = "已截图 " + r.data.w + "×" + r.data.h + "，存到 " + rel + "（界面里这张卡片下方可直接看到）。\n";
+    /* 桌面截图是 PNG（worker 直接写字节），没法就地转 jpeg；整屏那张常常超 3MB 喂不上去，
+       所以把"只截某个窗口"这条出路写在回执里，而不是让它撞一次失败再猜。 */
+    if (vis) return geo + vis.note + (vis.v.ok ? "" : "\n（桌面截图通常是整屏分辨率，试着带 window_ref 只截目标窗口会小很多。）");
+    return geo + "注意：这张图只有用户能看见，模型不看像素 —— 要判断屏幕状态请继续用 desktop_windows / desktop_snapshot 的元素树。" +
+      "自绘界面的窗口可能截得到、但读不到控件，那属正常；那种情况带 for_model:true（并先开配置 llm.vision）把像素交给我。";
   },
 
   desktop_windows: async (agent, args) => {

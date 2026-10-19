@@ -28,6 +28,8 @@
    microcompact    结果可再生，压缩时可整段清掉（写类/计划类结果承载"我改了什么"，不算可再生）
    waitFree        不设执行超时：等用户输入 / 可能弹审批门 / 本身是长编排
    subAgentBlock   不进子智能体工具集（会自我嵌套或污染主流程）
+   subAgentOnly    反过来：只给子智能体用，父智能体的工具清单里不出现
+                   （白板这类工具对父流程没用，却每次请求都占一份 token）
    readOnlyWhen    名字两用时的判定：满足才算纯读（git_branch 的 list 动作）
 */
 const CONTRACT = {
@@ -123,9 +125,14 @@ const CONTRACT = {
 
   // —— 编排 ——
   agent:       { waitFree: true, subAgentBlock: true },
-  // orchestrate 今天不在子智能体黑名单里（agent 在）。让子智能体再开一轮编排
-  // 看起来是原设计的漏登记，但那是既有行为，纯迁移不顺手改 —— 见文件末"已知偏差 4"。
-  orchestrate: { waitFree: true },
+  /* orchestrate 补进子智能体黑名单（收掉原"已知偏差 3"）：
+     迁移前它能被子智能体调用，于是"子代理里再开一轮编排"是条没人测过的路径 ——
+     P5 之后并行改盘按文件认领、隔离按同层设计，嵌套编排会让归属和收回都失去唯一真相源。
+     与 agent 同一个理由：要深就回父智能体重新拆步骤，而不是让分支自己再生分支。 */
+  orchestrate: { waitFree: true, subAgentBlock: true },
+  /* 共享白板：写在内存里、不落工作区 → 按"纯读"那一档放行（不弹确认、可与别的只读调用并行）。
+     只给子智能体：父智能体拿到它只会往一块没人读的板上写字，那份 schema 每轮都白占 token。 */
+  board:       { readOnly: true, microcompact: true, subAgentOnly: true },
 
   // —— 网络 ——
   web_search: { readOnly: true, microcompact: true },
@@ -150,6 +157,13 @@ const CONTRACT = {
   browser_press:    { mutating: true, microcompact: true, subAgentBlock: true },
   browser_select:   { mutating: true, microcompact: true, subAgentBlock: true },
   browser_read:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
+  /* browser_assert 与 browser_eval 都走 eval，但性质不同，判读值得单列一行：
+     eval 执行的是模型现写的 JS（能以页面身份发任意请求 → mutating + 逐次授权）；
+     assert 执行的是我们固定写死的一段"读观察值"程序，模型只能塞进 CSS 选择器和期望值
+     （它们经 JSON.stringify 成为字面量，塞不进代码），所以它是只读 —— 但同样 stateful：
+     读的是"当前活跃标签页在这一刻"的 DOM，和别的手势并发就会验到别人的页面。
+     拦子智能体的理由与全家一致：会话名按 convId 派生，两个分支共用同一个浏览器。 */
+  browser_assert:   { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
   browser_tabs:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
   browser_wait:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
   browser_screenshot: { microcompact: true, subAgentBlock: true },
@@ -201,6 +215,7 @@ function contractOf(name) {
     microcompact: !!c.microcompact,
     waitFree: !!c.waitFree || !!c.mutating,   // 改盘类一律不设执行超时
     subAgentBlock: !!c.subAgentBlock,
+    subAgentOnly: !!c.subAgentOnly,
     readOnlyWhen: typeof c.readOnlyWhen === "function" ? c.readOnlyWhen : null,
   };
 }
@@ -224,6 +239,7 @@ const DERIVED = {
   MICROCOMPACTABLE: new Set(names((c) => c.microcompact)),
   WAIT_FREE: new Set(names((c) => c.waitFree)),
   SUB_AGENT_BLOCKED: new Set(names((c) => c.subAgentBlock)),
+  SUB_AGENT_ONLY: new Set(names((c) => c.subAgentOnly)),
 };
 
 /* 启动自检：TOOLS 注册表与契约表必须互为定义域。
@@ -250,8 +266,8 @@ function auditContract(toolNames) {
       真正稳的做法是把 microcompact 限定到只读工具，那要重新量一次压缩收益，另开一项。
    2. web_fetch / web_search 归 readOnly：它们会向外发请求（只读地取），
       与"不向外部发送数据"的安全准则措辞完全一致（同为 P2-3 已补的 SSRF 边界），先保持判定不变。
-   3. orchestrate 不在子智能体黑名单里，而 agent 在 —— 于是子智能体理论上能再开一轮编排。
-      迁移前就是这样（多半是当时把 agent 加进 BLOCK 时漏了这个对偶名字），
-      收紧它会让"子代理里再编排"这条路径失效，属于行为变更，单独确认后再改。 */
+   3. （已收口，P5）orchestrate 过去不在子智能体黑名单里而 agent 在，于是子智能体能再开一轮编排。
+      现在与 agent 同档拦掉：并行改盘的归属与收回按"同层兄弟"设计，嵌套编排会让一份文件的归属有两个主人。
+      这是行为变更，改在这里而不是顺手混进迁移那一步 —— 需要深任务请回父智能体重新拆步骤。 */
 
 module.exports = { CONTRACT, contractOf, isReadOnly, DERIVED, auditContract };

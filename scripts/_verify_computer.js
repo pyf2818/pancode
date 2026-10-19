@@ -185,7 +185,20 @@ function findWindowLine(listText, pid) {
     ok("回读与写入逐字一致（base64 传参 + UTF-8 全链路没糊）", back === NEW, JSON.stringify(back.slice(0, 60)));
     r = await handlers.desktop_type(A, { ref: docRef, text: "多行里追加中文" });
     ok("没有 value 能力的多行框自动退回 SendInput 并说明要焦点", /SendInput/.test(r) && /拿到焦点/.test(r), r.slice(0, 120));
-    const dback = await handlers.desktop_read(A, { ref: docRef });
+    /* SendInput 打给"当前前台窗口"。靶窗建好不等于在前台——跑在这条探针前面的
+       浏览器/桌面探针、或用户自己在点的程序，都会在这一秒把前台抢走，于是按键落到别处，
+       多行框里剩的是初值。这不是产品缺陷，是探针自己制造的随机红（随机红也是红）：
+       先把靶窗带到前台并确认它真的拿到了前台，再按；没抢到就再要一次。 */
+    let dback = await handlers.desktop_read(A, { ref: docRef });
+    for (let tryN = 0; tryN < 3 && !/多行里追加中文/.test(dback); tryN++) {
+      const act = await handlers.desktop_window(A, { window_ref: target.ref, action: "activate" });
+      await sleep(500);
+      const wf = await handlers.desktop_windows(A, {});
+      const line = findWindowLine(wf, tk.pid) || "";
+      ok("第 " + (tryN + 1) + " 次补焦点：靶窗已在前台", /当前前台/.test(line), line.slice(0, 120) || act.slice(0, 60));
+      await handlers.desktop_type(A, { ref: docRef, text: "多行里追加中文" });
+      dback = await handlers.desktop_read(A, { ref: docRef });
+    }
     ok("多行框里真的写进了中文", /多行里追加中文/.test(dback), JSON.stringify(dback.slice(0, 40)));
 
     section("⑥ 点按钮：走 InvokePattern，真的触发了控件逻辑");

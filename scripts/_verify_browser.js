@@ -46,11 +46,20 @@ const URL = "file:///" + PAGE.replace(/^[A-Za-z]:/, (m) => m.toLowerCase());
 /* ---------- 桩 agent：捕获工具卡事件，审批一律给过 ---------- */
 function mkAgent(convId, cfg) {
   const events = [];
-  return {
+  const a = {
     cfg: Object.assign({ computer: {} }, cfg || {}),
     _currentConv: convId,
     _gate: async () => ({ blocked: false, approved: true }),
     state() {},
+    visionCalls: [],
+    /* 真引擎的 offerVision 由单测钉；这里只钉"工具到底有没有调它、调的时候说了什么"。
+       判 vision 开关这件事必须在桩上一比一复刻，否则测的就不是生产路径。 */
+    offerVision(info) {
+      a.visionCalls.push(info);
+      return (a.cfg.llm && a.cfg.llm.vision === true)
+        ? { ok: true, count: a.visionCalls.length }
+        : { ok: false, why: "off" };
+    },
     tool(kind, name, target) {
       const rec = { kind, name, target, body: "", doneLabel: "", ok: null, image: null };
       events.push(rec);
@@ -63,6 +72,7 @@ function mkAgent(convId, cfg) {
     },
     events,
   };
+  return a;
 }
 
 (async () => {
@@ -121,6 +131,55 @@ function mkAgent(convId, cfg) {
   r = await handlers.browser_click(A, { ref: "../../etc" });
   ok("非法 ref 被参数校验挡下（没把 ../ 拼进 CLI）", /参数不对/.test(r), r.slice(0, 90));
 
+  section("③b 行为断言：点完之后 DOM 真的变成那样了吗（browser_assert 全链路）");
+  /* 这一节是本轮新工具的验收场：前面 fill+click 已经把 #out 改成了「已提交：anlan0725」，
+     于是"通过"与"失败"两侧都有确定答案，不需要靠读代码脑补。 */
+  const cardB = A.events.length;
+  r = await handlers.browser_assert(A, {
+    asserts: [
+      { kind: "text", sel: "#out", expected: "已提交：anlan0725", name: "提交回执文案" },
+      { kind: "visible", sel: "#out" },
+      { kind: "value", sel: "#q", expected: "anlan0725" },
+      { kind: "count", sel: ".根本没有这种行", expected: 0 },
+      { kind: "url", expected: "fixture.html", contains: true },
+    ],
+  });
+  ok("五条全过时首行就说「全部通过」并给条数", /^断言全部通过：5 条/.test(r), r.split("\n")[0]);
+  ok("失败为零时不复述实得值当噪音，但给出「验的是哪几条」的编号", /\[5\]/.test(r) && /URL|地址/.test(r), r.slice(0, 260));
+  ok("工具卡标成功（界面据此显示绿），断言名带进回执", (A.events[cardB] || {}).ok === true && /提交回执文案/.test((A.events[cardB] || {}).body),
+    JSON.stringify({ ok: (A.events[cardB] || {}).ok, label: (A.events[cardB] || {}).doneLabel }));
+
+  const cardC = A.events.length;
+  r = await handlers.browser_assert(A, {
+    asserts: [
+      { kind: "text", sel: "#out", expected: "已提交：anlan0725" },
+      { kind: "text", sel: "#out", expected: "提交成功", name: "文案写法猜错的那条" },
+      { kind: "visible", sel: "#不存在的选择器" },
+    ],
+  });
+  ok("有任何一条失败时首行改口说「未全部通过」并给 1 通过 / 2 失败",
+    /^断言未全部通过：1 通过 \/ 2 失败（共 3 条）/.test(r), r.split("\n")[0]);
+  ok("失败条把实得值带回去（否则模型只能再截图猜）", /实得 已提交：anlan0725/.test(r), (r.match(/✗ \[2\].*/) || [""])[0]);
+  ok("元素不存在时判失败并说清「没有这个元素」，不是默默算过", /没有这个元素/.test(r), (r.match(/✗ \[3\].*/) || [""])[0]);
+  ok("有失败时工具卡标红", (A.events[cardC] || {}).ok === false);
+  ok("教它下一步：不许把同一批再点一遍当验证", /别把同一批断言再点一遍|改代码还是改期望/.test(r), r.slice(-160));
+
+  r = await handlers.browser_assert(A, { asserts: [{ kind: "text", sel: "#out" }] });
+  ok("缺 expected 的清单一条都不执行（不给你拿什么比）", /一条都没执行/.test(r) && /缺 expected/.test(r), r.slice(0, 120));
+  r = await handlers.browser_assert(A, { asserts: [] });
+  ok("空清单直接要参数，不跑 eval", /需要 asserts 数组/.test(r), r.slice(0, 80));
+
+  /* 注入面实测：把 JS 片段当选择器塞进去。它只能变成"查不到这个元素"，
+     绝不能变成页面里真跑了一段代码 —— 这里用文档标题当哨兵，被改写了就说明逃逸成功。 */
+  await handlers.browser_eval(A, { expression: "document.title='SENTINEL_OK'" });
+  r = await handlers.browser_assert(A, { asserts: [{ kind: "text", sel: '");document.title="PWNED";//', expected: "x" }] });
+  const titleNow = await handlers.browser_eval(A, { expression: "document.title" });
+  ok("恶意选择器只导致查不到元素，没有改写页面", /没有这个元素/.test(r) && /SENTINEL_OK/.test(titleNow) && !/PWNED/.test(titleNow),
+    r.split("\n").find((l) => l.startsWith("✗")) + " | 标题=" + titleNow.slice(0, 40));
+  /* 哨兵要当场擦掉：⑥ 那条 "eval 取回页面数据" 判的是 document.title 里有没有「探针页面」，
+     留着 SENTINEL_OK 走过去就是本次改动自己制造的假红（实测就是这样红过一次）。 */
+  await handlers.browser_eval(A, { expression: "document.title='探针页面'" });
+
   section("④ 下拉与勾选：走 select，不是模拟点击坐标");
   r = await handlers.browser_snapshot(A, {});
   const sel = pickRef(r, "combobox");
@@ -143,6 +202,42 @@ function mkAgent(convId, cfg) {
   ok("/api/shot 能解析这个相对路径", !!shots.resolveRel(rel), rel || "");
   ok("穿越路径被拒", shots.resolveRel("../../server/config.js") === null);
   ok("绝对路径被拒", shots.resolveRel("C:\\Windows\\win.ini") === null);
+
+  section("⑤b for_model：像素只在显式要、且 vision 开着时才交给模型");
+  /* 这一段顺带钉住 CLI 旗标名：--screenshot-format jpeg --screenshot-quality 80
+     要是拼错了，CLI 会直接失败，回执就不是"已截图"——不许照想象中的 API 写参数。 */
+  const V = mkAgent("probeVision", { llm: { vision: true } });
+  await handlers.browser_open(V, { url: URL });
+  const beforeV = V.visionCalls.length;
+  r = await handlers.browser_screenshot(V, { for_model: true, name: "交模型", caption: "按钮排在哪里" });
+  ok("for_model 且 vision 开：登记了一次像素", V.visionCalls.length === beforeV + 1, JSON.stringify(V.visionCalls.slice(-1)[0] || {}));
+  ok("回执如实说明像素会随下一次请求交出去", /会随下一次请求交给你/.test(r), r.slice(0, 120));
+  ok("回执教它别拿像素当坐标", /不要按像素坐标|仍用快照里的 ref/.test(r), r.slice(0, 120));
+  const vRel = V.visionCalls[V.visionCalls.length - 1] && V.visionCalls[V.visionCalls.length - 1].rel;
+  const vAbs = V.visionCalls[V.visionCalls.length - 1] && V.visionCalls[V.visionCalls.length - 1].abs;
+  ok("喂模型的确实存成 jpeg（同样画面省一个量级的字节）",
+    !!vRel && /\.jpeg$/.test(vRel) && fs.existsSync(vAbs) && fs.readFileSync(vAbs).slice(0, 3).toString("hex") === "ffd8ff",
+    vRel + " · " + (vAbs && fs.existsSync(vAbs) ? fs.readFileSync(vAbs).slice(0, 3).toString("hex") : "文件不在"));
+  ok("caption 随图一起登记（模型要知道这张该看什么）",
+    (V.visionCalls[V.visionCalls.length - 1] || {}).caption === "按钮排在哪里");
+  await handlers.browser_close(V);
+
+  const NOVIS = mkAgent("probeNoVision", { llm: { vision: false } });
+  await handlers.browser_open(NOVIS, { url: URL });
+  r = await handlers.browser_screenshot(NOVIS, { for_model: true, name: "没开开关" });
+  ok("vision 没开时照样登记一次，并如实回「只有用户看得见」",
+    NOVIS.visionCalls.length === 1 && /llm\.vision/.test(r), r.slice(0, 120));
+  ok("没喂成时绝不许说「已交给模型」", !/会随下一次请求交给你/.test(r), r.slice(0, 120));
+  const nvRel = (NOVIS.visionCalls[0] || {}).rel;
+  ok("没开开关时仍用 jpeg（字节已经省了，只是不给模型看）", /\.jpeg$/.test(nvRel || ""), nvRel || "");
+  await handlers.browser_close(NOVIS);
+
+  const beforeDefault = A.visionCalls.length;
+  r = await handlers.browser_screenshot(A, { name: "默认" });
+  ok("不带 for_model 时一次都不登记像素（不悄悄吃 token）", A.visionCalls.length === beforeDefault,
+    "调用次数 " + A.visionCalls.length);
+  ok("默认路径仍是 png 且说明模型不看像素", /\.png$/.test((A.events[A.events.length - 1] || {}).image || "") && /只有你能看见/.test(r),
+    (A.events[A.events.length - 1] || {}).image);
 
   section("⑥ 逃生舱与标签页");
   r = await handlers.browser_eval(A, { expression: "document.title" });

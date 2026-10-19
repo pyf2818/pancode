@@ -3,8 +3,9 @@
    浏览器工具族：驱动 agent-browser（CDP）操作真实网页。
 
    三条设计约束，决定了这里为什么长这样：
-   1) 交给模型的永远是文本（无障碍树 / 正文 / JSON 摘要），不是像素 ——
-      pancode 的工具结果通道只能装字符串，且当前默认模型不一定带视觉。
+   1) 交给模型的默认是文本（无障碍树 / 正文 / JSON 摘要）——工具结果通道只能装字符串，
+      且当前默认模型不一定带视觉。唯一的例外是截图带 for_model:true 且配置 llm.vision 已开，
+      那时这张图会作为像素随下一次请求交出去（见 computer/vision.js）。
    2) 截图落到数据根的 shots 目录并在界面里显示，不写进工作区（见 computer/shots.js）。
    3) 每个会话一个独立 agent-browser session：默认匿名会话是整机共享的同一个浏览器，
       两个任务并行会互相把对方的页面导航走。
@@ -12,6 +13,8 @@
 const path = require("path");
 const ab = require("../computer/agent-browser");
 const shots = require("../computer/shots");
+const vision = require("../computer/vision");
+const PA = require("../computer/page-assert");
 
 const MAX_TEXT = 12000;
 
@@ -68,6 +71,7 @@ function err(t, r) {
   return "浏览器操作失败：" + (r.error || "未知错误")
     + (r.timedOut ? "（这一步超时了，浏览器可能仍在原状态；先 browser_snapshot 看清现状，不要盲目重试同一步）" : "");
 }
+
 
 module.exports = {
   browser_open: async (agent, args) => {
@@ -191,21 +195,29 @@ module.exports = {
   },
 
   browser_screenshot: async (agent, args) => {
-    const t = agent.tool("tool", "浏览器·截图", args.full ? "整页" : "可视区");
+    const forModel = args.for_model === true;
+    const t = agent.tool("tool", "浏览器·截图", (args.full ? "整页" : "可视区") + (forModel ? " · 交给模型" : ""));
     let abs;
-    try { abs = path.join(shots.convDir(agent._currentConv), shots.fileName(args.name || "page", "png")); }
+    /* 要交给模型时用 jpeg：同样画面比 png 小一个量级，直接决定这一次像素往返花多少 token。 */
+    try { abs = path.join(shots.convDir(agent._currentConv), shots.fileName(args.name || "page", forModel ? "jpeg" : "png")); }
     catch (e) { t.done(false, "落盘失败"); return "截图无法落盘：" + e.message; }
     const cmd = ["screenshot", abs];
     if (args.full) cmd.push("--full");
+    if (forModel) cmd.push("--screenshot-format", "jpeg", "--screenshot-quality", "80");
     const r = await run(agent, cmd);
     if (!r.ok) return err(t, r);
     const rel = path.relative(shots.root(), abs).split(path.sep).join("/");
-    /* 截图只给人看，不进模型：OpenAI 兼容的 role:"tool" 不收数组内容，
-       真要视觉判读是另一条链路（消息层 + token 估算 + 压缩都要改）。 */
     if (t.image) t.image(rel);
     t.body("截图：" + rel);
-    t.done(true, "已截图");
-    return "已截图保存到 " + rel + "（界面里这张卡片下方可直接看到）。\n注意：这张图只有你能看见，模型不看像素 —— 要判断页面状态请继续用 browser_snapshot / browser_read 的文本。";
+    const cap = String(args.caption || args.name || "页面截图").slice(0, 120);
+    /* 只有显式 for_model 才登记像素：默认那张照旧只给用户看，不悄悄吃 token。 */
+    const vis = forModel ? vision.attach(agent, { abs, rel, caption: cap }) : null;
+    t.done(true, vis && vis.v.ok ? "已截图·已交模型" : "已截图");
+    if (vis) {
+      return "已截图保存到 " + rel + "（界面里这张卡片下方可直接看到）。\n" + vis.note +
+        (vis.v.ok ? "\n你现在看到的是截图之前的文本状态；判读完这张图若要继续操作，重新 browser_snapshot 取新的 ref。" : "");
+    }
+    return "已截图保存到 " + rel + "（界面里这张卡片下方可直接看到）。\n注意：这张图只有你能看见，模型不看像素 —— 要判断页面状态请继续用 browser_snapshot / browser_read 的文本。真想让我看像素，带 for_model:true 并确保配置里 llm.vision 已开。";
   },
 
   browser_wait: async (agent, args) => {
@@ -223,6 +235,55 @@ module.exports = {
     t.body("等待完成");
     t.done(true, "等到了");
     return "条件已满足（" + JSON.stringify(Object.assign({}, r.data, { waited: r.data && r.data.waited })) + "）。继续 browser_snapshot 看现在的页面。";
+  },
+
+  browser_assert: async (agent, args) => {
+    const t = agent.tool("tool", "浏览器·断言", (args.asserts || []).length + " 条");
+    const listRaw = Array.isArray(args.asserts) ? args.asserts : [];
+    if (!listRaw.length) {
+      t.done(false, "没给断言");
+      return "browser_assert 需要 asserts 数组，每项 { kind, sel, expected, contains, attr, name }。kind 取 " + PA.KINDS.join(" / ") + "。";
+    }
+    if (listRaw.length > PA.MAX_ASSERTS) {
+      t.done(false, "条数太多");
+      return "一次最多验 " + PA.MAX_ASSERTS + " 条（收到 " + listRaw.length + " 条）。拆成几批，先验最关键的那几条。";
+    }
+    const { items, bad } = PA.validate(listRaw);
+    if (bad.length) {
+      t.done(false, "参数不对");
+      return "断言清单没通过校验，一条都没执行：\n- " + bad.join("\n- ") +
+        "\n\n每项形状：{ kind, sel, expected, contains:true, attr, name }。" +
+        "text/value/attr 默认按「完全相等」判，想让「包含就算过」带 contains:true。";
+    }
+    const r = await run(agent, ["eval", PA.assertProbeScript(items.map(({ kind, sel, attr }) => ({ kind, sel, attr })))], { timeoutMs: 45000 });
+    if (!r.ok) return err(t, r);
+    const raw = r.data && r.data.result !== undefined ? r.data.result : r.text;
+    let obs = null;
+    try { obs = typeof raw === "string" ? JSON.parse(raw) : raw; } catch (e) { obs = null; }
+    if (!Array.isArray(obs)) {
+      t.done(false, "读不出结果");
+      return "断言没跑成：页面回来的不是预期结构（" + String(raw).slice(0, 160) + "）。" +
+        "先 browser_snapshot 确认页面还在原来那一页、没被登录跳转或崩溃页顶掉。";
+    }
+    const lines = [];
+    let passN = 0, failN = 0;
+    items.forEach((it, i) => {
+      const j = PA.judge(it.src, obs[i] || {});
+      if (j.pass) { passN++; lines.push("✓ [" + (i + 1) + "] " + it.label + " — " + (j.wantDesc || "符合") + "（" + j.actual + "）"); }
+      else { failN++; lines.push("✗ [" + (i + 1) + "] " + it.label + " — 期望" + (j.wantDesc || "") + "，实得 " + j.actual); }
+    });
+    const head = failN
+      ? "断言未全部通过：" + passN + " 通过 / " + failN + " 失败（共 " + items.length + " 条）"
+      : "断言全部通过：" + passN + " 条";
+    t.body(head + "\n" + lines.join("\n"));
+    t.done(failN === 0, passN + "/" + items.length);
+    return [
+      head, where(r.data), lines.join("\n"),
+      failN
+        ? "失败的那几条就是没验证到：看「实得」决定是改代码还是改期望，别把同一批断言再点一遍当作通过了。" +
+          "要定位为什么不一致，用 browser_snapshot 看当前结构，或 browser_eval 读一段现场。"
+        : "界面行为与这些期望一致。要声称「验证过了」，请指明验的是哪几条（照上面的编号复述一遍）。",
+    ].filter(Boolean).join("\n");
   },
 
   browser_eval: async (agent, args) => {

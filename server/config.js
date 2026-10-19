@@ -54,6 +54,11 @@ const DEFAULTS = {
     maxOutputTokens: 0,
     // P-M2：推理力度透传（low / medium / high），支持则透传给 LLM 上游
     reasoningEffort: "",
+    /* 视觉：模型能不能读像素。默认关，两件事决定它默认该关：
+       1) 一张 1280×720 的截图约 1~1.5k token，开着就等于每次截图都挤上下文水位；
+       2) 非视觉模型收到 image_url 会直接 400，把整轮任务判死。
+       开它之后，截图工具仍要**显式**带 for_model:true 才把像素交出去（人看的那张照旧只落盘）。 */
+    vision: false,
   },
   // 多份模型配置（网关地址 + 模型名）。密钥不进这里，见 profileKeyVar。
   llmProfiles: [],
@@ -83,7 +88,13 @@ const DEFAULTS = {
   // 确实要开（比如内网部署要给多个同事发账号）时临时置 true 建完即关。
   allowUserSignup: false,
   context: { budgetTokens: 1000000, autoCompact: true }, // 上下文预算 1M tokens
-  memory: { enabled: true },       // auto memory（会话中沉淀记忆）
+  memory: {
+    enabled: true,          // auto memory（会话中沉淀记忆）
+    /* 收尾自动结算：把这一局决策链里"被否过的做法 / 用户选定的方案"沉进长期记忆。
+       它是确定性的（读 .pancode/decisions 那份 JSONL，不再花一次 LLM 调用），
+       补的是"save_session_memory 全靠模型自觉"那个洞——模型没调，被否的方案就没人记得。 */
+    autoSettle: true,
+  },
   // —— 桌面端（Electron）窗口行为 ——
   desktop: {
     // 点标题栏红点 / 系统关闭时要做什么：
@@ -247,6 +258,9 @@ function saveLlm(cfg, patch) {
     const RE = ["", "low", "medium", "high", "xhigh"];
     if (RE.includes(String(patch.reasoningEffort))) cfg.llm.reasoningEffort = String(patch.reasoningEffort);
   }
+  /* 视觉开关。只认真值 true，其余（含 "on"/1/undefined 例外）一律算关：
+     开了但模型不带视觉会直接吃一个 400，宁可让它默认不喂像素。 */
+  if (patch.vision !== undefined) cfg.llm.vision = patch.vision === true;
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
   onDisk.llm = { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens, reasoningEffort: cfg.llm.reasoningEffort };
   writeJsonSafe(CONFIG_PATH, onDisk);
@@ -377,7 +391,12 @@ function saveAgentSettings(cfg, patch) {
     if (Number.isFinite(p.context.budgetTokens)) cfg.context.budgetTokens = Math.max(8000, p.context.budgetTokens | 0);
     if (typeof p.context.autoCompact === "boolean") cfg.context.autoCompact = p.context.autoCompact;
   }
-  if (p.memory && typeof p.memory.enabled === "boolean") cfg.memory.enabled = p.memory.enabled;
+  /* autoSettle 是「收尾自动沉淀决策链」的开关，和 enabled 一样要能被界面写回：
+     只加配置键不加写入分支，用户在界面上点了等于没点（见 llm.vision 同批的教训）。 */
+  if (p.memory) {
+    if (typeof p.memory.enabled === "boolean") cfg.memory.enabled = p.memory.enabled;
+    if (typeof p.memory.autoSettle === "boolean") cfg.memory.autoSettle = p.memory.autoSettle;
+  }
   if (typeof p.planMode === "boolean") cfg.planMode = p.planMode;
   if (p.agentMode === "agent" || p.agentMode === "plan" || p.agentMode === "ask") { cfg.agentMode = p.agentMode; cfg.planMode = (p.agentMode === "plan"); }
   if (p.lsp && typeof p.lsp.enabled === "boolean") cfg.lsp.enabled = p.lsp.enabled;
@@ -550,6 +569,7 @@ function publicInfo(cfg) {
     maxToolRounds: cfg.llm.maxToolRounds,
     contextWindow: cfg.llm.contextWindow,
     maxOutputTokens: cfg.llm.maxOutputTokens,
+    vision: cfg.llm.vision === true,
     agentMode: cfg.agentMode,
   };
 }

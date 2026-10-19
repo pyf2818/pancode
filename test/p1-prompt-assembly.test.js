@@ -51,17 +51,30 @@ function makeAgent(cfgExtra, stubs) {
 }
 
 /* 记忆/技能/规则的常用替身：
-   memory 与「无条件规则」是 stable 桶，rules 的按需命中部分和 skills 是 turn 桶。
+   常驻提醒与索引、无条件规则一样是 stable 桶，rules 的按需命中部分和 skills 是 turn 桶。
+   替身只给"P6 之后装配层真正会调的那几个方法"——旧的 formatForContext 已经撤掉，
+   留在这里会让"正文每轮摊开"看起来仍有支持。
    loadRulesParts 的返回形状必须与真实实现一致（{label,content,why} 的块数组），
    因为 buildAugmentParts 会把它交给 rulesLib.assemble 去拼。 */
 function dataStubs() {
+  const entry = (id, content) => ({ id, type: "error", topic: "被拒操作/反例", content, valueScore: 3, accessCount: 1 });
   return {
     memory: {
-      formatForContext: () => "项目记忆正文",
+      formatGuard: () => "项目记忆常驻",
+      guardForContext: () => [entry("pm1", "项目记忆常驻")],
+      formatIndex: () => "- #pm2 [lesson] 项目记忆目录",
+      indexForContext: () => [entry("pm2", "项目记忆目录")],
       list: () => [],
-      topForContext: () => [],
+      _tokenizeText: () => new Set(),
     },
-    userMemory: { formatForContext: () => "用户级记忆正文" },
+    userMemory: {
+      formatGuard: () => "用户级记忆常驻",
+      guardForContext: () => [entry("um1", "用户级记忆常驻")],
+      formatIndex: () => "- #um2 [lesson] 用户级记忆目录",
+      indexForContext: () => [entry("um2", "用户级记忆目录")],
+      list: () => [],
+      _tokenizeText: () => new Set(),
+    },
     skills: {
       match: (t) => (/部署/.test(t) ? [{ id: "s1" }] : []),
       formatForContext: () => "技能正文",
@@ -83,13 +96,16 @@ describe("buildAugmentParts：按变化频率分桶", () => {
     expect(p.turn).toEqual([]);
   });
 
-  it("无条件规则与记忆进 stable，按需规则与 Skill 进 turn，互不串桶", () => {
+  it("无条件规则与记忆两块进 stable，按需规则与 Skill 进 turn，互不串桶", () => {
     const a = makeAgent({ memory: { enabled: true }, rules: { enabled: true } }, dataStubs());
     const p = a.buildAugmentParts("帮我部署一下");
-    expect(p.stable.join("\n")).toContain("规则正文");
-    expect(p.stable.join("\n")).toContain("项目记忆正文");
-    expect(p.stable.join("\n")).toContain("用户级记忆正文");
-    expect(p.stable.join("\n")).not.toContain("按需规则正文");
+    const stable = p.stable.join("\n");
+    expect(stable).toContain("规则正文");
+    expect(stable).toContain("项目记忆常驻");
+    expect(stable).toContain("用户级记忆常驻");
+    expect(stable).toContain("项目记忆目录");
+    expect(stable).toContain("用户级记忆目录");
+    expect(stable).not.toContain("按需规则正文");
     expect(p.turn.join("\n")).toContain("按需规则正文");
     expect(p.turn.join("\n")).toContain("技能正文");
     expect(p.identity).toEqual([]);
@@ -112,8 +128,8 @@ describe("buildAugmentParts：按变化频率分桶", () => {
     const s = a.buildSystemAugment("部署");
     expect(s.indexOf("〔人格〕")).toBeGreaterThanOrEqual(0);
     expect(s.indexOf("规则正文")).toBeGreaterThan(s.indexOf("〔人格〕"));
-    expect(s.indexOf("规则正文")).toBeLessThan(s.indexOf("项目记忆正文"));
-    expect(s.indexOf("项目记忆正文")).toBeLessThan(s.indexOf("技能正文"));
+    expect(s.indexOf("规则正文")).toBeLessThan(s.indexOf("项目记忆常驻"));
+    expect(s.indexOf("项目记忆常驻")).toBeLessThan(s.indexOf("技能正文"));
   });
 
   it("仓库结构属于 stable，不随本轮输入抖动", () => {
@@ -235,16 +251,17 @@ describe("_runtimeContext：运行态发到末尾而不是 system", () => {
   });
 });
 
-describe("渐进披露实测（P1-#10：目录常驻、正文按需）", () => {
-  /* 优化方案 §6.3 原本把这条列为待做，实测后发现 pancode 早就做对了：
-     记忆只注入 top-10 × 160 字摘录，技能只注入 名称/描述/触发词 + 一句"要用的话调 use_skill 取正文"。
-     这里用真实的两个 store 量一遍，把"有界"钉成断言——以后谁把全文塞回 aug，这条会红。 */
+describe("渐进披露实测（P1-#10 / P6：目录常驻、正文按需）", () => {
+  /* 这一组用真实的两个 store 量"有界"，以后谁把全文塞回 aug 就会红。
+     记忆的口径在 P6 又收了一层：以前是 top-10 × 160 字摘录，
+     现在常驻只剩硬提醒（≤300 字）+ 一行一目的索引，正文一律 search_memory 自取。
+     技能仍是 名称/描述/触发词 + "要用的话调 use_skill 取正文"。 */
   let dir;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "pc-disc-")); });
   afterEach(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {} });
 
-  it("50 条各 5000 字的记忆：注入量仍有界，且不含任何整段正文", () => {
-    const { MemoryStore } = require("../server/memory-store");
+  it("50 条各 5000 字的记忆：常驻文本有界，且一条整段正文都不进", () => {
+    const { MemoryStore, IDX_MAX_CHARS, GUARD_MAX_CHARS } = require("../server/memory-store");
     const ms = new MemoryStore(path.join(dir, "mem.json"));
     const long = [];
     for (let i = 0; i < 50; i++) {
@@ -253,21 +270,46 @@ describe("渐进披露实测（P1-#10：目录常驻、正文按需）", () => {
       ms.add("lesson", "主题" + i, content);
     }
     expect(ms.size).toBe(50);
-    const out = ms.formatForContext(3000);
-    expect(out.length).toBeLessThanOrEqual(3020);
-    expect(out.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(10);   // 只 top 10
-    // 每条摘录被切到 160 字，绝不把 5000 字的正文带进上下文
-    for (const body of long.slice(0, 10)) expect(out).not.toContain(body.slice(0, 400));
-    // 但取回通道在：类型/主题/强度/年龄都在目录里，模型才知道该不该去 search_memory
-    expect(out).toMatch(/\(高\)|\(中\)/);
-    expect(out).toContain("[lesson]");
+    /* 旧口径的判据是"注入 ≤10 条 × 160 字摘录"，P6 之后摘录也没了：
+       索引行只给 #id + 类型 + 主题 + 44 字钩子，正文要靠模型自己调 search_memory 取。 */
+    const idx = ms.formatIndex();
+    expect(idx.length).toBeLessThanOrEqual(IDX_MAX_CHARS + 60);   // 60 是给"另有 K 条未列出"那行留的余量
+    expect(idx.split("\n").filter((l) => l.startsWith("- #")).length).toBeLessThan(50);
+    for (const body of long) expect(idx).not.toContain(body.slice(0, 400));
+    // 预算排不下时必须明说还有多少没列出，否则模型会以为目录就是全部
+    expect(idx).toMatch(/另有 \d+ 条未列出/);
+    // 取回通道在：每行都带可抄的 id
+    expect(idx).toMatch(/- #m[0-9a-z]+ \[lesson\] 主题\d+：/);
+    // 而常驻这块一条都不该有——普通 lesson 不在硬提醒的判定里
+    expect(ms.formatGuard()).toBe("");
+    expect(ms.formatGuard().length).toBeLessThanOrEqual(GUARD_MAX_CHARS);
   });
 
-  it("记忆条数不足 10 时按实际条数注入，不硬凑", () => {
+  it("反例与方案权衡才常驻，且合起来封顶 300 字", () => {
+    const { MemoryStore, GUARD_MAX_CHARS } = require("../server/memory-store");
+    const ms = new MemoryStore(path.join(dir, "mem-guard.json"));
+    ms.add("error", "被拒操作/反例", "不要擅自 git push，推之前要用户点头确认");
+    ms.add("decision", "方案权衡", "选 copyFile 而不是 rename 兜底：杀软会锁住安装目录里的目标文件");
+    ms.add("lesson", "主题", "一条与本轮无关的普通经验，正文只该出现在索引里");
+    ms.add("preference", "图标", "界面图标不要用 emoji，一律描边 SVG");
+    const g = ms.formatGuard();
+    expect(g).toContain("不要擅自 git push");
+    expect(g).toContain("选 copyFile 而不是 rename");
+    expect(g).toContain("不要用 emoji");          // 写成禁忌的偏好同样常驻
+    expect(g).not.toContain("普通经验");
+    expect(g.length).toBeLessThanOrEqual(GUARD_MAX_CHARS);
+    // 常驻过的那几条不许再在索引里列一遍（两块加起来才是全部目录）
+    const idx = ms.formatIndex();
+    expect(idx).toContain("主题");
+    for (const e of ms.guardForContext()) expect(idx).not.toContain("#" + e.id);
+  });
+
+  it("记忆条数不足时索引按实际条数给，不硬凑", () => {
     const { MemoryStore } = require("../server/memory-store");
     const ms = new MemoryStore(path.join(dir, "mem2.json"));
     ms.add("preference", "语言", "汇报一律用中文");
-    expect(ms.formatForContext(3000).split("\n").filter((l) => l.startsWith("- "))).toHaveLength(1);
+    expect(ms.formatIndex().split("\n").filter((l) => l.startsWith("- "))).toHaveLength(1);
+    expect(ms.formatIndex()).not.toMatch(/未列出/);
   });
 
   it("技能的 1 万字正文不进目录，目录显式指路 use_skill", () => {
@@ -365,55 +407,81 @@ describe("会话落盘裁剪（CONV_MAX_MSGS 回归）", () => {
   });
 });
 
-describe("记忆溯源台账：content 必须随台账走（回显卡要能看到记了什么）", () => {
-  const entry = (id, scope, extra) => Object.assign(
+describe("记忆溯源台账：只记真的在场的那几条（回显卡不许说「读过了」）", () => {
+  const entry = (id, extra) => Object.assign(
     { id, type: "lesson", topic: "主题" + id, content: "经验正文" + id, valueScore: 3, accessCount: 1 },
     extra || {});
+  /* 台账只有两个真信号：常驻提醒（guard）与模型自查（pull，由 search_memory 回填）。
+     正文不再每轮摊开，所以"注入了哪几条"这个旧口径已经不存在了。 */
   const memStubs = (projectEntries, userEntries) => ({
     memory: {
-      formatStable: () => "stable 注入文本",
-      formatRelevant: () => "relevant 注入文本",
-      stableForContext: () => projectEntries.filter((e) => e._stable),
-      relevantForContext: () => projectEntries.filter((e) => !e._stable),
+      formatGuard: () => projectEntries.filter((e) => e._guard).map(() => "常驻提醒文本").join("\n"),
+      guardForContext: () => projectEntries.filter((e) => e._guard),
+      formatIndex: () => projectEntries.filter((e) => !e._guard).map(() => "- 索引行").join("\n"),
+      indexForContext: () => projectEntries.filter((e) => !e._guard),
       list: () => [],
       _tokenizeText: () => new Set(),
     },
     userMemory: {
-      formatStable: () => "用户级 stable 注入文本",
-      stableForContext: () => userEntries.filter((e) => e._stable),
-      relevantForContext: () => userEntries.filter((e) => !e._stable),
+      formatGuard: () => userEntries.filter((e) => e._guard).map(() => "用户级常驻提醒文本").join("\n"),
+      guardForContext: () => userEntries.filter((e) => e._guard),
+      formatIndex: () => userEntries.filter((e) => !e._guard).map(() => "- 用户级索引行").join("\n"),
+      indexForContext: () => userEntries.filter((e) => !e._guard),
       list: () => [],
       _tokenizeText: () => new Set(),
     },
   });
 
-  it("台账条目带 content 摘要（≤120 字、压平空白），前端回显卡才有正文可显", () => {
-    // 用户级记忆只有稳定道（buildAugmentParts 不给 userMemory 走 relevant）
+  it("台账条目带 content 摘要（≤120 字、压平空白），且只收常驻的那几条", () => {
     const proj = [
-      entry("p1", "project", { content: "  a\n\n  b   c  " + "x".repeat(130), _stable: true }),
-      entry("p2", "project", { _stable: false }),
+      entry("p1", { content: "  a\n\n  b   c  " + "x".repeat(130), _guard: true }),
+      entry("p2", { _guard: false }),          // 只在索引里有一行 → 不该进台账
     ];
-    const user = [entry("u1", "user", { _stable: true })];
+    const user = [entry("u1", { _guard: true })];
     const a = makeAgent({ memory: { enabled: true } }, memStubs(proj, user));
     a.buildAugmentParts("问题");
     const used = a._usedMemory;
-    expect(used.length).toBe(3);
+    expect(used.map((u) => u.id).sort()).toEqual(["p1", "u1"]);
     for (const u of used) {
+      expect(u.via).toBe("guard");
       expect(typeof u.content).toBe("string");
-      expect(u.content.length).toBeGreaterThan(0);
       expect(u.content).not.toMatch(/\n/);
       expect(u.content.length).toBeLessThanOrEqual(120);
     }
-    // scope 传递不破：用户级仍是 user，且注入文本本身不受影响
     expect(used.filter((u) => u.scope === "user").map((u) => u.id)).toEqual(["u1"]);
     expect(used.find((u) => u.id === "u1").content).toBe("经验正文u1");
   });
 
+  it("索引行不进台账；整段正文没进上下文就不算「读过」", () => {
+    const a = makeAgent({ memory: { enabled: true } }, memStubs([entry("p3", { _guard: false })], []));
+    const p = a.buildAugmentParts("问题");
+    expect(p.stable.join("\n")).toContain("索引行");
+    expect(a._usedMemory).toEqual([]);
+  });
+
   it("条目没有 content 时不炸，content 为空串", () => {
-    const proj = [entry("p2", "project", { content: undefined, _stable: true })];
+    const proj = [entry("p2", { content: undefined, _guard: true })];
     const a = makeAgent({ memory: { enabled: true } }, memStubs(proj, []));
     a.buildAugmentParts("问题");
     expect(a._usedMemory.length).toBe(1);
     expect(a._usedMemory[0].content).toBe("");
+  });
+
+  it("模型自查（search_memory 回填）进台账并标 via=pull，同一条不重复记", () => {
+    const a = makeAgent({ memory: { enabled: true } }, memStubs([entry("p1", { _guard: true })], []));
+    a.buildAugmentParts("问题");
+    a.noteMemoryUse([entry("q1"), entry("q1"), entry("q2")], "project");
+    const byId = {};
+    a._usedMemory.forEach((u) => { byId[u.id] = (byId[u.id] || 0) + 1; });
+    expect(byId).toEqual({ p1: 1, q1: 1, q2: 1 });
+    expect(a._usedMemory.find((u) => u.id === "q1").via).toBe("pull");
+    expect(a._usedMemory.find((u) => u.id === "q1").scope).toBe("project");
+  });
+
+  it("收尾补强只碰常驻提醒：自查条目已在 search_memory 计过一次，再加就是自己抬自己", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../server/agent-llm.js"), "utf8");
+    const tail = src.slice(src.indexOf("记忆溯源回推"));
+    expect(tail).toContain('if (u.via !== "guard") continue;');
+    expect(tail.slice(0, 4000)).toContain("this.userMemory.touchMany");
   });
 });

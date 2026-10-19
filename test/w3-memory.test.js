@@ -158,57 +158,117 @@ describe("memory-tools.save_session_memory — scope=user", () => {
   });
 });
 
-describe("buildSystemAugment — 记忆分道注入（#31）", () => {
+describe("buildSystemAugment — 记忆判断层（正文不摊开，只留硬提醒 + 索引）", () => {
   function augAgent(userJson, projJson) {
     const agent = Object.create(LlmAgent.prototype);
     agent.cfg = { memory: { enabled: true }, rules: { enabled: false }, repoMap: false };
     agent.userMemory = userJson ? new MemoryStore(path.join(memDir, userJson)) : null;
     agent.memory = new MemoryStore(path.join(memDir, projJson));
     agent.plan = { formatForContext: () => "" };
-    agent.skills = { match: () => [], formatForContext: () => "", recordUse: () => {} };
+    agent.skills = { match: () => [], formatForContext: () => "", recordUse: () => {}, list: () => [] };
     agent.soul = { get: () => ({}) };
     agent.progression = { get: () => ({ path: "" }) };
     agent._evolutionBias = () => null;
     agent._currentConv = "t";
     return agent;
   }
+  /* 断言必须分块做：索引行本身就带正文开头 44 字的钩子，
+     整段文本上判 not.toContain(正文) 会误判成"正文进来了"，判 toContain 会误判成"常驻"。 */
+  function buckets(out) {
+    const cut = (mark) => {
+      const i = out.indexOf(mark);
+      if (i < 0) return "";
+      const rest = out.slice(i + mark.length);
+      const nxt = rest.search(/\n【/);
+      return (nxt < 0 ? rest : rest.slice(0, nxt)).trim();
+    };
+    return { guard: cut("【记忆·硬提醒"), index: cut("【记忆索引") };
+  }
 
-  it("用户级在前；项目 lesson 只在本轮词元命中时才进上下文", () => {
+  /* 钩子只截正文开头 44 字，所以"正文有没有摊开"必须拿落在 44 字之后的那段来判：
+     用前半句判会两边都命中（索引行里就有它），判据等于没判。 */
+  const BODY = "本项目用 vitest 跑单测，跑之前要先装依赖，这条只在索引里留一行钩子，" + "补".repeat(20);
+  const TAIL = "整段正文MARKER";
+
+  it("用户级在前；反例正文进常驻块，普通 lesson 的整段正文不进任何块", () => {
     const agent = augAgent("user.json", "proj.json");
-    agent.userMemory.add("preference", "命名约定", "变量名用中文");
-    agent.memory.add("lesson", "测试约定", "本项目用 vitest 跑单测");
-    const hit = agent.buildSystemAugment("帮我把 vitest 的用例补全");
-    expect(hit).toContain("【用户级记忆");
-    expect(hit).toContain("变量名用中文");
-    expect(hit).toContain("【与本轮相关的项目记忆");
-    expect(hit.indexOf("【用户级记忆")).toBeLessThan(hit.indexOf("【与本轮相关的项目记忆"));
+    // 写成禁忌的偏好才算常驻（含"不要"），普通偏好只进索引
+    agent.userMemory.add("preference", "命名约定", "变量名不要用英文缩写，一律用中文，函数名也照此办理");
+    agent.memory.add("error", "被拒操作/反例", "不要擅自 git commit，用户会单独下令");
+    agent.memory.add("lesson", "测试约定", BODY + TAIL);
+    const b = buckets(agent.buildSystemAugment("帮我把 vitest 的用例补全"));
+    expect(b.guard).toContain("不要擅自 git commit");
+    expect(b.guard).toContain("用户级：");
+    expect(b.guard.indexOf("用户级：")).toBeLessThan(b.guard.indexOf("本项目："));
+    expect(b.guard).not.toContain("vitest");
+    // 钩子在（主题 + 开头），整段正文不在
+    expect(b.index).toContain("测试约定");
+    expect(b.index).toContain("本项目用 vitest 跑单测");
+    expect(b.index).not.toContain(TAIL);
+    // 常驻过的条目不许在索引里再列一遍
+    expect(b.index).not.toContain("命名约定");
 
-    /* 本轮问的跟这条毫无交集 → 一个字都不注入。
-       旧口径是"按强度凑满 10 条"，于是任何高强度条目都会跟着进来，
-       用户看到的"读进来的长期记忆没啥意义"就是这么来的。 */
-    const miss = agent.buildSystemAugment("把首页按钮的圆角改成 8px");
-    expect(miss).not.toContain("【与本轮相关的项目记忆");
-    expect(miss).not.toContain("vitest");
-    // 偏好是无条件在场的：本轮问得不相关也照样跟着，这是它和 lesson 的分工
-    expect(miss).toContain("变量名用中文");
+    /* 换一轮毫不相关的输入，常驻与索引都不受影响。
+       旧口径在这里会说"lesson 一个字都不注入"——那是"本轮命中才注入正文"时代的判据，
+       P6 起正文从不按命中注入，所以这条判据换成"整段正文不在任何块里"（上面 TAIL 那条）。 */
+    const b2 = buckets(agent.buildSystemAugment("把首页按钮的圆角改成 8px"));
+    expect(b2.guard).toBe(b.guard);
+    expect(b2.index).toBe(b.index);
   });
 
-  it("稳定道只收偏好/归纳产物/sticky，普通的 lesson 不会因为强度高就常驻", () => {
+  it("常驻只有被否/权衡/禁忌三类；普通 lesson 强度再高也不进常驻块", () => {
     const agent = augAgent(null, "proj3.json");
-    agent.memory.add("lesson", "测试约定", "本项目用 vitest 跑单测", { valueScore: 5 });
-    agent.memory.add("decision", "打包方案", "electron-builder 改名被锁时降级为 copyFile", { source: "consolidate", valueScore: 5 });
-    const out = agent.buildSystemAugment("今天天气不错");
-    expect(out).toContain("【项目记忆（长期约定，参考）】");
-    expect(out).toContain("打包方案");
-    expect(out).not.toContain("vitest");
+    const lesson = agent.memory.add("lesson", "测试约定", BODY + TAIL, { valueScore: 5 });
+    agent.memory.add("decision", "方案权衡", "选 copyFile 而不是 rename 兜底：杀软会锁住目标文件", { valueScore: 5 });
+    const b = buckets(agent.buildSystemAugment("今天天气不错"));
+    expect(b.guard).toContain("方案权衡");
+    expect(b.guard).not.toContain("vitest");
+    // 但它必须在索引里看得见，且带得上可抄的 #id
+    expect(b.index).toContain("#" + lesson.id);
+    expect(b.index).toContain("测试约定");
+    expect(b.index).not.toContain(TAIL);
   });
 
-  it("userMemory 未注入时不产生用户级块；一条都不该在场时项目块整块消失", () => {
+  it("写成禁忌的偏好才常驻；不含禁忌词的偏好只在索引", () => {
+    const agent = augAgent(null, "proj4.json");
+    agent.memory.add("preference", "汇报", "回复一律用简体中文，代码注释同样用中文写清楚，中英混排MARKER不算违规");
+    agent.memory.add("preference", "图标", "界面图标不要用 emoji，一律用描边 SVG");
+    const b = buckets(agent.buildSystemAugment("随便"));
+    expect(b.guard).toContain("不要用 emoji");
+    expect(b.guard).not.toContain("描边 SVG之外");
+    expect(b.guard).not.toContain("中英混排MARKER");   // 落在钩子之后 → 只有常驻才会露出来
+    expect(b.index).toContain("汇报");
+  });
+
+  it("userMemory 未注入时不产生用户级段；空库时两块整块消失", () => {
     const agent = augAgent(null, "proj2.json");
-    agent.memory.add("lesson", "经验", "本项目用 vitest");
     const out = agent.buildSystemAugment("");
-    expect(out).not.toContain("【用户级记忆");
-    expect(out).not.toContain("【项目记忆（长期约定");
-    expect(out).not.toContain("【与本轮相关的项目记忆");
+    expect(out).not.toContain("用户级：");
+    expect(out).not.toContain("用户级（跨项目）");
+    expect(out).not.toContain("【记忆·硬提醒");
+    expect(out).not.toContain("【记忆索引");
+  });
+
+  it("记忆两块逐字节不随本轮输入变（提示词前缀缓存成立的根据）", () => {
+    const agent = augAgent("user5.json", "proj5.json");
+    agent.userMemory.add("preference", "禁忌", "回复不要用 emoji");
+    agent.memory.add("lesson", "测试约定", "本项目用 vitest 跑单测");
+    agent.memory.add("error", "被拒操作/反例", "不要用 run_command 拼 sed 改名");
+    const memBlocks = (text) => agent.buildAugmentParts(text).stable.filter((s) => /【记忆/.test(s)).join("\n");
+    const a = memBlocks("帮我把首页圆角改成 8px");
+    const b = memBlocks("vitest 的用例还没补，顺手看看端口占用");
+    expect(a).not.toBe("");
+    expect(b).toBe(a);
+  });
+
+  it("台账只记常驻那几条；正文没进上下文就不许说「读过了」", () => {
+    const agent = augAgent("user6.json", "proj6.json");
+    const guard = agent.memory.add("error", "被拒操作/反例", "不要擅自 push，推之前要用户点头");
+    const plain = agent.memory.add("lesson", "测试约定", "本项目用 vitest 跑单测");
+    agent.buildAugmentParts("随便问点什么");
+    const ids = agent._usedMemory.map((u) => u.id);
+    expect(ids).toContain(guard.id);
+    expect(ids).not.toContain(plain.id);
+    expect(agent._usedMemory.every((u) => u.via === "guard")).toBe(true);
   });
 });

@@ -42,16 +42,43 @@ function isJunkPhrase(s, minLen) {
 
 /* 未访问过的非 sticky 条目按类型 TTL（天）：错误易过时，偏好较持久 */
 const TYPE_TTL = { error: 60, preference: 180, lesson: 90, pattern: 90, decision: 90, skill: 90 };
-/* 注入侧的三道降噪闸（#31）：强度地板、同主题限量、两条道各自的上限。
+/* 注入侧的三道降噪闸（#31）：强度地板、同主题限量、每类的取用上限。
    地板从 1 提到 1.5 是配合写入端"自动沉淀一律给 3 分"一起设计的：
    新写入的记忆要活到 3 分被反复确认过才会长期占上下文，一次性闲聊会自己滑出去。 */
 const CTX_MIN_STRENGTH = 1.5;
 const CTX_MAX_PER_TOPIC = 2;
-const CTX_STABLE_MAX = 6;
-const CTX_RELEVANT_MAX = 6;
-const CTX_MAX = 10;                 // 两条道合起来的总上限（与旧口径一致，注入量必须有界）
 /* 高价值 / 归纳产物 / 显式 sticky 条目豁免主动裁剪（仍会被 200 上限挤出） */
 function isSticky(e) { return e.sticky === true || e.source === "consolidate" || (e.valueScore || 0) >= 4; }
+
+/* ============================================================
+   判断层口径（记忆不再每轮摊开）
+   ------------------------------------------------------------
+   常驻的只有两样，而且都必须进 stable 桶（字节随本轮输入抖的东西不配叫常驻）：
+     ① 硬提醒：被用户/规则否过的做法、方案权衡、写成禁忌的偏好 —— 少量、短。
+        这一道不是"方便"，是补"模型不知道自己不知道"那个洞：上一局被否掉的方案，
+        这一局如果全靠模型自己去查，它就会原样再提一遍。
+     ② 索引：一行一条，只给钩子和 #id，正文一律不进上下文。
+        要不要看全文是模型的判断，判据是这条索引行；取用走 search_memory。
+   ------------------------------------------------------------
+   预算按这份库实测定的：80 条（未归档 39 条）、正文合计 8564 字、平均 107 字/条。
+   旧口径最坏每轮自动带 3800 字正文，其中大部分与本轮无关。
+   ============================================================ */
+const GUARD_MAX = 4;
+const GUARD_MAX_CHARS = 300;
+const IDX_MAX_LINES = 40;
+const IDX_MAX_CHARS = 1500;
+const IDX_HOOK_CHARS = 44;
+/* 只有这两个"类别 + 主题"的组合算硬提醒。别按 type 整类放行：
+   type=error 里混着自动沉淀的普通踩坑，那些进索引就够，天天占着上下文是噪声。 */
+const GUARD_KEYS = [["error", "被拒操作/反例"], ["decision", "方案权衡"]];
+const TABOO_RE = /(不要|不得|禁止|不许|不准|别|从不|避免|never|don'?t)/i;
+
+/* 判据只写这一处：注入端、索引去重、记忆面板"为什么这条常驻"共用同一把尺子 */
+function isGuardEntry(e) {
+  if (!e || e.archived) return false;
+  for (const [t, topic] of GUARD_KEYS) if (e.type === t && e.topic === topic) return true;
+  return e.type === "preference" && TABOO_RE.test(String(e.topic || "") + " " + String(e.content || ""));
+}
 
 class MemoryStore {
   constructor(filePath) {
@@ -215,7 +242,10 @@ class MemoryStore {
     scored.sort((a, b) => b.score - a.score);
     if (opts.raw) return scored.slice(0, limit);   // W3：searchAll 用，返回 [{entry, score}] 供跨片归一排序
     const hits = scored.slice(0, limit).map((s) => s.entry);
-    if (hits.length) {
+    /* noTouch：只给"指针"的调用方（相关记忆那行只报 id，正文没进模型上下文）
+       不该算一次复习。按命中就加分，等于让关键词字面撞车把记忆养成长驻——
+       正是 #31 那个正反馈。真被读进来的算法见 agent-llm 收尾的 _citedMemoryIds。 */
+    if (hits.length && !opts.noTouch) {
       // 命中即"复习"：刷新最后访问时刻（衰减锚点），并落盘——否则进程重启后访问记录丢失
       for (const e of hits) {
         e.accessCount = (e.accessCount || 0) + 1;
@@ -317,43 +347,37 @@ class MemoryStore {
     this._save();
   }
 
-  /* ---------- 注入（#31：按质量与相关性选，而不是凑满 10 条） ----------
+  /* ---------- 选条（#31 的降噪闸 + P6 的判断层） ----------
      记忆最容易自伤的地方是"越存越像噪音"：旧实现只看遗忘曲线强度、且固定取满 10 条，
      于是同一主题连着三条一起进榜、跟本轮问题八竿子不着的高强度条目也进榜，
      用户读到的就是"它记了一堆我当初随口说的话"。
 
-     现在分两条道：
-       · stable（无条件在场）= 用户偏好/禁忌 + 归纳产物 + 显式 sticky。
-         这些与"本轮问什么"无关，字节稳定，才谈得上命中提示词前缀缓存。
-       · relevant（看本轮输入才在场）= lesson/pattern/decision/error，
-         必须与用户本轮原话有词元交集，否则一个字都不进上下文。
-     两条道各自再加：强度地板（低于它宁可不注入）与同主题限量（防霸榜）。 */
+     两道闸留着：强度地板（低于它连索引都不上）与同主题限量（防霸榜）。
+     分道口径改了：不再按"本轮问什么"挑正文注入，而是
+       · guard（常驻提醒）= 被否过的做法 / 方案权衡 / 写成禁忌的偏好，只给正文；
+       · index（索引）= 其余全部，只给一行目录和 #id，正文由模型自己调 search_memory 取。
+     所以选条不再看本轮输入——常驻的东西如果每轮内容不一样，前缀缓存就白做了，
+     而"这轮该看哪条"已经交给模型（索引行 + search_memory），不在这里判。 */
   _isStableEntry(e) {
     return e.type === "preference" || e.source === "consolidate" || e.source === "sediment" || e.sticky === true;
   }
 
-  _ctxCandidates(userText) {
-    const q = userText ? this._tokenizeText(userText) : null;
+  _ctxCandidates() {
     const out = [];
     for (const e of this._entries) {
       if (e.archived) continue;
       const w = decayWeight(e);
       if (w < CTX_MIN_STRENGTH) continue;
-      const stable = this._isStableEntry(e);
-      let rel = 1;
-      if (q && !stable) {
-        rel = this._jaccard(q, this._tokenizeText(e.topic + " " + e.content));
-        if (rel <= 0) continue;        // 本轮问的与它毫无交集 → 不占上下文
-      }
-      out.push({ e, w, rel, stable });
+      out.push({ e, w, stable: this._isStableEntry(e) });
     }
     return out;
   }
 
-  /* 排序：强度 ×（1 + 相关性权重），稳定条目略优先；同主题最多 CTX_MAX_PER_TOPIC 条 */
+  /* 排序：有效强度为主，长期资产（偏好/归纳产物/sticky）略优先；同主题最多 CTX_MAX_PER_TOPIC 条。
+     ×3 是去掉恒为 1 的旧相关性权重后按等比例留下的，改它会改选条结果。 */
   _ctxPick(cands, n) {
     const list = cands.slice().sort((a, b) =>
-      (b.w * (1 + b.rel * 2) + (b.stable ? 0.5 : 0)) - (a.w * (1 + a.rel * 2) + (a.stable ? 0.5 : 0)));
+      (b.w * 3 + (b.stable ? 0.5 : 0)) - (a.w * 3 + (a.stable ? 0.5 : 0)));
     const perTopic = new Map();
     const out = [];
     for (const x of list) {
@@ -364,15 +388,6 @@ class MemoryStore {
       if (out.length >= n) break;
     }
     return out;
-  }
-
-  stableForContext(n) {
-    return this._ctxPick(this._ctxCandidates("").filter((x) => x.stable), n || CTX_STABLE_MAX);
-  }
-
-  relevantForContext(userText, n) {
-    if (!userText) return [];
-    return this._ctxPick(this._ctxCandidates(userText).filter((x) => !x.stable), n || CTX_RELEVANT_MAX);
   }
 
   _formatLines(entries, maxChars) {
@@ -389,30 +404,55 @@ class MemoryStore {
     return out;
   }
 
-  /* 稳定道文本（进提示词的可缓存区） */
-  formatStable(maxChars) {
-    return this._formatLines(this.stableForContext(), maxChars || 1500);
+  /* ---------- 判断层的两块：硬提醒 + 索引（正文不在此列） ----------
+     旧的 stableForContext / relevantForContext / formatStable / formatRelevant /
+     topForContext / formatForContext 一并撤掉：正文一旦有现成的取回口，
+     "每轮自动摊开"就会从那个口回来。常驻只剩下面两条。 */
+  guardForContext(n) {
+    return this._ctxPick(this._ctxCandidates().filter((x) => isGuardEntry(x.e)), n || GUARD_MAX);
   }
 
-  /* 相关道文本（进提示词的每轮变化区） */
-  formatRelevant(userText, maxChars) {
-    return this._formatLines(this.relevantForContext(userText), maxChars || 1500);
+  formatGuard(maxChars) {
+    return this._formatLines(this.guardForContext(), maxChars || GUARD_MAX_CHARS);
   }
 
-  /* ---------- 格式化输出（注入到 LLM 上下文） ----------
-     兼容口：两条道合在一起的文本（旧的调用方 / 面板预览用）。
-     注入路径已改为分别取 formatStable / formatRelevant，以便稳定道字节不随本轮输入抖动。 */
-  formatForContext(maxChars, userText) {
-    maxChars = maxChars || 1500;
-    return this._formatLines(this.topForContext(CTX_MAX, userText), maxChars);
+  /* 索引里不重复列已经常驻的那几条 */
+  indexForContext(n) {
+    const guard = new Set(this.guardForContext(999).map((e) => e.id));
+    return this._ctxPick(this._ctxCandidates().filter((x) => !guard.has(x.e.id)), n || IDX_MAX_LINES);
   }
 
-  /* 供注入端去重：返回本次会进上下文的条目集合（与 format* 同口径）。
-     相关记忆检索块用本方法排除已注入条目，避免重复稀释。 */
-  topForContext(n, userText) {
-    const stable = this._ctxCandidates("").filter((x) => x.stable);
-    const rel = this._ctxCandidates(userText).filter((x) => !x.stable);
-    return this._ctxPick(stable.concat(rel), n || CTX_MAX);
+  /* 一行一条：#id + 类型 + 主题 + 钩子。给 id 是为了让"取这一条"变成一次精确调用，
+     而不是让模型去猜关键词——猜错就查不到，查不到就等于没这条记忆。 */
+  formatIndex(maxChars) {
+    const list = this.indexForContext();
+    if (!list.length) return "";
+    const budget = maxChars || IDX_MAX_CHARS;
+    const lines = [];
+    let used = 0;
+    for (const e of list) {
+      const topic = String(e.topic || "").replace(/\s+/g, " ").trim().slice(0, 18);
+      const hook = String(e.content || "").replace(/\s+/g, " ").trim().slice(0, IDX_HOOK_CHARS);
+      const line = "- #" + e.id + " [" + e.type + "]" + (topic ? " " + topic + "：" : "") + hook;
+      if (used + line.length > budget) break;
+      used += line.length;
+      lines.push(line);
+    }
+    const hidden = list.length - lines.length;
+    if (hidden > 0) lines.push("- …另有 " + hidden + " 条未列出，用 search_memory 按关键词取");
+    return lines.join("\n");
+  }
+
+  /* 按 id 精确取正文（search_memory 的 ids 入口）。归档条目也算命中但要点明它已归档，
+     否则模型会拿一条被治理掉的旧结论当现行约定用。 */
+  findByIds(ids) {
+    const want = (Array.isArray(ids) ? ids : [ids]).map((x) => String(x || "").trim().replace(/^#/, "")).filter(Boolean);
+    const out = [];
+    for (const id of want) {
+      const e = this._entries.find((x) => x.id === id);
+      if (e) out.push(e);
+    }
+    return out;
   }
 
   get size() { return this._entries.length; }
@@ -447,4 +487,5 @@ class MemoryStore {
   }
 }
 
-module.exports = { MemoryStore, TYPES, decayWeight, isSticky, isJunkPhrase };
+module.exports = { MemoryStore, TYPES, decayWeight, isSticky, isJunkPhrase, isGuardEntry,
+  GUARD_MAX_CHARS, IDX_MAX_CHARS };

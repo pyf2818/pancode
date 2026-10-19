@@ -3083,17 +3083,28 @@ function wireEnvPanel() {
 function renderRecallCard(ev) {
   const list = (ev.entries || []).filter((e) => e && (e.topic || e.content || e.type));
   if (!list.length) return;
+  /* 口径跟着 P6 改：卡片以前写"读进了 N 条"，那是"每轮自动摊正文"时代的说法。
+     现在正文只有硬提醒那几类常驻，其余全靠模型自己调 search_memory 取，
+     所以两个来源要分开计——否则用户看到"读进了 12 条"，模型其实一条正文都没看。 */
+  const resident = list.filter((e) => (e.via || "guard") === "guard").length;
+  const pulled = list.length - resident;
   const el = document.createElement("div");
   el.className = "recall-card";
   const rows = list.map((e) => {
     const c = (e.content || "").trim();
     const t = (e.topic || "").trim();
+    /* scope 三档：本项目 / 用户级（跨项目通用）/ 别的工作区的分片。
+       旧的两档写法会把"从隔壁项目捞来的旧结论"显示成"本项目记过"。 */
+    const SCOPE = { user: ["user", "跨项目"], other: ["other", "别的工作区"], project: ["proj", "本项目"] };
+    const sc = SCOPE[e.scope === "user" ? "user" : e.scope === "other" ? "other" : "project"];
     // 旧条目的 topic 多是当年拿用户原话切片落盘的（#31 遗留），与正文开头重复时不再显示，
     // 回显卡以正文内容为主，免得满屏"用户说过的话"显得记忆没价值
     const dup = t && c && c.replace(/\s+/g, "").startsWith(t.replace(/\s+/g, ""));
-    return '<div class="rc-row">' +
+    const via = (e.via || "guard") === "pull" ? "模型自查" : "常驻提醒";
+    return '<div class="rc-row" data-via="' + ((e.via || "guard") === "pull" ? "pull" : "guard") + '">' +
       '<div class="rc-line">' +
-        '<span class="rc-scope ' + (e.scope === "user" ? "user" : "proj") + '">' + (e.scope === "user" ? "跨项目" : "本项目") + "</span>" +
+        '<span class="rc-scope ' + sc[0] + '">' + sc[1] + "</span>" +
+        '<span class="rc-tag rc-via">' + via + "</span>" +
         (t && !dup ? '<span class="rc-topic">' + esc(t) + "</span>" : "") +
         '<span class="rc-tag">' + esc(e.type || "") + "</span>" +
         '<span class="rc-meta">价值 ' + (e.valueScore >= 4 ? "高" : e.valueScore >= 3 ? "中" : "低") + " · 已用上 " + (e.accessCount || 0) + " 次</span>" +
@@ -3103,7 +3114,8 @@ function renderRecallCard(ev) {
   }).join("");
   el.innerHTML =
     '<div class="rc-head">' + ico("memory") +
-      '<span class="rc-title">本次任务读进了 ' + list.length + " 条长期记忆</span>" +
+      '<span class="rc-title">本次任务的长期记忆：常驻提醒 ' + resident + " 条" +
+        (pulled ? " · 我自己查了 " + pulled + " 条" : "") + "</span>" +
       '<button class="rc-toggle">' + ico("chevR") + "明细</button>" +
     "</div><div class='rc-body'>" + rows + "</div>";
   el.querySelector(".rc-toggle").onclick = () => el.classList.toggle("open");
@@ -3254,6 +3266,14 @@ let orchSteps = {};
    现在有多批或存在依赖才画泳道 + 依赖边；单批无依赖仍是那条整宽列表 ——
    图为依赖服务，没有依赖时画一列框框只是噪音。
    分层只认服务端发的那一份（真正决定执行顺序的就是它），前端不再自己推一套。 */
+/* 这一步的"归属"：改了哪几个文件、有没有被并行冲突挡回。
+   并行分工最怕的就是跑完了没人说得清谁动了什么，所以这两个数实时就要看得见。
+   changed 可能是数组（实时事件）也可能是条数（历史端点是裁剪过的），两种都接。 */
+function orchAttrib(s) {
+  const n = Array.isArray(s.changed) ? s.changed.length : (s.changed || 0);
+  const c = Array.isArray(s.conflicts) ? s.conflicts.length : (s.conflicts || 0);
+  return (n ? " · 改动 " + n + " 个文件" : "") + (c ? " · 撞回 " + c + " 次" : "");
+}
 function orchNodeEl(s) {
   const st = s.status || "pending";
   const el = document.createElement("div");
@@ -3266,7 +3286,7 @@ function orchNodeEl(s) {
   el.innerHTML = '<div class="orch-step-head">' +
     '<span class="orch-step-ico">' + ico(icoName) + "</span>" +
     '<span class="orch-step-name">' + esc(s.name || s.id) + "</span>" +
-    '<span class="orch-step-status">' + esc(statusText) + (s.elapsed ? " · " + (+s.elapsed).toFixed(1) + "s" : "") + "</span></div>" +
+    '<span class="orch-step-status">' + esc(statusText) + (s.elapsed ? " · " + (+s.elapsed).toFixed(1) + "s" : "") + esc(orchAttrib(s)) + "</span></div>" +
     '<div class="orch-step-out"></div>';
   const out = el.querySelector(".orch-step-out");
   if (s.output) orchSetOutput(el, String(s.output).slice(0, 1500));
@@ -3402,7 +3422,7 @@ function onOrchStepDone(ev) {
   if (!el) return;
   el.className = "orch-step done";
   el.querySelector(".orch-step-ico").innerHTML = ico("check");
-  el.querySelector(".orch-step-status").textContent = t("apOnOrchStepDonetextContentT54");
+  el.querySelector(".orch-step-status").textContent = t("apOnOrchStepDonetextContentT54") + orchAttrib({ changed: ev.changed, conflicts: ev.conflicts });
   if (ev.output) orchSetOutput(el, ev.output);
   replaceIcons();
   redrawOrch();
@@ -3493,9 +3513,12 @@ async function renderOrchHistory() {
          结果全文点开回放仍能看（每步 1500 字）。 */
       const stepRows = (h.steps || []).slice(0, 4).map((s) => {
         const st = s.status === "done" ? "done" : s.status === "fail" ? "fail" : "run";
+        /* 耗时与归属并排一格：回放时用户同样要能看出"这一步动了几个文件、有没有撞回"，
+           光看状态点和 output 摘要分不出谁改了盘。 */
+        const stepT = [(s.elapsed ? (+s.elapsed).toFixed(1) + "s" : ""), orchAttrib(s).replace(/^ · /, "")].filter(Boolean).join(" · ");
         return '<div class="ag-orch-step ' + st + '">' +
           '<span class="ag-orch-step-name">' + esc(s.name || s.id) + "</span>" +
-          (s.elapsed ? '<span class="ag-orch-step-t">' + (+s.elapsed).toFixed(1) + "s</span>" : "") +
+          (stepT ? '<span class="ag-orch-step-t">' + esc(stepT) + "</span>" : "") +
           (s.task ? '<span class="ag-orch-step-task">' + esc(s.task.slice(0, 70)) + "</span>" : "") +
           (s.output ? '<span class="ag-orch-step-out">' + esc(s.output.slice(0, 90)) + "</span>" : "") +
           "</div>";

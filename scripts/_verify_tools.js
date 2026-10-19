@@ -34,7 +34,7 @@ const EXPECT_TOOLS = [
   /* 浏览器自动化（agent-browser 驱动本机 Chrome/Edge）：判读走无障碍树文本，截图只落盘给人看 */
   "browser_open", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill",
   "browser_press", "browser_select", "browser_read", "browser_screenshot", "browser_wait",
-  "browser_tabs", "browser_eval", "browser_close",
+  "browser_tabs", "browser_eval", "browser_close", "browser_assert",
   /* 电脑控制（Windows UI Automation 常驻 worker）：读控件树为主，坐标点击兜底 */
   "desktop_windows", "desktop_snapshot", "desktop_read", "desktop_click", "desktop_type",
   "desktop_press", "desktop_scroll", "desktop_window", "desktop_screenshot",
@@ -107,6 +107,16 @@ const { LlmAgent } = require(path.join(__dirname, "..", "server", "agent-llm.js"
     if (toolsSeen.length !== EXPECT_TOOLS.length) errs.push("TOOLS 数量应为 " + EXPECT_TOOLS.length + "，实际 " + toolsSeen.length);
     const names = toolsSeen.map((t) => t.function && t.function.name).sort();
     if (JSON.stringify(names) !== JSON.stringify(EXPECT_TOOLS)) errs.push("TOOLS 名称不符: " + names.join(","));
+    /* 上面这份是"父智能体这一轮真的发给模型的"那一份，不是注册表全集。
+       P5 起两者刻意不相等：board 只给子智能体，父清单里带它就是每轮白占 token。
+       这里两头都钉死，防止有人把它从注册表里删干净来"凑齐"两个数。 */
+    const all = LlmAgent.toolNames();
+    if (!all.includes("board")) errs.push("注册表里该有 board（只给子智能体的白板），实际 " + all.length);
+    if (names.includes("board")) errs.push("父请求里不该出现 board");
+    if (all.length !== EXPECT_TOOLS.length + 1) errs.push("注册表应比父请求多 1 个（board），实际 " + all.length + " vs " + EXPECT_TOOLS.length);
+    const sub = a._subToolset().map((t) => t.function.name);
+    if (!sub.includes("board")) errs.push("子智能体工具集里没有 board，白板这条通道根本没接上");
+    if (sub.includes("orchestrate")) errs.push("子智能体还能再开一轮编排（已知偏差 3 没关掉）");
     // 校验 schema 形态
     for (const t of toolsSeen) {
       if (t.type !== "function" || !t.function || !t.function.parameters) errs.push("工具 schema 形态错误: " + t.function && t.function.name);
@@ -135,5 +145,5 @@ const { LlmAgent } = require(path.join(__dirname, "..", "server", "agent-llm.js"
   try { fs.unlinkSync(traceFile); } catch (e) {}   // 清理测试产物
 
   if (errs.length) { console.error("FAIL:\n - " + errs.join("\n - ")); process.exit(1); }
-  console.log("PASS: TOOLS 已定义（" + toolsSeen.length + " 个工具），ReAct 循环正常启动并通过工具调用跑到结束；agent.trace 实时 emit " + trace.length + " 条并已落盘 " + diskLines + " 行 JSONL（llm.round / tool.call 等）。");
+  console.log("PASS: 父请求里 " + toolsSeen.length + " 个工具（注册表 " + LlmAgent.toolNames().length + " 个，差的那份是只给子智能体的 board），ReAct 循环正常启动并通过工具调用跑到结束；agent.trace 实时 emit " + trace.length + " 条并已落盘 " + diskLines + " 行 JSONL（llm.round / tool.call 等）。");
 })().catch((e) => { console.error("FAIL:", e && e.stack || e); process.exit(1); });

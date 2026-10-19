@@ -2356,8 +2356,14 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .recall-card .rc-line{display:flex;align-items:center;gap:7px;min-width:0}
 .recall-card .rc-scope{font-size:9.5px;padding:0 5px;border-radius:6px;border:1px solid var(--border-strong);color:var(--text-dim);flex:0 0 auto}
 .recall-card .rc-scope.user{color:var(--purple);border-color:#4d4470}
+/* 别的工作区分片里捞来的条目：和"本项目记过"必须看得出区别，虚线框表它不属于这个库 */
+.recall-card .rc-scope.other{color:var(--text-dim);border-style:dashed}
 .recall-card .rc-topic{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
 .recall-card .rc-tag{font-size:10px;color:var(--text-dim);font-family:var(--mono);flex:0 0 auto}
+/* 常驻提醒（正文每轮在场）与模型自查（它判断要读才取）是两件事，颜色要分开——
+   否则回显卡上两种来源长得一样，用户分不清"它自己想起的"和"系统喂给它的" */
+.recall-card .rc-tag.rc-via{color:var(--green);font-family:inherit}
+.recall-card .rc-row[data-via="pull"] .rc-tag.rc-via{color:var(--purple)}
 .recall-card .rc-meta{font-size:10px;color:var(--text-dim);opacity:.8;flex:0 0 auto;margin-left:auto}
 .recall-card .rc-content{font-size:11.5px;color:var(--text-dim);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 /* 胶囊贴顶时不与下方内容互透 */

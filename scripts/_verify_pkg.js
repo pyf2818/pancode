@@ -175,8 +175,17 @@ function readArchive(archive) {
     ok("包内 index.html 用的是新会话头标记（#36，不再有渐变 P）",
       !!idx && idx.includes("ag-orbit") && !idx.includes("pcGradAgAvatar"), "");
     const mem = src("server/memory-store.js");
-    ok("包内 memory-store.js 有分道注入（#31 stable / relevant）",
-      !!mem && mem.includes("stableForContext") && mem.includes("relevantForContext"), "");
+    /* 判"方法还在不在"要用定义形状判，不能 includes(名字)：撤除说明里就写着旧名字，
+       按词判会把自家注释当成"没撤干净"的证据。 */
+    const defined = (n) => new RegExp("^\\s{2}" + n + "\\s*\\(", "m").test(mem || "");
+    ok("包内 memory-store.js 是判断层那一版（P6：常驻只剩硬提醒 + 索引）",
+      !!mem && !defined("stableForContext") && !defined("relevantForContext")
+      && !defined("formatStable") && !defined("formatRelevant") && !defined("topForContext") && !defined("formatForContext")
+      && defined("guardForContext") && defined("formatIndex"), "");
+    const al2 = src("server/agent-llm.js");
+    ok("包内 agent-llm.js 装的是索引常驻那块，而不是整段正文注入",
+      !!al2 && al2.includes("【记忆索引") && al2.includes("formatGuard")
+      && !/(memory|userMemory)\.(formatStable|formatRelevant|formatForContext|topForContext)\(/.test(al2), "");
     const pkg = src("package.json");
     ok("包内 package.json 版本 = 仓库版本 " + repoVersion,
       !!pkg && JSON.parse(pkg).version === repoVersion, pkg && JSON.parse(pkg).version);

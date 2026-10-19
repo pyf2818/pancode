@@ -153,6 +153,11 @@
 3. **改盘型子智能体独占、只读型真并行** —— `mayMutate` 判定(`:1453`) + `_acquireSubLock`，只让可能改盘的子智能体串行（`:1451-1452` 注释）。
 4. **子智能体不静默污染共享工作区** —— `_workspaceSnapshot()`(`:1459`) 运行前全工作区快照，结束后把「真实落盘」的改动回滚并重放进审阅队列（`:1457-1458`）。
 5. **检索式上下文注入而非无脑全加** —— `server/context-retriever.js:64 buildSmartContext`（top5 文件 / 每文件前 30 行 / 整体截 4000 字符 / 记忆 score>=2 才注入）+ 记忆双道（`server/agent-llm.js:2088-2114`，稳定 1200 + 相关 1800）+ 预算硬顶（`:226-229` 与 `_compactSpec():2270`）+ 三级压缩（microcompact → `_summarize` 九段式状态快照 → `_spillToolResult` 落盘 `.pancode/spill/`；九段模板与「连续压不动就停手」的断路器见 `server/agent-llm.js` 的 `COMPACT_SECTIONS` / `_compactAbandoned`）。
+   > 2026-10-19 更新：本条里的「记忆双道」已被判断层取代 —— 正文不再按相关性自动摊开，常驻只剩
+   > 【记忆·硬提醒】（被否过的做法与禁忌，≤300 字）+【记忆索引】（一行一条带 `#id`，≤40 行 / 1500 字），
+   > 正文由模型自己调 `search_memory({ids}|{query})` 取；`context-retriever` 那一路也只给 `#id` 指针。
+   > 旧注入口（`stableForContext`/`formatStable`/`topForContext`/`formatForContext`）已从 `server/memory-store.js` 删除。
+   > 判据见 `scripts/_verify_memjudge.js`。
 6. **分桶注入为前缀缓存而设计** —— `buildAugmentParts`(`:2041`) 分 identity / stable / turn 三桶，逐条 push(`:3187-3194`).
 7. **CJK 加权 token 估算** —— `server/agent-llm.js:89-97` `Math.ceil((cjk*2 + (len-cjk))/4)`，中文场景下不会系统性低估。
 8. **Goal 自动续跑已存在** —— `server/agent-llm.js:1359-1365`（`【Goal 自动续跑 · 第 N 轮】`）+ `server/index.js:2079` 首启 prompt.

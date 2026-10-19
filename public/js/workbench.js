@@ -615,6 +615,13 @@ async function wbRenderModel(box) {
   g.appendChild(wbInput(t("wbWtAddRowwbInputT78"), t("wbWtAddRowwbInputT79"), e.maxOutputTokens || 0,
     (v) => wbSave("llm", { maxOutputTokens: v }), { min: 0, max: 1000000, step: 1024 }, "max output tokens 输出 预留 budget"));
 
+  /* 视觉开关。默认关不是审美问题，是这条链的两个真实代价：一张截图约 1.5k token，
+     而模型不带视觉时收到图片直接 400。开了以后仍然要截图工具显式带 for_model 才喂像素
+     （见 server/computer/vision.js）——这一行只决定"能不能喂"，不决定"每次都喂"。 */
+  g.appendChild(wbToggle(t("wbWtVisionT1"), t("wbWtVisionT2"), e.vision === true, (v) => {
+    Promise.resolve(wbSave("llm", { vision: v })).then(() => wbSaved((v ? t("wbCompOnT13") : t("wbCompOffT14")) + t("wbWtVisionT1")));
+  }, "vision 视觉 图片 截图 像素 screenshot image 多模态"));
+
   /* 存成一份可切换的配置 */
   const saveRow = wbRow(t("wbWtAddRowwbRowT80"), t("wbWtAddRowwbRowT81"), t("wbWtAddRowwbRowT118"));
   const nameInp = wbEl("input", "wb-input");
@@ -829,6 +836,12 @@ function wbRenderAgent(box) {
     (v) => wbSave("agent", { rules: { enabled: v } }), "rules 规则"));
   g1.appendChild(wbToggle(t("wbAgentwbToggleT124"), t("wbAgentwbToggleT125"), !!(ag.memory && ag.memory.enabled),
     (v) => wbSave("agent", { memory: { enabled: v } }), "memory 记忆"));
+  /* 自动结算只在「长期记忆」开着时才生效，但开关显示的是它自己的真实配置值——
+     不跟着上面那个联动，否则"明明开了却显示关"会变成第二层要解释的状态。
+     依赖关系写进副标题里说清楚。 */
+  g1.appendChild(wbToggle(t("wbAgentwbToggleT139"), t("wbAgentwbToggleT140"),
+    (ag.memory || {}).autoSettle !== false,
+    (v) => wbSave("agent", { memory: { autoSettle: v } }), "autoSettle 结算 决策链"));
   box.appendChild(g1);
 
   const ctx = ag.context || {};
@@ -1351,7 +1364,7 @@ function closeWorkbench() {
 wbRegister({ id: "appearance", group: "prefs", titleKey: "wbCloseWorkbenchtitleT215", icon: "sun", descKey: "wbCloseWorkbenchdescT216", keywords: "theme palette color 主题 配色 字号", render: (b) => wbRenderAppearance(b) });
 wbRegister({ id: "general", group: "prefs", titleKey: "scGroupGeneral", icon: "tune", descKey: "wbCloseWorkbenchdescT217", keywords: "language workspace folder editor 语言 工作区", render: (b) => wbRenderGeneral(b) });
 wbRegister({ id: "model", group: "engine", titleKey: "modelChip", icon: "robot", descKey: "wbCloseWorkbenchdescT218", keywords: "llm model api key embedding 模型 密钥 索引", render: (b) => wbRenderModel(b) });
-wbRegister({ id: "agent", group: "engine", titleKey: "wbCloseWorkbenchtitleT219", icon: "sparkle", descKey: "wbCloseWorkbenchdescT220", keywords: "agent mode rules memory context compact timeout 长任务 时限 超时 模式 上下文 压缩", render: (b) => wbRenderAgent(b) });
+wbRegister({ id: "agent", group: "engine", titleKey: "wbCloseWorkbenchtitleT219", icon: "sparkle", descKey: "wbCloseWorkbenchdescT220", keywords: "agent mode rules memory context compact timeout settle decision 长任务 时限 超时 模式 上下文 压缩 记忆 结算 决策", render: (b) => wbRenderAgent(b) });
 wbRegister({ id: "perms", group: "engine", titleKey: "wbCloseWorkbenchtitleT221", icon: "shield", descKey: "wbCloseWorkbenchdescT222", keywords: "permission deny allow hook yolo security roots 授权 目录 文件夹 权限 安全 审批 拦截", render: (b) => wbRenderPerms(b) });
 wbRegister({ id: "mcp", group: "engine", titleKey: "wbCloseWorkbenchtitleT223", icon: "layers", descKey: "wbMcpwbGroupT179", keywords: "mcp server tool 外部工具", render: (b) => wbRenderMcp(b) });
 wbRegister({ id: "data", group: "data", titleKey: "wbToplabelT4", icon: "folder", descKey: "wbCloseWorkbenchdescT224", keywords: "export import data privacy audit 导出 导入 数据 审计", render: (b) => wbRenderData(b) });

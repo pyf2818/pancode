@@ -89,8 +89,46 @@ module.exports = {
      单测要能在不构造 agent 的前提下验证注入判据本身。 */
   __test: { scanInjection, guardSkillWrite, SKILL_BODY_FENCE_HEAD },
 
+  /* 记忆正文的唯一入口。系统提示里只有目录（【记忆索引】）和最贵的那几行硬提醒，
+     其余全靠模型自己判断要不要来这儿取 —— 所以这条 handler 同时是"取用"这件事的记录点：
+     台账、accessCount、面板上"本轮查过 N 条"都由这里产生，注入端不再冒充使用率。 */
   search_memory: async (agent, args) => {
-    const t = agent.tool("read", "搜索记忆", args.query);
+    const rawIds = Array.isArray(args.ids) ? args.ids : (args.id ? [args.id] : []);
+    const ids = rawIds.map((x) => String(x || "").trim().replace(/^#/, "")).filter(Boolean);
+    const label = ids.length ? "按 id 取 " + ids.length + " 条" : String(args.query || "").slice(0, 30);
+    const t = agent.tool("read", "取回记忆", label);
+    if (!ids.length && !String(args.query || "").trim()) {
+      t.done(false, "没给查法");
+      return "要么带 ids（从系统提示【记忆索引】的行首 #xxx 抄），要么带 query 关键词。两者都没给，我没替你猜要查什么。";
+    }
+    const line = (e) => "#" + e.id + " [" + (e.__src ? e.__src + "·" : "") + e.type + "] "
+      + (e.topic ? e.topic + "：" : "") + e.content + (e.archived ? "（已归档，别再当现行约定）" : "");
+    if (ids.length) {
+      const proj = typeof agent.memory.findByIds === "function" ? agent.memory.findByIds(ids) : [];
+      const got = new Set(proj.map((e) => e.id));
+      const usr = (agent.userMemory && typeof agent.userMemory.findByIds === "function")
+        ? agent.userMemory.findByIds(ids).filter((e) => !got.has(e.id)) : [];
+      usr.forEach((e) => { e.__src = "用户级"; });
+      const miss = ids.filter((id) => !got.has(id) && !usr.some((e) => e.id === id));
+      if (!proj.length && !usr.length) {
+        t.done(false, "一条都没找到");
+        return "这些 id 在本项目与用户级记忆里都没有：" + miss.join(", ") +
+          "。id 只能抄【记忆索引】里还在的那些（记忆会衰减归档，索引外的老条目改用 query 关键词搜）。";
+      }
+      /* 复习计数走 touch，与 search() 的"命中即复习"同一档：按 id 精确取用同样是真取用。
+         归档条目不算：把它再抬一次强度等于让治理动作白做。 */
+      if (proj.length && agent.memory.touchMany) { try { agent.memory.touchMany(proj.filter((e) => !e.archived).map((e) => e.id)); } catch (e) {} }
+      if (usr.length && agent.userMemory.touchMany) { try { agent.userMemory.touchMany(usr.filter((e) => !e.archived).map((e) => e.id)); } catch (e) {} }
+      if (typeof agent.noteMemoryUse === "function") {
+        agent.noteMemoryUse(proj, "project");
+        agent.noteMemoryUse(usr, "user");
+      }
+      const txt = proj.concat(usr).map(line).join("\n");
+      t.body(txt);
+      t.done(true, proj.length + usr.length + " 条" + (miss.length ? "（" + miss.length + " 个 id 没找到）" : ""));
+      return "取回 " + (proj.length + usr.length) + " 条记忆正文" + (miss.length ? "（其中这些 id 没找到：" + miss.join(", ") + "）" : "") + "：\n"
+        + txt + "\n\n这是历史结论，不是本轮事实：与当前代码/用户最新要求冲突时以现场为准。";
+    }
     let results, note = "";
     if (args.scope === "global") {
       /* W3：跨会话检索——当前工作区（内存实例，含未落盘更新）+ 其他工作区分片 + 用户级（只读惰性） */
@@ -113,12 +151,23 @@ module.exports = {
     } else {
       results = agent.memory.search(args.query, { type: args.type, limit: 10 });
     }
-    const txt = results.length
-      ? results.map((e) => "[" + (e.__src ? e.__src + "·" : "") + e.type + "] " + (e.topic ? e.topic + "：" : "") + e.content).join("\n")
-      : "无相关记忆";
+    if (results.length && typeof agent.noteMemoryUse === "function") {
+      /* 三种来源要分开记：本工作区、用户级、别的工作区的分片。
+         全记成 project 的话，回显卡会把"从另一个项目捞出来的旧结论"说成"本项目记过"——
+         模型那一侧看得见行首的 [项目 xxxx·type] 前缀，界面这边不能装看不见。 */
+      const here = (e) => !e.__src || e.__src === "当前项目";
+      const usr = (e) => e.__src === "用户级";
+      agent.noteMemoryUse(results.filter(here), "project");
+      agent.noteMemoryUse(results.filter((e) => !here(e) && usr(e)), "user");
+      agent.noteMemoryUse(results.filter((e) => !here(e) && !usr(e)), "other");
+    }
+    const txt = results.length ? results.map(line).join("\n") : "无相关记忆";
     t.body(txt);
     t.done(true, results.length + " 条记忆" + note);
-    return txt;
+    return results.length
+      ? txt + "\n\n（关键词搜出来的东西可能不对题：引用前先确认它讲的就是这件事；"
+        + "要精确某条就用【记忆索引】里的 #id 再取一次）"
+      : "无相关记忆（关键词：" + args.query + "）。" + note + "别把「没搜到」讲成「记忆里一定没有」——换个说法再试，或直接去【记忆索引】里看同主题那条。";
   },
 
   create_skill: async (agent, args) => {
@@ -179,6 +228,10 @@ module.exports = {
     const decisions = Array.isArray(args.decisions) ? args.decisions : [];
     const lessons = Array.isArray(args.lessons) ? args.lessons : [];
     const rejected = Array.isArray(args.rejected) ? args.rejected : [];
+    const tradeoffs = Array.isArray(args.tradeoffs) ? args.tradeoffs : [];
+    /* 显式结算过一次就把这一局标出来，收尾的自动结算据此不再往同一个库里补一份近似内容。
+       标在 agent 上而不是靠记忆条目本身判断：后者会把"上次留下的同类条目"误当成本次已经结算。 */
+    if (typeof agent.markSessionSettled === "function") agent.markSessionSettled();
     // W3：scope=user 时沉淀到用户级记忆（跨项目偏好/约定，如"我惯用中文变量名"）
     const mem = (args.scope === "user" && agent.userMemory) ? agent.userMemory : agent.memory;
     const scopeTag = mem === agent.userMemory ? "（用户级，跨项目生效）" : "";
@@ -195,6 +248,17 @@ module.exports = {
     decisions.forEach((d) => { saved += put("decision", "会话决策", d, 3); });
     lessons.forEach((l) => { saved += put("lesson", "经验教训", l, 3); });
     rejected.forEach((r) => { saved += put("error", "被拒操作/反例", r, 2); });
+    /* 方案权衡：三段齐了才写。缺 why 的那条只会留下"我们用了 A"，
+       下一个会话照样把 B 再提一遍 —— 宁可不写，也不要在库里堆半截结论。 */
+    let tradeoffSkipped = 0;
+    tradeoffs.forEach((t) => {
+      const chosen = String((t && t.chosen) || "").trim();
+      const alt = String((t && t.rejected) || "").trim();
+      const why = String((t && t.why) || "").trim();
+      if (!chosen || !alt || !why) { tradeoffSkipped++; return; }
+      saved += put("decision", "方案权衡",
+        "选「" + chosen + "」而不是「" + alt + "」：" + why, 3);
+    });
     let skillName = null;
     let skillNote = "";
     if (args.skill && args.skill.name) {
@@ -216,6 +280,7 @@ module.exports = {
     }
     const summary = "已沉淀 " + saved + " 条记忆" + scopeTag
       + (decisions.length ? "（决策 " + decisions.length + "）" : "")
+      + (tradeoffs.length ? "（权衡 " + tradeoffs.length + (tradeoffSkipped ? "，其中 " + tradeoffSkipped + " 条缺 chosen/rejected/why 任一段没写进去" : "") + "）" : "")
       + (lessons.length ? "（经验 " + lessons.length + "）" : "")
       + (rejected.length ? "（反例 " + rejected.length + "）" : "")
       + (skillName ? "；已存 Skill：" + skillName : "") + skillNote;
@@ -224,7 +289,8 @@ module.exports = {
     if (saved === 0 && !skillName) {
       return skillNote
         ? "没有可沉淀的记忆条目。附带的 Skill 被拒绝：" + skillNote
-        : "没有可沉淀的内容（decisions/lessons/rejected 均为空且无 skill）";
+        : "没有可沉淀的内容（decisions/tradeoffs/lessons/rejected 均为空或没成句，且无 skill）" +
+          (tradeoffSkipped ? "。其中 tradeoffs 有 " + tradeoffSkipped + " 条因为缺 chosen/rejected/why 任一段被跳过 —— 补齐那三段再调一次" : "");
     }
     agent.emit({ type: "session.memory.saved", count: saved, skill: skillName });
     return summary;

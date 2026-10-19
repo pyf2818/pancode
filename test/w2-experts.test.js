@@ -192,7 +192,7 @@ describe("buildSystemAugment — 专家注入位置", () => {
 
   it("专家 active 时【专家设定】位于 system augment 首位", () => {
     const a = makeAgent({ persona: { active: "fullstack", systemPrompt: "" }, memory: { enabled: true } });
-    a.memory = { formatForContext: () => "项目记忆内容", list: () => [] };
+    a.memory = { formatGuard: () => "项目记忆内容", guardForContext: () => [], formatIndex: () => "", indexForContext: () => [], list: () => [] };
     const out = a.buildSystemAugment("");
     expect(out.startsWith("【专家设定·全栈工程师】")).toBe(true);
     expect(out.indexOf("【专家设定")).toBeLessThan(out.indexOf("项目记忆内容"));

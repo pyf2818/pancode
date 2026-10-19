@@ -456,7 +456,10 @@ async function memReload() {
   MEM.rows = r.entries || [];
   const st = r.stats || {};
   MEM._stats.innerHTML = "";
-  MEM._stats.appendChild(wbStats([[t("acExpertFormStatsT30"), r.total], [t("acExpertFormStatsT31"), st.injected], [t("acExpertFormStatsT32"), st.atRisk], [t("acPaintMemstextT266"), st.archived], [t("acMemFormwbToggleT273"), st.sticky], [t("acExpertFormStatsT33"), st.avgStrength]]));
+  /* 两个数各量各的：常驻正文 = 每轮真的把内容摊给模型的条数（只有硬提醒那一类）；
+     只在索引里 = 模型看得见目录、但要自己查才拿到正文。旧口径只有"将注入"一个数，
+     那是"凑满 10 条无条件在场"时代的说法，现在留着会让人以为正文天天在场。 */
+  MEM._stats.appendChild(wbStats([[t("acExpertFormStatsT30"), r.total], [t("acExpertFormStatsT31"), st.injected], [t("acPaintMemsbadgeT411"), st.indexed], [t("acExpertFormStatsT32"), st.atRisk], [t("acPaintMemstextT266"), st.archived], [t("acMemFormwbToggleT273"), st.sticky], [t("acExpertFormStatsT33"), st.avgStrength]]));
   MEM._stats.appendChild(wbNote(t("acExpertFormwbNoteT262"), "dim"));
   const acts = wbEl("div", "wb-inline-actions");
   acts.appendChild(wbBtn(t("acExpertFormwbBtnT34"), "", async () => {
@@ -479,6 +482,10 @@ async function memReload() {
     if (!rows.length) MEM._detail.appendChild(wbEl("div", "wb-list-empty", t("acExpertFormwbElT263")));
     rows.forEach((e) => {
       const it = wbEl("div", "wb-list-item");
+      /* via 是分界的根据：常驻 = 正文每轮自己在场；自查 = 模型判断要看才调 search_memory 取的。
+         没有这块，面板会把"索引里有一行"也说成"模型读过了"。 */
+      it.appendChild(wbEl("span", "wb-badge " + (e.via === "pull" ? "wb-badge-ok" : "wb-badge-blue"),
+        e.via === "pull" ? t("acPaintMemsbadgeT412") : t("acExpertFormStatsT31")));
       it.appendChild(wbEl("span", "wb-badge", esc(e.type)));
       it.appendChild(wbEl("b", "", esc(e.topic || t("acExpertFormwbElT264"))));
       it.appendChild(wbEl("span", "wb-list-sub", esc(e.content)));
@@ -500,7 +507,8 @@ function paintMems() {
       badges: [
         e.archived ? { text: t("acPaintMemstextT266") } : null,
         e.sticky ? { text: t("acPaintMemstextT267"), cls: "wb-badge-blue" } : null,
-        e.injected ? { text: e.lane === "resident" ? "常驻" : "按相关性", cls: "wb-badge-ok" } : null,
+        e.lane === "guard" ? { text: t("acPaintMemsbadgeT410"), cls: "wb-badge-ok" }
+          : e.lane === "index" ? { text: t("acPaintMemsbadgeT411"), cls: "wb-badge-dim" } : null,
         e.risk === "drop" ? { text: t("acPaintMemstextT268"), cls: "wb-badge-err" } : e.risk === "archive" ? { text: t("acPaintMemstextT269"), cls: "wb-badge-warn" } : null,
         e.source === "sediment" ? { text: t("sediment") } : e.source === "manual" ? { text: t("acPaintMemstextT270") } : null,
       ].filter(Boolean),

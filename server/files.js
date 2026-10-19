@@ -17,6 +17,11 @@ const IGNORE = new Set([
 const MAX_FILE = 1024 * 1024;  // 1MB，超出视为二进制/大文件不进内存
 const MAX_FILES = 500;         // 打开真实项目时最多进内存的文件数（防卡死）
 const MAX_WATCH_DIRS = 200;    // fs.watch 监听目录上限
+/* 按行区间读（read_file 精准取段的底座）用的三道闸，理由见 FileStore.readWindow */
+const WINDOW_CHUNK = 256 * 1024;            // 每次从 fd 读多少字节
+const WINDOW_MAX_CHARS = 2 * 1024 * 1024;   // 一次最多交出去的字符数，防止"取段"退化成"取整个文件"
+const WINDOW_COUNT_MAX_SIZE = 8 * 1024 * 1024;  // 大于此文件不为"总行数"扫全篇，只报"行数未知"
+const WINDOW_MAX_LINE_BYTES = 4 * 1024 * 1024;  // 单行字节上限：超过就是压缩产物，换行符压根不存在
 
 /* 已知二进制扩展名：按 UTF-8 读必然乱码，且误存会直接损坏文件 */
 const BINARY_EXTS = new Set([
@@ -190,6 +195,85 @@ class FileStore {
     if (st.size > MAX_FILE) throw new AppError("FILE_TOO_LARGE", "文件过大（>1MB）: " + rel, "文件超过 1MB 限制，无法作为文本打开。请使用专用编辑器查看。");
     if (this.isBinary(rel)) throw new AppError("FILE_BINARY", "二进制文件无法作为文本打开: " + rel, "该文件为二进制格式（图片/压缩包等），不能作为文本编辑。");
     return fs.readFileSync(abs, "utf8");
+  }
+
+  /* 按行区间读一段。startLine 从 1 起算，lineCount 为要读的行数。
+     为什么不复用 read() 再切片：read() 有 1MB 硬顶、且必须整份进内存，
+     而"只想要第 300~400 行"的恰恰就是那种撑破 1MB 的大文件——
+     于是它以前要么被 FILE_TOO_LARGE 挡回来，要么全文塞进上下文再被头尾截断砍掉中段。
+     这里改用 fd 分块扫行：只留窗口内的几十行，其余连内存都不进。
+     返回 { lines, startLine, endLine, totalLines, sizeBytes, charCapped, hasMore }。
+     totalLines 为 null 表示"没数"（文件 >8MB 且已经取到段，不为一个行数把全篇再扫一遍）。 */
+  readWindow(rel, opts) {
+    const start = Math.max(1, Math.floor(Number(opts && opts.startLine) || 1));
+    const count = Math.max(1, Math.floor(Number(opts && opts.lineCount) || 200));
+    const abs = this.safePath(rel);
+    const st = fs.statSync(abs);
+    if (this.isBinary(rel)) throw new AppError("FILE_BINARY", "二进制文件无法作为文本打开: " + rel, "该文件为二进制格式（图片/压缩包等），不能作为文本编辑。");
+    const wantTotal = st.size <= WINDOW_COUNT_MAX_SIZE;
+    const out = [];
+    let chars = 0;
+    let charCapped = false;
+    let lineNo = 0;
+    let pos = 0;
+    let stoppedEarly = false;
+    let leftover = Buffer.alloc(0);
+    const fd = fs.openSync(abs, "r");
+    try {
+      for (;;) {
+        const chunk = Buffer.alloc(WINDOW_CHUNK);
+        const n = fs.readSync(fd, chunk, 0, WINDOW_CHUNK, pos);
+        pos += n;
+        const eof = n === 0;
+        const buf = n ? Buffer.concat([leftover, chunk.slice(0, n)]) : leftover;
+        let idx = 0;
+        let nl;
+        while ((nl = buf.indexOf(0x0a, idx)) !== -1) {
+          const raw = buf.slice(idx, nl);
+          idx = nl + 1;
+          lineNo++;
+          if (lineNo >= start && lineNo < start + count && !charCapped) {
+            // 原样交出去：不剥 \r、不剥 BOM。取段结果必须等于整读的对应切片，
+            // 否则模型照它写 apply_edit 的 old_string 会"逐字"失败（本仓源码就是全 CRLF）。
+            const s = raw.toString("utf8");
+            if (chars + s.length + 1 > WINDOW_MAX_CHARS) charCapped = true;
+            else { out.push(s); chars += s.length + 1; }
+          }
+          // 取到段就收工：不为一个"共多少行"把 30MB 的文件扫完（那时 totalLines 直说没数）
+          if (out.length >= count && !wantTotal) { stoppedEarly = true; break; }
+        }
+        leftover = buf.slice(idx);
+        if (eof || stoppedEarly) break;
+        if (leftover.length > WINDOW_MAX_LINE_BYTES) {
+          throw new AppError("FILE_ONE_LINE_TOO_LONG", "单行超过 " + Math.round(WINDOW_MAX_LINE_BYTES / 1024 / 1024) + "MB: " + rel,
+            "这多半是压缩产物（整份文件没有换行）。按行取段读不了，请改用 search_code 找关键片段。");
+        }
+      }
+      if (!stoppedEarly && leftover.length) {
+        // 末行没有换行符也要算一行 —— 窗口已经读满时同样得数它，
+        // 否则"共 60000 行"会报成 59999，模型据此判断的"还差几段"就是错的。
+        lineNo++;
+        if (!charCapped && out.length < count && lineNo >= start) {
+          const s = leftover.toString("utf8");   // 同样原样保留（见上面的 CRLF 说明）
+          if (chars + s.length + 1 <= WINDOW_MAX_CHARS) { out.push(s); chars += s.length + 1; }
+          else charCapped = true;
+        }
+      }
+    } finally {
+      try { fs.closeSync(fd); } catch (e) { /* 已关或被关闭流程抢了 */ }
+    }
+    const last = out.length ? start + out.length - 1 : 0;
+    return {
+      lines: out,
+      startLine: out.length ? start : 0,
+      endLine: last,
+      /* 只有"取到段就提前收工"时才算没数完全篇 —— 那时 lineNo 是半截，报出去就是假总数。
+         字符闸挡下时其实已经扫到 EOF，总数是真数出来的，不能一并说成未知。 */
+      totalLines: stoppedEarly ? null : lineNo,
+      sizeBytes: st.size,
+      charCapped,
+      hasMore: charCapped || stoppedEarly || lineNo >= start + out.length,
+    };
   }
 
   write(rel, content) {

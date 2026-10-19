@@ -20,15 +20,20 @@ const OLD_READONLY = [
   "read_process", "check_port", "list_mcp",
   "web_search", "web_fetch", "goal_status", "list_templates",
   "find_references",
-  /* 浏览器自动化的"看"那一半：读的是页面状态，不往工作区落地，与 web_fetch 同档。 */
-  "browser_snapshot", "browser_read", "browser_tabs", "browser_wait",
+  /* 浏览器自动化的"看"那一半：读的是页面状态，不往工作区落地，与 web_fetch 同档。
+     browser_assert 也在这一档：它跑的是我们固定写死的观察程序（模型只能塞 CSS 选择器），
+     与 browser_eval（执行模型现写的 JS）不是一回事。 */
+  "browser_snapshot", "browser_read", "browser_tabs", "browser_wait", "browser_assert",
+  /* 编排白板写在内存里、不落工作区，读它不改任何东西 → 与"看"那一半同档。 */
+  "board",
   /* 电脑控制的"看"那一半：只读 UIA 属性，不发送任何输入。 */
   "desktop_windows", "desktop_snapshot", "desktop_read",
 ];
 /* 带跨调用游标的只读工具：agent-browser 一个会话只有一个活跃标签页，ref 属于快照那一刻的那一页，
    并行两发会让后一发读到前一发的页面 —— 结论不是"过时"而是"错"。
-   桌面的 ref 缓存在常驻 worker 里是进程级一份，且"看到的界面"与"点下去的界面"必须同帧，同理。 */
-const OLD_NON_CONCURRENT = ["read_process", "browser_snapshot", "browser_read", "browser_tabs", "browser_wait",
+   桌面的 ref 缓存在常驻 worker 里是进程级一份，且"看到的界面"与"点下去的界面"必须同帧，同理。
+   browser_assert 同属这一档：它读的就是"当前这一页在这一刻"的 DOM。 */
+const OLD_NON_CONCURRENT = ["read_process", "browser_snapshot", "browser_read", "browser_tabs", "browser_wait", "browser_assert",
   "desktop_windows", "desktop_snapshot", "desktop_read"];
 const OLD_MICROCOMPACTABLE = [
   "read_file", "list_files", "search_code", "search_symbol", "repo_map", "code_graph",
@@ -39,11 +44,13 @@ const OLD_MICROCOMPACTABLE = [
      它之后页面就没了，清掉那条结果等于清掉"什么时候关的"。 */
   "browser_open", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill",
   "browser_press", "browser_select", "browser_read", "browser_screenshot", "browser_wait",
-  "browser_tabs", "browser_eval",
+  "browser_tabs", "browser_eval", "browser_assert",
   /* 桌面结果同样可再生（重列一次窗口 / 重拍一次控件树就行），desktop_window 也收：
      它留下的"我把哪个窗口怎么动了"不是需要长期持有的结论。 */
   "desktop_windows", "desktop_snapshot", "desktop_read", "desktop_screenshot", "desktop_click",
   "desktop_type", "desktop_press", "desktop_scroll", "desktop_window",
+  /* 白板读到的内容是"此刻的板面"，重读一次就有 —— 上下文紧张时清掉旧的那条不亏。 */
+  "board",
 ];
 const OLD_WAIT_FREE_EXTRA = ["ask_user_choice", "agent", "orchestrate", "set_goal"];
 /* ⚠ create_skill 不在迁移前的集合里，是 P2-4 有意的行为变更，不是漂移：
@@ -69,20 +76,25 @@ const OLD_MUTATING = [
   "desktop_click", "desktop_type", "desktop_press", "desktop_scroll", "desktop_window",
 ];
 const OLD_SUB_AGENT_BLOCK = [
-  "agent", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template",
+  /* orchestrate 本轮（P5）补进黑名单：并行改盘的归属与收回按"同层兄弟"设计，
+     子智能体再开一轮编排会让一个文件有两个主人。要深任务请回父智能体重新拆步骤。 */
+  "agent", "orchestrate", "create_plan", "update_plan", "undo", "set_goal", "instantiate_template",
   "save_template", "remove_template", "list_templates", "goal_status", "save_session_memory",
   "git_push", "git_reset", "git_worktree",
   /* 浏览器全家拦子智能体：会话名按 convId 派生，同一对话下并行的子代理会共用同一个浏览器，
      互相把对方的页面导航走。要放开得先做到"每个子代理一个 session"。 */
   "browser_open", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill",
   "browser_press", "browser_select", "browser_read", "browser_screenshot", "browser_wait",
-  "browser_tabs", "browser_eval", "browser_close",
+  "browser_tabs", "browser_eval", "browser_assert", "browser_close",
   /* 桌面全家拦子智能体：整机只有一个前台焦点，两个并行分支同时敲键盘必然互相打断，
      而且子代理看不到"现在焦点在谁那儿"。 */
   "desktop_windows", "desktop_snapshot", "desktop_read", "desktop_screenshot", "desktop_click",
   "desktop_type", "desktop_press", "desktop_scroll", "desktop_window",
 ];
 const OLD_IRREVERSIBLE = ["delete_file", "git_push"];
+/* 反方向：只有子智能体用得上的工具。父清单里出现它没用（没人读那块板），
+   却每一轮请求都要带上这份 schema —— 钉住成员，加了新成员要在这里说明为什么。 */
+const OLD_SUB_AGENT_ONLY = ["board"];
 
 /** Set/数组 → 排序后的数组，差异直接打在断言消息里 */
 const sorted = (x) => [...x].sort();
@@ -97,9 +109,9 @@ describe("契约表与注册表互为定义域", () => {
     expect(contract.auditContract(toolNames)).toBeNull();
   });
 
-  it("覆盖全部 72 个工具（漏一个就会静默降级成「需要人工确认」）", () => {
+  it("覆盖全部 74 个工具（漏一个就会静默降级成「需要人工确认」）", () => {
     expect(Object.keys(contract.CONTRACT)).toHaveLength(toolNames.length);
-    expect(toolNames).toHaveLength(72);
+    expect(toolNames).toHaveLength(74);
   });
 
   it("auditContract 真的会报出漏登记与孤儿（否则这条自检形同不存在）", () => {
@@ -154,6 +166,10 @@ describe("派生集合 = 迁移前的手工集合", () => {
 
   it("不可逆集合 = delete_file + git_push（推出去的提交别人可能已拉走）", () => {
     sameAs("IRREVERSIBLE", contract.DERIVED.IRREVERSIBLE, OLD_IRREVERSIBLE);
+  });
+
+  it("只给子智能体的集合逐一相等（父清单里不该出现没人读的板）", () => {
+    sameAs("SUB_AGENT_ONLY", contract.DERIVED.SUB_AGENT_ONLY, OLD_SUB_AGENT_ONLY);
   });
 });
 

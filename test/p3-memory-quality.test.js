@@ -6,18 +6,19 @@
         于是溯源卡上满屏"启动项目""项目有没有问题""继续"——正文其实还像句经验，
         是主题栏把它抹平成了"它把我每句话都记了一遍"。
      2) 一次任务由模型自动产出 3~5 条同主题条目（去重要求 topic 相等才生效，
-        内容互不相同就全放行），而读取端 topForContext 根本不看本轮问什么，
+        内容互不相同就全放行），而当时的读取端根本不看本轮问什么，
         只按"自我强化过的强度"凑满 10 条 —— 同主题的三条一起进榜。
      3) accessCount 是注入即 +1 的自举回路：注入 → touch → 强度更高 → 更容易进榜 → 再 touch。
         而且 4 分 = sticky 豁免，自动沉淀恰恰一律给 4 分，于是这批垃圾既涨得最快又永不衰减。
 
-   四条不变量：主题不许是用户原话；同主题限量；不相关就不注入；没真的用上就不许加强。
+   四条不变量：主题不许是用户原话；同主题限量；正文不许每轮自动摊开（P6 起只剩硬提醒常驻）；
+   没真的用上就不许加强。
    ============================================================ */
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { MemoryStore, isJunkPhrase } = require("../server/memory-store");
+const { MemoryStore, isJunkPhrase, GUARD_MAX_CHARS, IDX_MAX_CHARS } = require("../server/memory-store");
 const { EvolutionEngine } = require("../server/evolution");
 const { LlmAgent } = require("../server/agent-llm");
 
@@ -105,51 +106,90 @@ describe("写入端：主题命名与门槛", () => {
   });
 });
 
-describe("读取端：不相关就不注入（宁少勿噪）", () => {
-  it("同主题最多 2 条；本轮零命中的高强度条目一条都不进", () => {
+describe("读取端：正文不摊开，常驻只剩硬提醒（P6）", () => {
+  /* 旧判据"本轮零命中就不注入"已经没有对应物：正文不再按命中注入。
+     换成三条更好量的：① 只有反例/权衡/禁忌常驻；② 常驻与索引都有硬上限；
+     ③ 同主题限量仍在（防一条主题霸满索引）。 */
+  it("同主题最多 2 条：索引与常驻都受同一把闸管", () => {
     const m = store("lane");
-    for (const t of ["启动项目", "启动项目", "启动项目"]) {
-      m.add("lesson", "启动项目", t + " 的经验应当先被同主题限量挡住才能进榜一次", { valueScore: 4, source: "evolution" });
+    for (let i = 0; i < 3; i++) {
+      m.add("error", "被拒操作/反例", "被否过的做法第 " + i + " 条，正文要够长才不会被长度门槛挡在门外", { valueScore: 5 });
     }
-    m.add("error", "端口占用", "默认 3000 端口被占用时改用备用端口并在状态栏提示", { valueScore: 5, source: "evolution" });
-    const hit = m.topForContext(10, "把项目跑起来看看端口占用怎么处理");
-    expect(hit.length).toBeGreaterThan(0);
-    const byTopic = {};
-    for (const e of hit) byTopic[e.topic] = (byTopic[e.topic] || 0) + 1;
-    expect(Math.max(...Object.values(byTopic))).toBeLessThanOrEqual(2);
-    // 与本轮毫无交集的一条：强度再高也不注入
-    const miss = m.topForContext(10, "今天写文档");
-    expect(miss.filter((e) => e.type === "lesson" && e.topic === "启动项目")).toEqual([]);
+    m.add("lesson", "启动项目", "启动项目要先装依赖再跑 dev，否则端口会撞", { valueScore: 5 });
+    const guard = m.guardForContext(999);
+    const topics = {};
+    for (const e of guard) topics[e.topic] = (topics[e.topic] || 0) + 1;
+    expect(Math.max(...Object.values(topics))).toBeLessThanOrEqual(2);
+    const idx = m.indexForContext(999);
+    const it = {};
+    for (const e of idx) it[e.topic] = (it[e.topic] || 0) + 1;
+    expect(Math.max(...Object.values(it))).toBeLessThanOrEqual(2);
   });
 
-  it("强度地板：衰减到地板以下的条目不再占上下文", () => {
+  it("强度地板：衰减到地板以下的条目连索引都不上", () => {
     const m = store("floor");
     const e = m.add("lesson", "旧事", "很久以前的一条经验，正文要够长才会被计入价值与衰减统计", { valueScore: 3 });
     e.lastAccessAt = Date.now() - 400 * 86400000;   // 400 天没被碰过
     e.ts = e.lastAccessAt;
-    expect(m.decayW ? true : true).toBe(true);
-    expect(m.topForContext(10, "很久以前 那条 经验").length).toBe(0);
+    expect(m.indexForContext(999).length).toBe(0);
+    expect(m.guardForContext(999).length).toBe(0);
+    expect(m.formatIndex(2000)).toBe("");
   });
 
-  it("偏好与归纳产物走稳定道：与本轮无关也在场", () => {
+  it("常驻只收反例/方案权衡/禁忌偏好；普通偏好与归纳产物不再无条件占上下文", () => {
     const m = store("stable");
-    m.add("preference", "用户偏好", "回复一律用中文，代码注释也用中文写清楚", { valueScore: 4 });
+    m.add("preference", "禁忌", "界面图标不要用 emoji，一律用描边 SVG", { valueScore: 4 });
     m.add("decision", "全项目结论", "所有探针都走沙箱数据根，这条由归纳器整理得出", { source: "consolidate", valueScore: 5 });
-    m.add("lesson", "别的主题", "某个只属于那次任务的细节经验，跟本轮问题没有词元交集", { valueScore: 5, source: "evolution" });
-    const out = m.formatStable(2000);
-    expect(out).toContain("用户偏好");
-    expect(out).toContain("全项目结论");
-    expect(out).not.toContain("别的主题");
-    expect(m.formatRelevant("今天天气不错", 2000)).toBe("");
+    m.add("lesson", "别的主题", "某个只属于那次任务的细节经验，正文再长也只进索引", { valueScore: 5, source: "evolution" });
+    const g = m.formatGuard(2000);
+    expect(g).toContain("不要用 emoji");
+    expect(g).not.toContain("全项目结论");        // 归纳产物不再算硬提醒
+    expect(g).not.toContain("别的主题");
+    const idx = m.formatIndex(2000);
+    expect(idx).toContain("全项目结论");
+    expect(idx).toContain("别的主题");
   });
 
-  it("注入总条数仍有界（50 条大记忆也不会把上下文灌爆）", () => {
+  it("常驻与索引各有硬上限（几十条互不相同的大记忆也灌不爆上下文）", () => {
     const m = store("bound");
+    /* 正文用 ASCII 词拼：内容词元互不相交，才不会在 add() 的模糊去重那一步被合并成几条，
+       这个用例要量的是"条目真的很多时输出仍有界"，不是去重。 */
     for (let i = 0; i < 50; i++) {
-      m.add("lesson", "记忆分道" + (i % 3), "很长的正文".repeat(60) + i, { valueScore: 5, source: "evolution" });
+      m.add("lesson", "记忆分道" + i, ("step" + i + " act" + i + " ").repeat(30), { valueScore: 5, source: "evolution" });
     }
-    const out = m.formatForContext(3000, "很长的正文 记忆分道");
-    expect(out.split("\n").filter((l) => l.startsWith("- ")).length).toBeLessThanOrEqual(10);
+    for (let i = 0; i < 20; i++) {
+      m.add("error", "被拒操作/反例", ("reject" + i + " forbid" + i + " ").repeat(12), { valueScore: 5 });
+    }
+    expect(m.size).toBeGreaterThan(60);
+    expect(m.formatGuard().length).toBeLessThanOrEqual(GUARD_MAX_CHARS + 10);   // +10 给末尾的 "..."
+    expect(m.formatIndex().length).toBeLessThanOrEqual(IDX_MAX_CHARS + 60);
+    // 索引被截时必须说清还剩多少条，否则模型会以为目录就是全部
+    expect(m.formatIndex()).toMatch(/另有 \d+ 条未列出/);
+    // 同主题限量同样生效：常驻块里同一条主题最多 2 行
+    expect(m.guardForContext(999).length).toBeLessThanOrEqual(2);
+  });
+
+  it("索引行给得出可抄的 #id，且与常驻块互不重复", () => {
+    const m = store("iddedup");
+    const g = m.add("error", "被拒操作/反例", "不要在没有探针的情况下宣布界面改完");
+    const l = m.add("lesson", "探针约定", "新探针第一行必须起沙箱数据根");
+    const idx = m.formatIndex(2000);
+    expect(idx).toContain("#" + l.id);
+    expect(idx).not.toContain("#" + g.id);
+    expect(m.findByIds([g.id, "#" + l.id]).map((e) => e.id)).toEqual([g.id, l.id]);
+    expect(m.findByIds(["不存在的那个id"])).toEqual([]);
+  });
+
+  it("只给指针的检索不加强度：关键词撞车不该让一条记忆长生（#31 回路）", () => {
+    const m = store("notouch");
+    const e = m.add("lesson", "端口占用", "默认 3000 端口被占用时改用备用端口并在状态栏提示", { valueScore: 3 });
+    const before = e.accessCount;
+    const hits = m.search("端口占用 备用端口", { limit: 5, noTouch: true });
+    expect(hits.length).toBeGreaterThan(0);
+    expect(m.getById(e.id).accessCount).toBe(before);
+    // 反向对照：不带 noTouch 才是真的取用，要计一次复习
+    m.search("端口占用 备用端口", { limit: 5 });
+    expect(m.getById(e.id).accessCount).toBe(before + 1);
   });
 });
 

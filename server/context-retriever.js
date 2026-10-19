@@ -86,20 +86,21 @@ class ContextRetriever {
       }
     }
 
-    // 2. 相关记忆检索（P2 语义记忆回退：关键词召回 + 价值/新鲜度加权重排）
-    // 排除归档条目，且与全量记忆块（formatForContext）做去重，避免同一条记忆注入两次互相稀释
+    // 2. 相关记忆：只给指针，正文一律不摊进上下文（P6：模型自己判断要不要取）
+    // 排序仍按「关键词命中 + 价值/新鲜度」，因为它给的是索引给不出的信息——
+    // 【记忆索引】按有效强度排，这一行按"本轮这句话像哪几条"排，模型据此决定查不查。
+    // 排除硬提醒那几条（它们的正文已经在上下文里了），并带 noTouch：
+    // 只是把 id 列出来不算用过，加分会养出"关键词撞车 → 长期常驻"的正反馈。
     if (this.memory && keywords.length) {
-      const injectIds = new Set((this.memory.topForContext ? this.memory.topForContext(10) : []).map((e) => e.id));
-      let memories = this.memory.search(keywords.join(" "), { limit: 12 })
-        .filter((m) => !m.archived && !injectIds.has(m.id));
+      const guardIds = new Set(this.memory.guardForContext ? this.memory.guardForContext(999).map((e) => e.id) : []);
+      let memories = this.memory.search(keywords.join(" "), { limit: 12, noTouch: true })
+        .filter((m) => !m.archived && !guardIds.has(m.id));
       memories = this.rankMemories(memories, keywords).slice(0, 4);
       if (memories.length) {
-        const memText = memories.map((m) => {
-          const age = Math.floor((Date.now() - (m.lastAccessAt || m.ts || Date.now())) / (1000 * 60 * 60 * 24));
-          const vs = m.valueScore || 2;
-          return "- (" + (vs >= 4 ? "高" : "中") + ") [" + m.type + "] " + (m.topic ? m.topic + "：" : "") + m.content.slice(0, 160) + (age > 0 ? " (" + age + "天前)" : "");
-        }).join("\n");
-        parts.push("【相关记忆】\n" + memText);
+        const memText = memories.map((m) => "- #" + m.id + " [" + m.type + "] " + (m.topic || "（无主题）")).join("\n");
+        parts.push("【与本轮关键词相关的记忆（只给编号，正文没写在这里）】\n"
+          + memText + "\n"
+          + "要读哪条就调 search_memory 把上面的 id 抄进 ids；不相关就当作没看见，别为了用上记忆而查记忆。");
       }
     }
 

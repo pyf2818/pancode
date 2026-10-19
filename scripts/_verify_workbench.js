@@ -107,6 +107,9 @@ async function main() {
   if (!token) { child.kill(); throw new Error("注册失败：" + JSON.stringify(reg)); }
   // 灌一点真实资产，让分区不是空壳
   await req("POST", "/api/memory", { type: "lesson", topic: "构建", content: "打包前要先跑一次冒烟。", valueScore: 5, sticky: true }, token);
+  /* 再灌一条"被否过的做法"：记忆面板要同时有正文常驻与只在索引两类，
+     只有一类的话徽章判据等于没判（另一种根本没出现，看不见就是"没渲染"而不是"渲染错了"）。 */
+  await req("POST", "/api/memory", { type: "error", topic: "被拒操作/反例", content: "界面改动必须在真 Electron 里跑过探针才算完成。", valueScore: 5 }, token);
   await req("POST", "/api/skills", { name: "灰度发布", description: "分批放量", trigger: "灰度,发布", body: "1. 构建 2. 放量 10%" }, token);
   // 制造两条文件操作，让「行为审计」有真实内容可看
   const probe = await req("POST", "/api/rules", { title: "审计探针", content: "用于验证审计页有记录。" }, token);
@@ -214,6 +217,106 @@ async function main() {
     const p3 = await req("POST", "/api/config", { section: "agent", patch: { pricing: { rates: [{ match: "sandbox-model", input: 1, output: 2 }] } } }, token);
     ok("坏输入没有把原表带歪（清洗后仍能存回一条正常的）", ((p3.agent || {}).pricing || {}).rates.length === 1);
     await page.screenshot({ path: path.join(OUT, "wb_pricing.png") }).catch(() => {});
+
+    section("视觉开关（llm.vision）：界面上点得动、服务端存得住、翻牌与配置同步");
+    await page.evaluate(() => window.openWorkbench("model"));
+    await wait(180);
+    /* 这条是本轮新加的那一行。判据不能停在"页面上看得到这行字"——
+       它必须证明点一下真的改了配置（截图工具的回执会据此说"开关没开"，说错就误导模型）。 */
+    /* 注意：这里必须把**函数本体**交给 page.evaluate / waitForFunction。
+       传"字符串形式的箭头函数"时 Playwright 会把它当表达式求值，得到的是函数对象本身，
+       不可序列化 → resolve 成 undefined，判据永远假红（本轮就是这么绕了一圈）。 */
+    const findVision = () => {
+      const r = [...document.querySelectorAll("#wbBody .wb-row")]
+        .find((x) => ((x.querySelector(".wb-row-name") || {}).textContent || "").includes("看截图像素"));
+      if (!r) return null;
+      const sw = r.querySelector(".wb-switch");
+      if (!sw) return null;
+      return { aria: sw.getAttribute("aria-checked"), hasKnob: !!sw.querySelector(".wb-knob") };
+    };
+    const clickVision = () => {
+      const r = [...document.querySelectorAll("#wbBody .wb-row")]
+        .find((x) => ((x.querySelector(".wb-row-name") || {}).textContent || "").includes("看截图像素"));
+      if (r) r.querySelector(".wb-switch").click();
+      return !!r;
+    };
+    /* wbRenderModel 是 async（要等 /api/llm/profiles 回来才画），固定 sleep 会赶在前面查完 —— 实测红过一次 */
+    const pollVision = async (want, tries) => {
+      for (let i = 0; i < (tries || 24); i++) {
+        const v = await page.evaluate(findVision);
+        if (v && (!want || v.aria === want)) return v;
+        await wait(200);
+      }
+      return await page.evaluate(findVision);
+    };
+    const vBefore = await pollVision("false");
+    ok("模型分区渲染出「看截图像素」这一行开关", !!vBefore && vBefore.aria === "false" && vBefore.hasKnob, JSON.stringify(vBefore));
+    if (vBefore) {
+      ok("点得到那一行的开关", await page.evaluate(clickVision));
+      const vAfter = await pollVision("true");
+      const cfgAfter = await req("GET", "/api/config", null, token);
+      ok("点一下真的写进配置（不是只翻了 DOM）", ((cfgAfter.llm || {}).vision) === true, JSON.stringify(cfgAfter.llm));
+      ok("开关状态与配置一致（aria-checked 翻成 true）", vAfter && vAfter.aria === "true", JSON.stringify(vAfter));
+      /* 重开一次分区：读的是服务端的值，不是前端内存里的旧态 —— 这条能抓出"快照没带 vision 字段" */
+      await page.evaluate(() => window.openWorkbench("general"));
+      await wait(220);
+      await page.evaluate(() => window.openWorkbench("model"));
+      const vReload = await pollVision("true");
+      ok("重新打开分区后仍显示已开启（configSnapshot 真的回传了 vision）",
+        vReload && vReload.aria === "true", JSON.stringify(vReload));
+      await page.screenshot({ path: path.join(OUT, "wb_vision.png") }).catch(() => {});
+    }
+
+    section("自动结算开关（memory.autoSettle）：界面点得动、存得住、不牵连上面那个记忆开关");
+    await page.evaluate(() => window.openWorkbench("agent"));
+    await wait(260);
+    /* 同样只交函数本体，参数另走 evaluate 的 arg —— 交字符串会被当表达式求值成函数对象，
+       不可序列化就永远 resolve 成 undefined（上面视觉那段踩过一次）。 */
+    const findRow = (want) => {
+      const r = [...document.querySelectorAll("#wbBody .wb-row")]
+        .find((x) => ((x.querySelector(".wb-row-name") || {}).textContent || "").includes(want));
+      if (!r) return null;
+      const sw = r.querySelector(".wb-switch");
+      if (!sw) return null;
+      return { aria: sw.getAttribute("aria-checked"), hasKnob: !!sw.querySelector(".wb-knob") };
+    };
+    const clickRow = (want) => {
+      const r = [...document.querySelectorAll("#wbBody .wb-row")]
+        .find((x) => ((x.querySelector(".wb-row-name") || {}).textContent || "").includes(want));
+      if (!r) return false;
+      r.querySelector(".wb-switch").click();
+      return true;
+    };
+    const pollRow = async (want, aria, tries) => {
+      for (let i = 0; i < (tries || 20); i++) {
+        const v = await page.evaluate(findRow, want);
+        if (v && (!aria || v.aria === aria)) return v;
+        await wait(200);
+      }
+      return await page.evaluate(findRow, want);
+    };
+    const sOn = await pollRow("自动结算", "true");
+    ok("Agent 分区渲染出「收尾自动结算决策链」，默认是开的", !!sOn && sOn.aria === "true" && sOn.hasKnob, JSON.stringify(sOn));
+    ok("点得到这一行的开关", await page.evaluate(clickRow, "自动结算"));
+    const sOff = await pollRow("自动结算", "false");
+    ok("点完 aria-checked 真的翻成 false（不是只在配置里改了值）", !!sOff && sOff.aria === "false", JSON.stringify(sOff));
+    const cfgOff = await req("GET", "/api/config", null, token);
+    const memOff = (cfgOff.agent || {}).memory || {};
+    ok("点一下真的写进配置（不是只翻了 DOM）", memOff.autoSettle === false, JSON.stringify(memOff));
+    /* 单独存一个键不许把同级的 enabled 带走：wbSave 交的是 { memory: { autoSettle } }，
+       服务端要是有整表替换的写法，用户点开这里就等于悄悄关了长期记忆。 */
+    ok("只动这一个键：上面的「长期记忆」没被顺手关掉", memOff.enabled === true, JSON.stringify(memOff));
+    await page.evaluate(() => window.openWorkbench("general"));
+    await wait(220);
+    await page.evaluate(() => window.openWorkbench("agent"));
+    const sReload = await pollRow("自动结算", "false");
+    ok("重开分区后仍显示已关闭（agentSettings 真的回传了 autoSettle）", !!sReload && sReload.aria === "false", JSON.stringify(sReload));
+    ok("再点一次能开回来", await page.evaluate(clickRow, "自动结算"));
+    const sBack = await pollRow("自动结算", "true");
+    const cfgBack = await req("GET", "/api/config", null, token);
+    ok("开回后界面与配置一致", !!sBack && sBack.aria === "true"
+      && ((cfgBack.agent || {}).memory || {}).autoSettle === true, JSON.stringify([sBack, (cfgBack.agent || {}).memory]));
+    await page.screenshot({ path: path.join(OUT, "wb_autosettle.png") }).catch(() => {});
 
     // trace 面板那一格：有成本才出现金额，没成本绝不出现 ¥
     const withCost = await page.evaluate(() => {
@@ -500,6 +603,41 @@ async function main() {
     await wait(320);
     ok("记忆分区有统计条", await page.locator(".wb-stats").count() > 0);
     ok("记忆清单渲染", await page.locator(".wb-side-item").count() >= 1);
+    /* P6 口径要在界面上看得见：面板如果说"将注入 12 条"而模型其实只看到一行目录，
+       那就是界面在替旧规则撒谎。两类条目各一枚徽章才算判据有效（只有一类时另一类的缺失无法区分"没渲染"与"没数据"）。 */
+    const memUi = await page.evaluate(() => {
+      const stats = [...document.querySelectorAll(".wb-stats .wb-stat")].map((s) => ({
+        label: (s.querySelector("span") || {}).textContent || "",
+        value: (s.querySelector("b") || {}).textContent || "",
+      }));
+      const rows = [...document.querySelectorAll(".wb-side-item")].map((it) => ({
+        title: it.textContent || "",
+        badges: [...it.querySelectorAll(".wb-badge")].map((b) => b.textContent || ""),
+      }));
+      const note = [...document.querySelectorAll(".wb-note, .wb-stats + *")].map((n) => n.textContent || "").join(" ");
+      const btns = [...document.querySelectorAll(".wb-inline-actions .wb-btn")].map((b) => b.textContent || "");
+      return { stats, rows, note, btns };
+    });
+    const statLabels = memUi.stats.map((s) => s.label).join("|");
+    ok("统计条把「正文常驻」和「只在索引里」分成两个数",
+      /正文常驻/.test(statLabels) && /只在索引里/.test(statLabels), statLabels);
+    const residentStat = memUi.stats.find((s) => /正文常驻/.test(s.label));
+    const idxStat = memUi.stats.find((s) => /只在索引里/.test(s.label));
+    ok("两个数各自量到了灌进去的那一条",
+      Number(residentStat && residentStat.value) >= 1 && Number(idxStat && idxStat.value) >= 1,
+      "常驻=" + (residentStat && residentStat.value) + " 索引=" + (idxStat && idxStat.value));
+    ok("清单里被否过的那条挂着「正文常驻」徽章",
+      memUi.rows.some((r) => /界面改动必须在真 Electron/.test(r.title) && r.badges.some((b) => /正文常驻/.test(b))),
+      JSON.stringify(memUi.rows.slice(0, 4)));
+    ok("清单里普通那条只挂「只在索引里」，不再谎称常驻",
+      memUi.rows.some((r) => /打包前要先跑一次冒烟|构建/.test(r.title)
+        && r.badges.some((b) => /只在索引里/.test(b)) && !r.badges.some((b) => /正文常驻/.test(b))),
+      JSON.stringify(memUi.rows.slice(0, 4)));
+    ok("说明文案讲的是判断层口径（提到 search_memory / 由模型自己查）",
+      /search_memory|自己查|自己判断/.test(memUi.note), (memUi.note || "").slice(0, 120));
+    ok("入口按钮改口为「最近实际用到」（不再是「实际注入」）",
+      memUi.btns.some((b) => /最近实际用到/.test(b)) && !memUi.btns.some((b) => /实际注入/.test(b)),
+      JSON.stringify(memUi.btns));
 
     await page.evaluate(() => window.openWorkbench("skills"));
     await wait(320);

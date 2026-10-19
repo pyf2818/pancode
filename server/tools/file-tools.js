@@ -2,6 +2,7 @@
 /* 文件工具：list_files / read_file / write_file / apply_edit / edit_files / delete_file / search_code */
 const path = require("path");
 const codeIndex = require("../code-index");
+const repoMap = require("../repo-map");
 const { getActiveManager } = require("../lsp-bridge");
 const { computeDiffLines, fmtDiag } = require("./util");
 const { applyEditsToString } = require("../patch");
@@ -28,6 +29,131 @@ function showPath(args, res) {
   if (!res.root || res.root.active) return rel;
   const who = res.root.label || path.basename(res.root.dir || "");
   return who + ":" + rel;
+}
+
+/* —— read_file 的取段底座 ——
+   没有这一段之前，读大文件只有两条路：整份进上下文（然后被头 70%/尾 30% 砍掉中段），
+   或者撞 FILE_TOO_LARGE 之后自己写脚本按行 dump。两条都丢全局视角，差别只在谁丢。
+   symbol/行区间把"我要第 3699 行那个函数"变成一次工具调用。 */
+const DEFAULT_RANGE = 400;        // 只给了 startLine 时默认往后读这么多行
+const SYMBOL_SCAN_LINES = 2000;   // 从符号行起最多扫这么多行找块尾
+const SYMBOL_MAX_LINES = 1200;    // 单次最多交出去的函数体行数（再长就明说没给全）
+/* 花括号族语言：按配对收尾。python 这类靠缩进的走另一条。
+   不在表里的扩展名也走"取固定段"，绝不猜——猜错的块尾比少给的行数更害模型。 */
+const BRACE_EXTS = new Set(["js", "mjs", "cjs", "jsx", "ts", "tsx", "java", "go", "rs",
+  "c", "h", "cpp", "hpp", "cc", "cs", "php", "swift", "kt", "kts", "scala", "dart", "vue", "svelte", "json"]);
+
+/* 从符号行起做花括号配对，跳过字符串/模板串/行注释/块注释里的花括号。
+   返回块尾在 lines 里的下标（含），扫不到配对回 -1。
+   已知不精确：正则字面量里的花括号（如 /{2,3}/）会被当括号数一次。
+   这类写法在函数签名行极少见，且真出问题时后果只是"块尾早停一行"——
+   回执会带上总行数与续读指引，模型能发现少给了。 */
+function braceBlockEnd(lines, startIdx) {
+  let depth = 0, opened = false, inBlock = false;
+  const max = Math.min(lines.length - 1, startIdx + SYMBOL_SCAN_LINES);
+  for (let i = startIdx; i <= max; i++) {
+    const s = lines[i];
+    let q = "";
+    for (let j = 0; j < s.length; j++) {
+      const c = s[j], c2 = s[j + 1];
+      if (inBlock) { if (c === "*" && c2 === "/") { inBlock = false; j++; } continue; }
+      if (q) {
+        if (c === "\\") { j++; continue; }
+        // 单/双引号不跨行，模板串跨
+        if (c === q && q !== "`") q = "";
+        else if (c === q) q = "";
+        continue;
+      }
+      if (c === "/" && c2 === "*") { inBlock = true; j++; continue; }
+      if (c === "/" && c2 === "/") break;
+      if (c === "'" || c === '"' || c === "`") { q = c; continue; }
+      if (c === "{") { depth++; opened = true; continue; }
+      if (c === "}") { depth--; if (opened && depth <= 0) return i; }
+    }
+  }
+  return -1;
+}
+
+/* 缩进语言（python 等）：从符号行的缩进退回等于或更浅的第一个非空行即为块尾前一行的下一行。
+   返回下标（含）；扫不到就回窗口末尾，让调用方在回执里说明"块尾没确认"。 */
+function indentBlockEnd(lines, startIdx) {
+  const ind = (String(lines[startIdx] || "").match(/^\s*/) || [""])[0].length;
+  const max = Math.min(lines.length - 1, startIdx + SYMBOL_SCAN_LINES);
+  for (let i = startIdx + 1; i <= max; i++) {
+    const l = lines[i];
+    if (!l.trim()) continue;
+    if ((String(l).match(/^\s*/) || [""])[0].length <= ind) return i - 1;
+  }
+  return max;
+}
+
+function extOf(rel) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(String(rel || ""));
+  return m ? m[1].toLowerCase() : "";
+}
+
+/* 符号定位的兜底：符号索引只吃前 500 个文件（FileStore.MAX_FILES），
+   真实大仓里恰好是 server/agent-llm.js 这种最需要取段的文件被截掉。
+   所以索引没命中时不认输，直接在文件里扫"像不像定义行"。
+   只认定义形态（function/class/方法/赋值给箭头函数/各语言的 def-func-fn-type），
+   不认"出现过这个名字"——调用点也含名字，把调用点当函数开头会把整段读歪。 */
+const SCAN_CHUNK_LINES = 800;      // 每次扫多少行
+const SCAN_MAX_LINES = 200000;     // 扫到底的上限，超过就明说没扫完
+function defPatternFor(name) {
+  const n = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const MOD = "(?:export\\s+)?(?:default\\s+)?(?:async\\s+|static\\s+|public\\s+|private\\s+|protected\\s+|readonly\\s+|abstract\\s+)*";
+  return new RegExp(
+    "^\\s*(?:@[\\w.]+\\s+)?" + MOD + "(?:func\\s+\\([^)]*\\)\\s*)?" +   // 装饰器行 / Go 接收者
+    "(?:" +
+      "(?:function|class|interface|enum|type|def|func|fn|sub|module|namespace|trait|struct|impl)\\s+" + n + "\\b" +
+      "|(?:const|let|var)\\s+" + n + "\\s*=" +
+      /* 方法或函数声明：右括号后面只允许紧跟 { 或直接到行尾（跨行签名）。
+         这条限制是故意的——`ghost();` 这种调用点同样长得像 NAME(...)，
+         把调用点当定义会把整段读歪到下一个函数里去，比报"没找到"更害模型。 */
+      "|" + n + "\\s*(?:\\([^()]*\\)|:)\\s*(?:\\{|$)" +
+      "|" + n + "\\s*[:=]\\s*(?:async\\s*)?(?:function\\b|\\(|[A-Za-z_$][\\w$]*\\s*=>)" +
+    ")"
+  );
+}
+function plainNamePattern(name) {
+  const n = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("\\b" + n + "\\b");
+}
+
+/* 返回 { line, via } 或 { line: 0, mentions: [...] }（只在调用点出现过）或 { line: -1 }（没扫到） */
+function scanSymbolLine(store, rel, name) {
+  const defRe = defPatternFor(name);
+  const anyRe = plainNamePattern(name);
+  const mentions = [];
+  let start = 1;
+  let scanned = 0;
+  for (;;) {
+    let win;
+    try { win = store.readWindow(rel, { startLine: start, lineCount: SCAN_CHUNK_LINES }); }
+    catch (e) { return { line: -1, error: e.message }; }
+    for (let i = 0; i < win.lines.length; i++) {
+      const lineNo = win.startLine + i;
+      const text = win.lines[i];
+      if (defRe.test(text)) return { line: lineNo, via: "text" };
+      if (anyRe.test(text) && mentions.length < 6) mentions.push(lineNo);
+    }
+    scanned += win.lines.length;
+    if (win.lines.length < SCAN_CHUNK_LINES) return { line: 0, mentions, scanned };   // 到文件尾了
+    start = win.startLine + win.lines.length;
+    if (scanned >= SCAN_MAX_LINES) return { line: 0, mentions, scanned, capped: true };
+  }
+}
+
+/* 三段共用的回执抬头：把"这次给的是哪一段、总共多少行、下一段怎么取"一次说清。
+   少了这三句，模型会把一段当全文，然后写出对不上号的 old_string。 */
+function rangeNotice(win, shown, extra) {
+  const bits = [];
+  if (win.totalLines == null) bits.push(shown + " 共 " + Math.round(win.sizeBytes / 1024) + "KB（行数未数完，本次只到第 " + win.endLine + " 行）");
+  else bits.push(shown + " 共 " + win.totalLines + " 行，本次返回第 " + win.startLine + "–" + win.endLine + " 行");
+  if (extra) bits.push(extra);
+  if (win.charCapped) bits.push("本次已达单次 2MB 字符上限，剩下的没给——继续请用 startLine=" + (win.endLine + 1));
+  else if (win.hasMore) bits.push("续读用 read_file { path: " + shown + ", startLine: " + (win.endLine + 1) + " }");
+  return "【" + bits.join("；") + "】\n";
 }
 
 /* 写完把 LSP 诊断拼进工具回执（P1-B1）。
@@ -90,13 +216,121 @@ module.exports = {
       t.done(false, "没有授权");
       return "错误: " + res.error;
     }
-    const t = agent.tool("read", "读取文件", showPath(args, res));
+    const shown = showPath(args, res);
+    const store = res.store;
+    const rel = res.rel;
+    const sym = String(args.symbol || "").trim();
+    const startArg = Math.max(1, Math.floor(Number(args.startLine) || 1));
+    const hasRange = Number(args.startLine) > 1 || Number(args.endLine) > 0 || Number(args.lineCount) > 0;
+
+    /* symbol 模式：把名字钉到行号，再按块尾收成一段。
+       取不到名字时绝不闷声退回全文——那正是"模型以为读到了、其实一行没读"的样子。 */
+    if (sym) {
+      const t = agent.tool("read", "读取符号", shown + " · " + sym);
+      let hits = [];
+      try { hits = repoMap.searchSymbols(agent._repoIndex(), sym); } catch (e) { hits = []; }
+      const normRel = (p) => String(p).split("\\").join("/");
+      const wantRel = normRel(rel);
+      const inFile = hits.filter((h) => normRel(h.path) === wantRel);
+      let pick = inFile[0] || null;
+      let via = "索引";
+      if (!pick) {
+        /* 索引没覆盖这个文件（500 文件上限）时在本文件里扫定义行。
+           不这么做的话，symbol 恰好在一堆它本该救的大文件上失效。 */
+        const scan = scanSymbolLine(store, rel, sym);
+        if (scan.line > 0) {
+          pick = { path: wantRel, name: sym, kind: "定义", line: scan.line };
+          via = "文本定位（符号索引没覆盖到这个文件）";
+        } else if (hits.length) {
+          /* 本文件没有、别处有：把位置说出去。只回"没有这个符号"，
+             模型会以为符号不存在，接着去改一个不存在的东西。 */
+          t.done(false, "符号在别的文件");
+          const where = hits.slice(0, 5).map((h) => normRel(h.path) + ":" + h.line + "（" + h.kind + "）").join("、");
+          return "「" + sym + "」不在 " + shown + "，索引里它在 " + where + "。要读它请把 path 换成那个文件。";
+        } else if (scan.line === -1) {
+          t.done(false, "扫描失败");
+          return "错误: " + scan.error;
+        } else {
+          t.done(false, "符号没找到");
+          const m = (scan.mentions || []).map((n) => shown + ":" + n).join("、");
+          return "「" + sym + "」在 " + shown + " 里没找到定义行" +
+            (scan.capped ? "（扫到第 " + scan.scanned + " 行为止，文件太长没扫完）" : "") +
+            (m ? "，只在第 " + m.replace(new RegExp(shown + ":", "g"), "") + " 行出现过（那是调用点，不是定义）" : "") +
+            "。它可能是局部变量或名字拼错——用 search_code 找原文，或直接带 startLine 取段。";
+        }
+      }
+      let win;
+      try { win = store.readWindow(rel, { startLine: pick.line, lineCount: SYMBOL_SCAN_LINES }); }
+      catch (e) { t.done(false, "读取失败"); return "错误: " + e.message + (e.userHint ? "（" + e.userHint + "）" : ""); }
+      if (!win.lines.length) {
+        t.done(false, "符号行取不到内容");
+        return "把「" + sym + "」定位在第 " + pick.line + " 行（" + via + "），但那一行读不到内容——文件多半已改过。" +
+          "先跑一次 repo_map 重建索引，或用 search_code 直接找它的原文。";
+      }
+      const local = pick.line - win.startLine;
+      const ext = extOf(rel);
+      const endLocal = BRACE_EXTS.has(ext) ? braceBlockEnd(win.lines, local) : (ext === "py" ? indentBlockEnd(win.lines, local) : -1);
+      const unconfirmed = endLocal < 0 && (BRACE_EXTS.has(ext) || ext === "py")
+        ? "块尾没扫到" + (win.charCapped ? "（窗口被 2MB 字符闸截断）" : "（花括号/缩进没配对，可能是跨行写法）")
+        : (!BRACE_EXTS.has(ext) && ext !== "py" ? "「" + (ext || "无扩展名") + "」不在块尾识别范围，按整段窗口给出" : "");
+      const give = endLocal >= 0 ? endLocal : Math.min(win.lines.length - 1, local + SYMBOL_MAX_LINES - 1);
+      const clipped = Math.min(give, local + SYMBOL_MAX_LINES - 1);
+      const body = win.lines.slice(local, clipped + 1).join("\n");
+      const from = win.startLine + local;
+      const to = win.startLine + clipped;
+      t.body(body.split("\n").slice(0, 40).join("\n"));
+      t.done(true, (pick.kind || "symbol") + " " + pick.name + " L" + from + "–" + to);
+      const total = win.totalLines == null ? "全文件大小 " + Math.round(win.sizeBytes / 1024) + "KB（行数未数完）" : "全文件共 " + win.totalLines + " 行";
+      return "【" + shown + " · " + (pick.kind || "symbol") + " " + pick.name + " 起自第 " + pick.line + " 行（" + via + "）" +
+        "，本次返回第 " + from + "–" + to + " 行；" + total + (unconfirmed ? "；" + unconfirmed : "") + "】\n" + body +
+        (win.hasMore ? "\n【第 " + (to + 1) + " 行起未返回，续读用 startLine: " + (to + 1) + "】" : "");
+    }
+
+    if (hasRange) {
+      const t = agent.tool("read", "读取片段", shown + " L" + startArg + (Number(args.endLine) > 0 ? "–" + Number(args.endLine) : "+"));
+      let count = Math.floor(Number(args.lineCount) || 0);
+      const endArg = Math.floor(Number(args.endLine) || 0);
+      if (endArg >= startArg) count = endArg - startArg + 1;
+      if (!(count > 0)) count = DEFAULT_RANGE;
+      try {
+        const win = store.readWindow(rel, { startLine: startArg, lineCount: count });
+        if (!win.lines.length) {
+          t.done(false, "区间越界");
+          return "【" + shown + (win.totalLines != null ? " 共 " + win.totalLines + " 行" : "") +
+            "】第 " + startArg + " 行起没有内容" +
+            (win.totalLines != null ? "（文件到第 " + win.totalLines + " 行为止）" : "") + "。";
+        }
+        const body = win.lines.join("\n");
+        t.body(body.split("\n").slice(0, 40).join("\n"));
+        t.done(true, win.lines.length + " 行");
+        return rangeNotice(win, shown) + body;
+      } catch (e) {
+        t.done(false, "读取失败");
+        return "错误: " + e.message + (e.userHint ? "（" + e.userHint + "）" : "");
+      }
+    }
+
+    const t = agent.tool("read", "读取文件", shown);
     try {
-      const txt = res.store.read(res.rel);
+      const txt = store.read(rel);
       t.body(txt.split("\n").slice(0, 40).join("\n"));
       t.done(true, txt.split("\n").length + " 行");
       return txt;
-    } catch (e) { t.done(false, "读取失败"); return "错误: " + e.message; }
+    } catch (e) {
+      /* 整读被 1MB 闸挡下时不该死路一条：以前只能自己写脚本按行 dump。
+         现在自动退成"第 1–400 行"，并把取段的两条路写在回执里。 */
+      if (e && e.code === "FILE_TOO_LARGE") {
+        try {
+          const win = store.readWindow(rel, { startLine: 1, lineCount: DEFAULT_RANGE });
+          const body = win.lines.join("\n");
+          t.body(body.split("\n").slice(0, 40).join("\n"));
+          t.done(true, "超 1MB，按段给 " + win.lines.length + " 行");
+          return rangeNotice(win, shown, "整读上限 1MB 已触发，这里只给开头") + body;
+        } catch (e2) { t.done(false, "读取失败"); return "错误: " + e2.message; }
+      }
+      t.done(false, "读取失败");
+      return "错误: " + e.message + (e.userHint ? "（" + e.userHint + "）" : "");
+    }
   },
 
   write_file: async (agent, args) => {

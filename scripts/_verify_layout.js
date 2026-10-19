@@ -775,9 +775,9 @@ async function main() {
        新契约：content 随台账走、卡片正文行显示记忆内容；topic 与正文开头重复时不再重复显示。 */
     const recall = await page.evaluate(() => {
       renderRecallCard({ type: "memory.recall", entries: [
-        { scope: "project", id: "p1", type: "lesson", topic: "端口约定", content: "dev 服务器固定跑 5178 端口，换端口要同步改 electron 配置", valueScore: 4, accessCount: 2 },
-        { scope: "user", id: "u1", type: "preference", topic: "启动项目", content: "启动项目后要先装依赖再跑 dev，否则端口会冲突", valueScore: 3, accessCount: 0 },
-        { scope: "project", id: "p2", type: "decision", topic: "只有标题没有正文", content: "", valueScore: 2, accessCount: 0 },
+        { scope: "project", id: "p1", type: "lesson", topic: "端口约定", content: "dev 服务器固定跑 5178 端口，换端口要同步改 electron 配置", valueScore: 4, accessCount: 2, via: "guard" },
+        { scope: "user", id: "u1", type: "preference", topic: "启动项目", content: "启动项目后要先装依赖再跑 dev，否则端口会冲突", valueScore: 3, accessCount: 0, via: "pull" },
+        { scope: "project", id: "p2", type: "decision", topic: "只有标题没有正文", content: "", valueScore: 2, accessCount: 0, via: "pull" },
       ] });
       const cards = document.querySelectorAll(".recall-card");
       const card = cards[cards.length - 1];
@@ -786,19 +786,26 @@ async function main() {
       const rows = [...card.querySelectorAll(".rc-row")];
       const topic = (r) => (r.querySelector(".rc-topic") || {}).textContent || "";
       const content = (r) => (r.querySelector(".rc-content") || {}).textContent || "";
+      const via = (r) => { const s = r.querySelector(".rc-via"); return s ? s.textContent : ""; };
       return {
         found: true, rows: rows.length,
         head: (card.querySelector(".rc-title") || {}).textContent || "",
-        t0: topic(rows[0]), c0: content(rows[0]),
+        t0: topic(rows[0]), c0: content(rows[0]), v0: via(rows[0]), v1: via(rows[1]),
         t1: topic(rows[1]), c1: content(rows[1]),
         c2: content(rows[2]),
         scope1: rows[1] ? rows[1].querySelector(".rc-scope.user") != null : false,
       };
     });
-    ok("记忆回显卡渲染出来（3 条明细，标题计数正确）",
-      recall.found === true && recall.rows === 3 && /3 条/.test(recall.head), JSON.stringify(recall).slice(0, 240));
+    /* P6 口径：卡片不再说"读进了 N 条"。正文只有硬提醒那类每轮在场，
+       其余要模型自己调 search_memory 取——两个来源在标题里分开计，行上也有各自的那枚标。 */
+    ok("记忆回显卡渲染出来（3 条明细），标题按常驻/自查分开计",
+      recall.found === true && recall.rows === 3
+      && /常驻提醒 1 条/.test(recall.head) && /我自己查了 2 条/.test(recall.head),
+      JSON.stringify(recall).slice(0, 240));
     ok("回显卡正文行显示记忆内容（不再只有 topic）",
       recall.c0 === "dev 服务器固定跑 5178 端口，换端口要同步改 electron 配置", JSON.stringify(recall).slice(0, 300));
+    ok("常驻与自查在行上分得开（第一枚标常驻、第二枚标自查）",
+      /常驻/.test(recall.v0) && /自查/.test(recall.v1), "v0=" + recall.v0 + " v1=" + recall.v1);
     ok("像样的 topic 保留显示", recall.t0 === "端口约定", "t0=" + recall.t0);
     ok("topic 与正文开头重复（旧的原话切片）不再重复显示", recall.t1 === "", "t1=" + recall.t1);
     ok("无正文的条目不出空内容行", recall.c2 === "", "c2=" + recall.c2);
@@ -811,7 +818,7 @@ async function main() {
       const mk = (id, title, conv) => ({ id, title, ok: false, elapsed: 3.2, ts: Date.now(), conv,
         counts: { done: 1, fail: 1, total: 3 }, summary: "编排「" + title + "」完成：1 成功，1 失败",
         steps: [
-          { id: "s1", name: "检索", status: "done", layer: 0, agent_type: "general", task: "在仓库里找出所有入口文件", output: "找到 3 个入口：server/index.js、electron/main.js、public/index.html" },
+          { id: "s1", name: "检索", status: "done", layer: 0, agent_type: "general", task: "在仓库里找出所有入口文件", output: "找到 3 个入口：server/index.js、electron/main.js、public/index.html", changed: 2, conflicts: 1 },
           { id: "s2", name: "评审", status: "fail", layer: 0, agent_type: "reviewer", task: "评审上一步结果", output: "子智能体超时" },
           { id: "s3", name: "补位", status: "running", layer: 1, agent_type: "general", task: "修复评审意见", output: "" },
         ] });
@@ -853,7 +860,7 @@ async function main() {
       const runs = [{ id: "orch-test", title: "探针编排", ok: false, elapsed: 3.2, ts: Date.now(), conv: convId,
         counts: { done: 1, fail: 1, total: 3 }, summary: "",
         steps: [
-          { id: "s1", name: "检索", status: "done", layer: 0, agent_type: "general", task: "在仓库里找出所有入口文件", output: "找到 3 个入口：server/index.js、electron/main.js、public/index.html" },
+          { id: "s1", name: "检索", status: "done", layer: 0, agent_type: "general", task: "在仓库里找出所有入口文件", output: "找到 3 个入口：server/index.js、electron/main.js、public/index.html", changed: 2, conflicts: 1 },
           { id: "s2", name: "评审", status: "fail", layer: 0, agent_type: "reviewer", task: "评审上一步结果", output: "子智能体超时" },
           { id: "s3", name: "补位", status: "running", layer: 1, agent_type: "general", task: "修复评审意见", output: "" },
         ] }];
@@ -868,6 +875,8 @@ async function main() {
         found: true, items: items.length, steps: steps.length,
         task0: (steps[0].querySelector(".ag-orch-step-task") || {}).textContent || "",
         out0: (steps[0].querySelector(".ag-orch-step-out") || {}).textContent || "",
+        t0: (steps[0].querySelector(".ag-orch-step-t") || {}).textContent || "",
+        t1: (steps[1].querySelector(".ag-orch-step-t") || {}).textContent || "",
         failDot: !!it.querySelector(".ag-orch-step.fail"),
       };
     });
@@ -875,6 +884,10 @@ async function main() {
     ok("子任务行显示派发的任务原文（task）", /入口文件/.test(orchUi2.task0), "task=" + orchUi2.task0);
     ok("子任务行显示结果摘要（output）", /server\/index\.js/.test(orchUi2.out0), "out=" + orchUi2.out0);
     ok("失败子任务带失败状态点", orchUi2.failDot === true, "failDot=" + orchUi2.failDot);
+    /* P5：回放列表里也要能看出"这一步改了盘没有、被兄弟挡回没有"。
+       没有改动的那一步不许出现"改动 0 个文件"这种废话（那格只留耗时）。 */
+    ok("历史行标出改动归属与挡回次数", /改动 2 个文件/.test(orchUi2.t0) && /撞回 1 次/.test(orchUi2.t0), "t0=" + orchUi2.t0);
+    ok("没改盘的步骤不编造归属数字", !/改动/.test(orchUi2.t1), "t1=" + orchUi2.t1);
 
     /* #45 续（P2-C1）：编排要有"图"的样子——谁等谁、谁和谁同批并行。
        这里走真实事件流（orch.start → step.done），断言泳道、边数、边跟着状态变色，
@@ -904,7 +917,8 @@ async function main() {
       });
       const first = read();
       window.handleEvent({ type: "orch.step.start", stepId: "s1", name: "起点", layer: 0, parallel: false });
-      window.handleEvent({ type: "orch.step.done", stepId: "s1", name: "起点", elapsed: 1, output: "起点结论" });
+      window.handleEvent({ type: "orch.step.done", stepId: "s1", name: "起点", elapsed: 1, output: "起点结论",
+        changed: ["a.js", "b.js"], conflicts: 1 });
       await wait(60);
       const afterS1 = read();
       /* 边必须真的连在两个节点上：拿节点矩形反查边的两个端点，误差 2px 以内 */
@@ -930,6 +944,9 @@ async function main() {
       s1El.querySelector(".orch-step-head").click();
       const afterClick = getComputedStyle(s1El.querySelector(".orch-step-out")).display;
       const outText = (s1El.querySelector(".orch-step-out") || {}).textContent || "";
+      /* 归属那一格：并行跑的时候用户要看的是"这一步动了哪几个文件、有没有被兄弟挡回"，
+         不是又一个"完成"。 */
+      const s1Status = (s1El.querySelector(".orch-step-status") || {}).textContent || "";
       s1El.querySelector(".orch-step-head").click();
       const reCollapsed = getComputedStyle(s1El.querySelector(".orch-step-out")).display;
       // 反向对照：单批、无依赖
@@ -937,7 +954,7 @@ async function main() {
       await wait(60);
       const flat = read();
       document.getElementById("orchClose").click();
-      return { first, afterS1, afterFail, flat, rects, joined, click: { beforeClick, afterClick, outText, reCollapsed } };
+      return { first, afterS1, afterFail, flat, rects, joined, click: { beforeClick, afterClick, outText, reCollapsed }, s1Status };
     });
     ok("多批依赖画成泳道图（3 列，节点数 1/2/1）",
       dag.first.graphed === true && dag.first.lanes.length === 3 && dag.first.lanes.map((l) => l.nodes).join(",") === "1,2,1",
@@ -958,6 +975,9 @@ async function main() {
     ok("点开步骤标题真能看到结果（实时那一步原先永远展不开）",
       dag.click.beforeClick === "none" && dag.click.afterClick === "block" && /起点结论/.test(dag.click.outText) && dag.click.reCollapsed === "none",
       JSON.stringify(dag.click));
+    /* P5：并行分工的现场要看得出"谁改了盘、谁被挡回"，不然两个并行节点长得一模一样。 */
+    ok("完成的步骤节点上标出改动归属与挡回次数",
+      /改动 2 个文件/.test(dag.s1Status) && /撞回 1 次/.test(dag.s1Status), "status=" + dag.s1Status);
     const clsCount = (list) => list.reduce((acc, e) => {
       const k = (e.cls.match(/orch-edge (pending|running|done|fail)/) || [])[1] || "?";
       acc[k] = (acc[k] || 0) + 1; return acc;

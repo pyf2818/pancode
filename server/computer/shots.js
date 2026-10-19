@@ -38,7 +38,10 @@ function stamp() { return Date.now(); }
 
 /* 给人看的文件名：模型可以传 name，一律洗过再拼（去掉路径分隔与 shell 特殊字符），
    时间戳打头防互相覆盖。中文保留 —— 前端取图时 encodeURIComponent，
-   全洗成下划线只会让截图文件名变成一坨 ____。 */
+   全洗成下划线只会让截图文件名变成一坨 ____。
+   扩展名只认这四种：喂给模型时要用 jpeg（同样画面比 png 小一个数量级，
+   直接决定一次像素往返要花多少 token），但绝不让模型把 ".exe" 之类拼进名字。 */
+const IMG_EXTS = { png: "image/png", jpeg: "image/jpeg", jpg: "image/jpeg", webp: "image/webp" };
 function fileName(name, ext) {
   const raw = String(name == null ? "" : name);
   const cleaned = raw
@@ -48,7 +51,13 @@ function fileName(name, ext) {
     .replace(/^\.+|\.+$/g, "")
     .trim()
     .slice(0, MAX_NAME_LEN);
-  return stamp() + "-" + (cleaned || "shot") + (ext === "pdf" ? ".pdf" : ".png");
+  const e = String(ext || "png").toLowerCase();
+  if (e === "pdf") return stamp() + "-" + (cleaned || "shot") + ".pdf";
+  return stamp() + "-" + (cleaned || "shot") + "." + (IMG_EXTS[e] ? e : "png");
+}
+function mimeOf(p) {
+  const e = String(p || "").split(".").pop().toLowerCase();
+  return IMG_EXTS[e] || "image/png";
 }
 
 /* 直接写字节（Electron desktopCapturer 走这条）。 */
@@ -97,4 +106,4 @@ function prune(ttlDays) {
   return { removed, root: r };
 }
 
-module.exports = { root, convDir, fileName, writeBuffer, adopt, resolveRel, prune, DEFAULT_TTL_DAYS, DIR_NAME, SUB };
+module.exports = { root, convDir, fileName, mimeOf, writeBuffer, adopt, resolveRel, prune, DEFAULT_TTL_DAYS, DIR_NAME, SUB, IMG_EXTS };
