@@ -1,27 +1,27 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#223042"/>
-      <stop offset="0.55" stop-color="#131a26"/>
-      <stop offset="1" stop-color="#0a0e16"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d2430"/>
+      <stop offset="0.55" stop-color="#11151e"/>
+      <stop offset="1" stop-color="#0a0d13"/>
     </linearGradient>
-    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#43e5ff"/>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#45e0ff"/>
       <stop offset="0.5" stop-color="#5b8cff"/>
-      <stop offset="1" stop-color="#a06bff"/>
+      <stop offset="1" stop-color="#a16bff"/>
     </linearGradient>
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.08"/>
       <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
     <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.30"/>
-      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0.05"/>
       <stop offset="1" stop-color="#ffffff" stop-opacity="0.04"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0.5" cy="0.46" r="0.5">
-      <stop offset="0" stop-color="#3fa0ff" stop-opacity="0.42"/>
-      <stop offset="1" stop-color="#3fa0ff" stop-opacity="0"/>
+    <radialGradient id="glow" cx="0.5" cy="0.47" r="0.5">
+      <stop offset="0" stop-color="#4a7dff" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#4a7dff" stop-opacity="0"/>
     </radialGradient>
     <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
       <feGaussianBlur stdDeviation="22"/>
@@ -34,19 +34,13 @@
   <rect x="66" y="66" width="892" height="892" rx="208" ry="208" fill="none" stroke="url(#edge)" stroke-width="4"/>
 
   <!-- 中心光晕 -->
-  <circle cx="512" cy="470" r="330" fill="url(#glow)" filter="url(#soft)"/>
+  <circle cx="512" cy="488" r="320" fill="url(#glow)" filter="url(#soft)"/>
 
-  <!-- 渐变代码括号 -->
-  <g fill="none" stroke="url(#mark)" stroke-width="64" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M368 340 L238 512 L368 684"/>
-    <path d="M656 340 L786 512 L656 684"/>
-  </g>
+  <!-- 盘：一道开口的圆环，开口朝右 -->
+  <path d="M 699.3 343.4 A 252 252 0 1 0 699.3 680.6"
+        fill="none" stroke="url(#mark)" stroke-width="64" stroke-linecap="round"/>
 
-  <!-- AI 四角星光（主） -->
-  <path d="M512 356 Q544 480 668 512 Q544 544 512 668 Q480 544 356 512 Q480 480 512 356 Z" fill="url(#mark)"/>
-  <path d="M512 436 Q528 496 588 512 Q528 528 512 588 Q496 528 436 512 Q496 496 512 436 Z" fill="#f4faff" fill-opacity="0.96"/>
-
-  <!-- 点缀星尘 -->
-  <circle cx="782" cy="268" r="22" fill="#9be7ff" fill-opacity="0.85"/>
-  <circle cx="242" cy="756" r="15" fill="#ffffff" fill-opacity="0.5"/>
+  <!-- 代码箭头：从盘心穿过开口指出去，尖端抵在开口内侧 -->
+  <path d="M 476 372 L 684 512 L 476 652"
+        fill="none" stroke="url(#mark)" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
