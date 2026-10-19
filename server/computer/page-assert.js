@@ -34,7 +34,7 @@ function assertProbeScript(items) {
     "const out=" + JSON.stringify(data) + ".map((it)=>{const o={kind:it.kind,sel:it.sel};" +
     "if(it.kind==='url'){o.url=location.href;return o;}" +
     "if(it.kind==='title'){o.text=document.title;return o;}" +
-    "if(it.kind==='count'){o.count=document.querySelectorAll(it.sel).length;return o;}" +
+    "if(it.kind==='count'){try{o.count=document.querySelectorAll(it.sel).length}catch(e){o.error='bad_selector'}return o;}" +
     "const e=q(it.sel);o.found=!!e;if(!e)return o;" +
     "if(it.kind==='text')o.text=String(e.textContent||'').replace(/\\s+/g,' ').trim();" +
     "if(it.kind==='value')o.value=e.value===undefined?null:String(e.value);" +
@@ -70,7 +70,8 @@ function judge(a, o) {
       return { pass: !!o.found && (o.enabled === true) === wantBool, actual: o.found ? (o.enabled ? "可用" : "禁用") : "没有这个元素", wantDesc: wantBool ? "可用" : "禁用" };
     case "count": {
       const want = Number(a.expected);
-      return { pass: Number.isFinite(want) && o.count === want, actual: o.count === undefined ? "(读不出来)" : String(o.count), wantDesc: "元素数 = " + a.expected };
+      const actual = o.count === undefined ? (o.error === "bad_selector" ? "(选择器执行失败，多半是语法错了)" : "(读不出来)") : String(o.count);
+      return { pass: Number.isFinite(want) && o.count === want, actual, wantDesc: "元素数 = " + a.expected };
     }
     case "text": return strCmp(o.text, "文本");
     case "value": return strCmp(o.value, "值");
@@ -104,7 +105,7 @@ function validate(list) {
     if (sel.length > 300) { bad.push((i + 1) + ") sel 太长（" + sel.length + " 字符），换一个短的"); return; }
     if (NEEDS_EXPECTED.includes(kind) && a.expected === undefined) { bad.push((i + 1) + ") " + kind + " 缺 expected（不给你就拿它跟什么比）"); return; }
     if (kind === "attr" && !a.attr && !a.name) { bad.push((i + 1) + ") attr 缺 attr（要读哪个属性名）"); return; }
-    items.push({ kind, sel, attr: String(a.attr || ""), label: descOf(a), src: a });
+    items.push({ kind, sel, attr: String(a.attr || a.name || ""), label: descOf(a), src: a });
   });
   return { items, bad };
 }

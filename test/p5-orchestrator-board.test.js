@@ -101,6 +101,16 @@ describe("撞车预防（声明式 writes）", () => {
     const empty = [{ id: "c", name: "C" }, { id: "d", name: "D", writes: [] }];
     expect(o._serializeWriteClashes(empty)).toEqual([]);
   });
+
+  const caseIt = process.platform === "win32" ? it : it.skip;
+  caseIt("Windows 上大小写不同也是同一个文件（NTFS 不分大小写，files 展示仍用原样）", () => {
+    const o = new Orchestrator({ emit() {} });
+    const steps = [{ id: "a", name: "A", writes: ["src/x.js"] }, { id: "b", name: "B", writes: ["SRC/X.JS"] }];
+    const added = o._serializeWriteClashes(steps);
+    expect(added.length).toBe(1);
+    expect(added[0]).toEqual({ from: "b", to: "a", files: ["src/x.js"] });
+    expect(steps[1].depends_on).toEqual(["a"]);
+  });
 });
 
 describe("下游拿到的上下文（结构化简报 + 白板）", () => {

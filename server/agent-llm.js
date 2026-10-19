@@ -2438,15 +2438,15 @@ ${taskSummary}
       const key = this._claimKey(p);
       if (!key || sub.owned.has(key)) continue;
       this._claims = this._claims || new Map();
-      const holder = this._claims.get(key);
-      if (holder && holder.owner !== sub.owner) { heldBy.push({ path: key, by: holder.label }); continue; }
+      const holder = this._claims.get(this._claimFold(key));
+      if (holder && holder.owner !== sub.owner) { heldBy.push({ path: holder.key || key, by: holder.label }); continue; }
       let existed = false;
       try { existed = !!this.files.exists(key); } catch (e) { existed = false; }
       const content = existed ? this._safeRead(key) : null;
       /* 跨根（别的项目里的绝对路径）只用来判撞车，收不回：FileStore 只认当前工作区，
          改造前的整盘快照同样覆盖不到别的根 —— 这里不新增能力也不假装能收回。 */
       iso.owned[key] = { existed, content, unreadable: existed && content === null };
-      this._claims.set(key, { owner: sub.owner, label: sub.label });
+      this._claims.set(this._claimFold(key), { owner: sub.owner, label: sub.label, key });
       sub.owned.add(key);
     }
     if (!heldBy.length) return null;
@@ -2473,11 +2473,17 @@ ${taskSummary}
     return s;
   }
 
+  /* 互斥查找键在 Windows 上折大小写：NTFS 不分大小写而 JS Map 分，
+     "Src/App.js" 与 "src/app.js" 会拿到两个键，同一物理文件被双双放行。
+     只折 Map 的查找键；认领值里保留原样 key，文件操作与回执仍走模型写的原路径。 */
+  _claimFold(key) { return process.platform === "win32" ? String(key).toLowerCase() : key; }
+
   _releaseClaims(sub) {
     if (!this._claims) return;
     for (const p of sub.owned) {
-      const h = this._claims.get(p);
-      if (h && h.owner === sub.owner) this._claims.delete(p);
+      const lk = this._claimFold(p);
+      const h = this._claims.get(lk);
+      if (h && h.owner === sub.owner) this._claims.delete(lk);
     }
   }
 

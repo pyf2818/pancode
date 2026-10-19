@@ -35,6 +35,12 @@ describe("validate：清单先过闸", () => {
     expect(bad[0]).toContain("缺 attr");
   });
 
+  it("attr 只给 name 也收得下：name 是属性别名，转发时不能丢（丢了就是校验过、执行必败）", () => {
+    const { items, bad } = PA.validate([{ kind: "attr", sel: "#btn", name: "data-id", expected: "b1" }]);
+    expect(bad).toEqual([]);
+    expect(items[0].attr).toBe("data-id");
+  });
+
   it("url / title 不需要选择器，别的都需要", () => {
     expect(PA.validate([{ kind: "title", expected: "x" }]).bad).toEqual([]);
     expect(PA.validate([{ kind: "visible" }]).bad[0]).toContain("缺 sel");
@@ -94,6 +100,12 @@ describe("judge：观察值 vs 期望", () => {
     expect(j.actual).toContain("读不出来");
   });
 
+  it("count 探针标了坏选择器时，actual 指向选择器本身而不是元素", () => {
+    const j = PA.judge({ kind: "count", sel: ".x[", expected: 1 }, { error: "bad_selector" });
+    expect(j.pass).toBe(false);
+    expect(j.actual).toContain("选择器");
+  });
+
   it("实得值过长会截断，但绝不悄悄改短到看起来一样", () => {
     const long = "Z".repeat(PA.ACTUAL_MAX + 500);
     const j = PA.judge({ kind: "text", sel: "#p", expected: "Z" }, { found: true, text: long });
@@ -123,5 +135,10 @@ describe("探针程序：选择器是数据不是代码", () => {
     const script = PA.assertProbeScript([{ kind: "text", sel: "#a", expected: "绝不能带进页面", contains: true }]);
     expect(script).not.toContain("绝不能带进页面");
     expect(script).toContain("\"sel\":\"#a\"");
+  });
+
+  it("count 的查询有 try 兜底：非法选择器只废那一条，不废整批", () => {
+    const script = PA.assertProbeScript([{ kind: "count", sel: ".row", expected: 3 }]);
+    expect(script).toContain("try{o.count=document.querySelectorAll");
   });
 });

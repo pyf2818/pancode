@@ -262,7 +262,7 @@ function saveLlm(cfg, patch) {
      开了但模型不带视觉会直接吃一个 400，宁可让它默认不喂像素。 */
   if (patch.vision !== undefined) cfg.llm.vision = patch.vision === true;
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
-  onDisk.llm = { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens, reasoningEffort: cfg.llm.reasoningEffort };
+  onDisk.llm = { baseURL: cfg.llm.baseURL, model: cfg.llm.model, maxToolRounds: cfg.llm.maxToolRounds, contextWindow: cfg.llm.contextWindow, maxOutputTokens: cfg.llm.maxOutputTokens, reasoningEffort: cfg.llm.reasoningEffort, vision: cfg.llm.vision === true };
   writeJsonSafe(CONFIG_PATH, onDisk);
   return cfg;
 }

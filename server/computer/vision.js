@@ -27,7 +27,7 @@ function explain(v, info) {
       "出路：浏览器截图把 full 关掉（只截可视区），桌面截图带 window_ref 只截目标窗口；再不行就改用文本快照。";
   }
   if (why === "missing") {
-    return "这张图连盘都没落成功（" + ((info && info.error) || "路径不可读") + "），谁都看不到。";
+    return "这张图连盘都没落成功（" + ((v && v.error) || (info && info.error) || "路径不可读") + "），谁都看不到。";
   }
   return "这张只有用户能看见：这个引擎不支持把像素交给模型。";
 }

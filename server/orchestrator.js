@@ -117,8 +117,16 @@ class Orchestrator {
      把"跑一半被撞回"变成"本来就排队"。返回补过的边，供汇报里说清改了什么。 */
   _serializeWriteClashes(steps) {
     const added = [];
-    const keyOf = (p) => String(p || "").trim().replace(/\\/g, "/").replace(/^\.\//, "");
-    const sets = steps.map((s) => new Set((Array.isArray(s.writes) ? s.writes : []).map(keyOf).filter(Boolean)));
+    /* 与运行时认领键同一款大小写处理：Windows 上两次声明大小写不同也是同一个文件。
+       折叠只用于比对；files 里存原样，提示里别把模型写的路径改成小写。 */
+    const norm = (p) => String(p || "").trim().replace(/\\/g, "/").replace(/^\.\//, "");
+    const keyOf = (p) => { const s = norm(p); return s ? (process.platform === "win32" ? s.toLowerCase() : s) : ""; };
+    const orig = steps.map((s) => {
+      const m = new Map();
+      (Array.isArray(s.writes) ? s.writes : []).forEach((w) => { const k = keyOf(w); if (k && !m.has(k)) m.set(k, norm(w)); });
+      return m;
+    });
+    const sets = orig.map((m) => new Set(m.keys()));
     for (let i = 0; i < steps.length; i++) {
       for (let j = i + 1; j < steps.length; j++) {
         const overlap = [...sets[i]].filter((p) => sets[j].has(p));
@@ -127,7 +135,7 @@ class Orchestrator {
         const dj = steps[j].depends_on || [];
         if (di.indexOf(steps[j].id) >= 0 || dj.indexOf(steps[i].id) >= 0) continue;  // 已经有序，不用补
         steps[j].depends_on = dj.concat([steps[i].id]);
-        added.push({ from: steps[j].id, to: steps[i].id, files: overlap });
+        added.push({ from: steps[j].id, to: steps[i].id, files: overlap.map((k) => orig[i].get(k) || k) });
       }
     }
     return added;
@@ -160,7 +168,7 @@ class Orchestrator {
     const serialized = this._serializeWriteClashes(steps);
     if (serialized.length) {
       this.agent.emit({ type: "term.line", cls: "tl-warn", text: "[编排] " + serialized.length
-        + " 对步骤声明了同一批文件，已自动改成串行：" + serialized.map((e) => e.to + " 等 " + e.from + "（" + e.files.join("、") + "）").join("；") });
+        + " 对步骤声明了同一批文件，已自动改成串行：" + serialized.map((e) => e.from + " 等 " + e.to + "（" + e.files.join("、") + "）").join("；") });
     }
     const layers = this._topoLayers(steps);
     /* 一次编排一份白板：兄弟之间靠它对信息，不靠把上游原文塞进下游的 prompt。 */

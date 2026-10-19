@@ -61,6 +61,11 @@ describe("入队闸门", () => {
     expect(v.why).toBe("missing");
   });
 
+  it("missing 的实话要带出真实异常，不能一律说成路径不可读", () => {
+    const note = vision.explain({ ok: false, why: "missing", error: "EPERM: operation not permitted" }, {});
+    expect(note).toContain("EPERM");
+  });
+
   it("上游拒收过一次以后，本会话不再入队", () => {
     const a = agent();
     a._visionRejected = true;

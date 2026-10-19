@@ -143,6 +143,32 @@ describe("并行不再排队（按文件认领取代全局锁）", () => {
     expect(termLines(a)).toContain("挡回");
   });
 
+  const caseIt = process.platform === "win32" ? it : it.skip;
+  caseIt("Windows 上认领键折大小写：换个大小写来写同一个文件照样被挡", async () => {
+    const a = mkAgent({ "Shared.js": "原文" });
+    const held = gate(), bumped = gate();
+    a._chatStream = async () => {
+      const me = currentSub();
+      me.n = (me.n || 0) + 1;
+      if (me.label === "A") {
+        if (me.n === 1) return { toolCalls: [{ id: "a1", name: "write_file", args: { path: "shared.js", content: "A写的" } }] };
+        held.go();                            // A 已认领，放 B 用另一种大小写进来撞
+        await bumped.wait();
+        return { content: "A 完成" };
+      }
+      await held.wait();
+      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", args: { path: "Shared.js", content: "B写的" } }] };
+      bumped.go();
+      return { content: "B 完成" };
+    };
+    const ra = {}, rb = {};
+    await Promise.all([a.runSubAgent("任务A", { label: "A", report: ra }), a.runSubAgent("任务B", { label: "B", report: rb })]);
+    expect(a.applied.filter((x) => x.name === "write_file").length).toBe(1);   // B 那次没被执行
+    expect(rb.conflicts.length).toBe(1);
+    expect(rb.conflicts[0]).toEqual({ path: "shared.js", by: "A" });
+    expect(a._claims.size).toBe(0);
+  });
+
   it("前一步收尾后认领就释放：后来的步骤能正常写同一个文件", async () => {
     const a = mkAgent({ "one.js": "原文" });
     a._chatStream = async (messages) => {
