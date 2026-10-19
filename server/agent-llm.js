@@ -2325,7 +2325,6 @@ ${taskSummary}
       this.state = () => {};
       this.say = async () => {};
     }
-    const _subAborted = () => { const c = convContext.getStore(); return c ? c.abortRef.value : this._abort; };
     // 只读子智能体（reviewer / tester / 检索型）不认领、不快照，天生并行。
     const mayMutate = subTools.some((t) => MUTATING_TOOLS.has(t.function.name));
     /* P5：整工作区内容快照 + 一支全局互斥锁换成「按文件认领 + 逐文件改前快照」。

@@ -22,7 +22,6 @@ class Blackboard {
   constructor(runId) {
     this.runId = String(runId || "run");
     this.items = [];
-    this.dropped = 0;
   }
 
   /* 记一条。from 是"谁写的"（步骤 id / 子智能体标签），渲染时按它排除自己。 */
@@ -37,7 +36,7 @@ class Blackboard {
       text: body.slice(0, MAX_TEXT),
       ts: Date.now(),
     });
-    while (this.items.length > MAX_ENTRIES) { this.items.shift(); this.dropped++; }
+    while (this.items.length > MAX_ENTRIES) this.items.shift();
     return { ok: true, n: this.items.length, truncated: body.length > MAX_TEXT };
   }
 
