@@ -1929,6 +1929,27 @@ chatStream.addEventListener("click", (e) => {
   if (head && !e.target.closest("button")) {
     const card = head.closest(".round-grp, .tool-card, .think-block");
     if (card) card.classList.toggle("open");
+    return;
+  }
+  /* W27 · 用户气泡上的「重跑」：从这条消息重放任务（服务端截断历史再按原文重发）。 */
+  const rerunBtn = e.target.closest(".msg-user .msg-rerun");
+  if (rerunBtn) {
+    const bubble = rerunBtn.closest(".msg-user");
+    const pane = bubble.closest(".conv-pane") || chatPane();
+    const cvid = pane.dataset.convId || convId;
+    if (state.convRunning[cvid]) { toast(t("rerunBusyTip")); return; }
+    const userMsgs = [...pane.querySelectorAll(".msg-user")];
+    const backIndex = userMsgs.length - 1 - userMsgs.indexOf(bubble);   // 从最新数（0 = 最后一条）
+    if (backIndex < 0) return;
+    const text = (bubble.querySelector(".msg-copy") ? [...bubble.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("") : bubble.textContent) || "";
+    let node = bubble;
+    while (node) {
+      const next = node.nextElementSibling;
+      node.remove();
+      node = next;
+    }
+    send({ type: "rewind", convId: cvid, backIndex, text: text.trim() });
+    toast(t("rerunStartedTip"));
   }
 });
 
@@ -2161,6 +2182,14 @@ function addUserMsg(text, skill) {
     el.insertBefore(chip, el.firstChild);
   }
   addMsgCopyBtn(el, text);
+  /* W27 · 重跑：从这条消息重放任务。点击走 chatStream 上的事件委托（见 appendChatBlock
+     区域的委托块）——历史会话的 DOM 是快照恢复的，逐元素 onclick 会失联，委托天然免疫。 */
+  const rerun = document.createElement("button");
+  rerun.className = "msg-rerun";
+  rerun.innerHTML = ico("reset");
+  rerun.title = t("rerunTip");
+  rerun.setAttribute("aria-label", t("rerunTip"));
+  el.appendChild(rerun);
   chatPane().appendChild(el); scrollChat(true);
 }
 

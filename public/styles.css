@@ -1619,6 +1619,12 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .msg-user:hover .msg-copy,.msg-row:hover .msg-copy{opacity:1}
 .msg-copy:hover{background:var(--accent);color:#fff}
 .msg-copy .ico{width:13px;height:13px}
+/* W27 · 用户气泡上的「重跑」：紧贴复制按钮左侧，同款悬停显现 */
+.msg-rerun{position:absolute;top:4px;right:32px;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border:none;background:var(--bg4);color:var(--text-dim);border-radius:5px;cursor:pointer;opacity:0;transition:opacity .15s,background .15s;padding:0;z-index:2}
+.msg-user{position:relative}
+.msg-user:hover .msg-rerun{opacity:1}
+.msg-rerun:hover{background:var(--warn);color:#fff}
+.msg-rerun .ico{width:13px;height:13px}
 
 /* ============ 通用确认弹窗 ============ */
 #confirmModal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:var(--z-overlay);display:none;align-items:center;justify-content:center}

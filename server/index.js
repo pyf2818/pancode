@@ -2629,6 +2629,21 @@ wss.on("connection", (ws) => {
         }
         break;
       }
+      /* W27 · 对话 rewind：从某条用户消息重跑。backIndex = 从最新数起的第几条用户消息
+         （0 = 最后一条）。服务端把该会话历史截断到这条消息之前，再按原文重跑 ——
+         "改一下我刚才的指令重新来"不再需要新开会话或把上下文越滚越长。 */
+      case "rewind": {
+        const txt = typeof m.text === "string" ? m.text.slice(0, 8000) : "";
+        const backIndex = Math.max(0, Math.min(200, Number(m.backIndex) || 0));
+        if (txt.trim() && typeof uEng.rewindAndRun === "function") {
+          Promise.resolve(uEng.rewindAndRun(txt, { convId: m.convId, backIndex }))
+            .catch((e) => {
+              log.tag("agent").error("rewind 重跑失败：" + String((e && e.stack) || e).slice(0, 300));
+              broadcast({ type: "op.error", error: "重跑失败：" + (e && e.message || e), convId: m.convId }, msgKey);
+            });
+        }
+        break;
+      }
 
       /* 前端主动查询上下文实测水位（页面加载 / 会话切换 / 收到回答后调用） */
       case "ctx.query": {

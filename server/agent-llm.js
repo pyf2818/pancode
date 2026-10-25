@@ -2097,13 +2097,37 @@ ${taskSummary}
       try { iso.pathsBefore = new Set(this.files.list()); } catch (e) { iso.pathsBefore = null; }
     }
     let finalText = "";
+    const subLoop = { fp: null, count: 0 };   // 循环指纹：子循环版的跨轮 (tool,args) 追踪
+    let ctxRecovered = false;                 // 上下文超限恢复至多一次（与主循环同策略，防死循环）
     try {
       for (let round = 0; round < maxRounds; round++) {
         // 中断检查必须走会话级 abortRef（subAborted）：this._abort 是引擎级旧标志，
         // 编排跑到一半用户在**另一个会话**点「停止」，会把这里的子智能体整批打断，
         // 观感就是"编排不稳定、莫名失败"。
         if (subAborted()) { finalText = finalText || "(子智能体已随主任务中断)"; break; }
-        const r = await this._chatStream(messages, subTools, {});
+        let r;
+        try {
+          r = await this._chatStream(messages, subTools, {});
+        } catch (e) {
+          /* 上下文超限恢复：子循环此前没有独立压缩线，一次大读取后 400 就直接把整个
+             子任务判死。砍半历史（保 system + 首条任务 + 最近 6 条）重试一次，
+             与主循环的"至多一次恢复"同口径。 */
+          const kind = (() => { try { return classifyLlmError(e).kind; } catch (e2) { return ""; } })();
+          if (kind === "context" && !ctxRecovered && messages.length > 8) {
+            ctxRecovered = true;
+            const sys = messages[0];
+            const taskMsg = messages[1];
+            const tail = messages.slice(-6);
+            messages.length = 0;
+            messages.push(sys, taskMsg,
+              { role: "user", content: "[系统提示] 子任务上下文已超限并被压缩，以上是最近的关键消息，继续完成原任务。" },
+              ...tail);
+            this._traceEvent("sub.ctx_recover", { round });
+            round--;
+            continue;
+          }
+          throw e;
+        }
         if (r.content) finalText = r.content;
         if (!r.toolCalls || !r.toolCalls.length) break;
         const subIds = r.toolCalls.map((tc, i) => tc.id || "sub_" + round + "_" + i);
@@ -2141,11 +2165,24 @@ ${taskSummary}
              以前靠整盘快照互抹，现在是显式挡回 + 教模型怎么改计划。 */
           const blocked = mayMutate ? this._claimForSub(tc.name, args, sub, iso) : null;
           if (blocked) { toolMsgs.push({ role: "tool", tool_call_id: subIds[si], content: blocked }); continue; }
+          /* 循环指纹（与主循环同策略的子代理版）：连续 3 次完全相同的 (tool,args)
+             直接阻断并回灌提示 —— 修复前子循环没有这层，读大文件失败会原样重试到轮数耗尽。 */
+          const subFp = (tc.name || "unknown") + "::" + JSON.stringify(args);
+          if (subFp === subLoop.fp) subLoop.count++; else { subLoop.fp = subFp; subLoop.count = 1; }
+          if (subLoop.count >= 3) {
+            toolMsgs.push({ role: "tool", tool_call_id: subIds[si], content: "[循环阻断] 这是第 " + subLoop.count + " 次完全相同的调用。同样的输入只会得到同样的结果——请换一种方式完成子任务（缩小范围 / 改用其它工具），或在回复里说明卡在哪、需要什么。本次调用未执行。" });
+            continue;
+          }
           const _busy = this._toolBusyBegin();
           let res;
           try { res = await this._runToolGuarded(tc.name, args); }
           finally { this._toolBusyEnd(_busy); }
-          toolMsgs.push({ role: "tool", tool_call_id: subIds[si], content: String(res) });
+          /* 结果过主循环同款的截断/落盘包裹：修复前子代理直接消费原始结果，
+             一次大文件读取就能撑爆自己的上下文且没有 400 恢复路径。
+             水位回落主会话历史（子循环没有独立压缩线），方向正确：主会话越满，预览越小。 */
+          const wrapped = this._boundToolResult(tc.name, res);
+          if (wrapped !== res) this._traceEvent("tool.sub_spill", { name: tc.name, round });
+          toolMsgs.push({ role: "tool", tool_call_id: subIds[si], content: String(wrapped) });
         }
         messages.push(...toolMsgs);
       }
@@ -4264,6 +4301,43 @@ ${taskSummary}
     this.emit({ type: "term.line", text: "[Agent] 开始执行排队中的那条" + (list.length ? "（后面还有 " + list.length + " 条）" : ""), cls: "tl-info" });
     setTimeout(() => { try { this.handleChat(next.text, next.opts); } catch (e) { log.tag("agent").warn("排队消息执行失败: " + e.message); } }, 0);
     return true;
+  }
+
+  /* W27 · 对话 rewind：把会话历史截断到"从最新数第 backIndex+1 条用户消息"之前，按原文重跑。
+     前端点某条用户气泡上的「重跑」时调用。为什么从后往前数：压缩（user-ledger）只会折掉
+     较旧的用户消息，最近的用户消息与前端气泡永远一一对应 —— 从最新对齐不会错位。
+     目标会话正在跑时拒绝（截断一个正在被消费的历史是数据竞争），提示等它跑完再重跑。
+     找不到目标（历史被压缩折叠得很深 / 空会话）时退化为清空历史重跑，并明说。 */
+  async rewindAndRun(text, opts) {
+    const o = opts || {};
+    const convId = o.convId || this._convIdNow();
+    if (this.runningConvs.has(convId)) {
+      this.emit({ type: "term.line", text: "[重跑] 这个会话还有任务在跑，等它结束后再点重跑。", cls: "tl-warn" });
+      return { ok: false, reason: "busy" };
+    }
+    const saved = this.conversations.get(convId);
+    const history = saved && Array.isArray(saved.history) ? saved.history : [];
+    let userSeen = -1;
+    let cutAt = -1;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i] && history[i].role === "user") {
+        userSeen++;
+        if (userSeen === (o.backIndex || 0)) { cutAt = i; break; }
+      }
+    }
+    const trimmed = cutAt >= 0 ? history.slice(0, cutAt) : [];
+    this.conversations.set(convId, {
+      history: trimmed,
+      round: saved ? saved.round : 0,
+      ts: Date.now(),
+      changes: (this.convChanges && this.convChanges[convId]) || [],
+    });
+    this._persistConversations();
+    if (cutAt < 0 && history.length) {
+      this.emit({ type: "term.line", text: "[重跑] 目标消息已不在上下文里（可能被压缩折叠），改为清空上下文后重跑。", cls: "tl-warn" });
+    }
+    this.emit({ type: "chat.rewound", convId, backIndex: o.backIndex || 0 });
+    return this.handleChat(text, { convId });
   }
 
   async handleChat(text, opts) {

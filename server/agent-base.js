@@ -186,6 +186,13 @@ class AgentBase {
 
   /* 工具审批：基类默认无操作（真实 LLM 引擎 LlmAgent 覆写以支持人工确认） */
   resolveApproval() { return false; }
+
+  /* W27 · 对话 rewind 的基类实现（演示引擎用）：演示引擎没有可截断的持久历史，
+     "重跑"就是按原文再发一遍（round 已 >0 时 demo 引擎会走复核分支，真实跑测试）。 */
+  async rewindAndRun(text, opts) {
+    const o = opts || {};
+    return this.handleChat(text, { convId: o.convId });
+  }
 }
 
 module.exports = { AgentBase, diffStat, sleep, FAST };

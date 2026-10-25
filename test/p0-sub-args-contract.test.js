@@ -144,3 +144,46 @@ describe("③ 坏 JSON 不静默成空参", () => {
     expect(toolMsgs.join("\n")).toContain("参数解析失败");   // 错误确实回灌给了模型
   });
 });
+
+describe("④ 子循环防护（与主循环同策略）", () => {
+  it("连续 3 次相同 (tool,args) 被阻断，不再原样重试到轮数耗尽", async () => {
+    const a = mkAgent();
+    const toolMsgs = [];
+    a._chatStream = async (messages) => {
+      for (const m of messages) if (m.role === "tool") toolMsgs.push(m.content);
+      a.n = (a.n || 0) + 1;
+      // 前三次都发起同一个 read_file big.js 的调用（模拟模型对着大文件反复重试）
+      if (a.n <= 3) return { content: "", toolCalls: [{ id: "r" + a.n, name: "read_file", arguments: JSON.stringify({ path: "big.js" }) }] };
+      return { content: "换了个方式完成" };
+    };
+    await a.runSubAgent("读大文件", {});
+    expect(a.applied.filter((x) => x.name === "read_file").length).toBe(2);  // 第 3 次未执行
+    expect(toolMsgs.join("\n")).toContain("循环阻断");
+    expect(toolMsgs.join("\n")).toContain("换一种方式");                     // 教改道的提示在
+  });
+
+  it("超长工具结果被截断落盘（不再裸塞进子历史）", async () => {
+    const a = mkAgent();
+    a._spillRoot = path.join(require("os").tmpdir(), "p0spill-" + Date.now());
+    let n = 0;
+    a._chatStream = async () => {
+      n++;
+      if (n === 1) return { content: "", toolCalls: [{ id: "s1", name: "read_file", arguments: JSON.stringify({ path: "big.js" }) }] };
+      return { content: "done" };
+    };
+    a._runToolGuarded = async () => "X".repeat(60000);   // 远超默认预览上限
+    const toolMsgs = [];
+    a._chatStream = async (messages) => {
+      for (const m of messages) if (m.role === "tool") toolMsgs.push(m.content);
+      n++;
+      if (n === 1) return { content: "", toolCalls: [{ id: "s1", name: "read_file", arguments: JSON.stringify({ path: "big.js" }) }] };
+      return { content: "done" };
+    };
+    await a.runSubAgent("读大文件", {});
+    const body = toolMsgs.join("\n");
+    expect(body.length).toBeLessThan(60000);              // 确实被截了
+    expect(body).toContain("persisted-output");           // 截断信封在
+    expect(body).toContain("全文已保存到");                // spill 路径给到了
+    try { fs.rmSync(a._spillRoot, { recursive: true, force: true }); } catch (e) {}
+  });
+});
