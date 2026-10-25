@@ -1,0 +1,12 @@
+# 入库一律 LF：这台机器 core.autocrlf=true，工作树里 163 个文件被检成 CRLF，
+# 而索引里 457 个文本文件全是 LF。同一个 blob 在两边不是同一串字节，
+# 于是"读仓库源码做判据"的测试在 CI（checkout 出 CRLF）和本机（LF）量到两种结果
+# —— 2026-10-25 那轮 CI 红就是这么来的：test/p3-md-preview.test.js 按 "\n}\n" 切 app.js，
+# 在 CRLF 的检出里永远切不到，报成"结构变了"。
+# 规则只管检出/提交，不改已在工作树里的文件；下次检出（含 CI）起，两边字节一致。
+* text=auto eol=lf
+
+# 二进制不许过任何换行过滤（text=auto 会自己嗅探，但这里点名，别让它猜）
+*.png binary
+*.ico binary
+*.ttf binary
