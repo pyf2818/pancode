@@ -1,7 +1,18 @@
 {
   "name": "pancode",
   "version": "3.7.0",
-  "description": "基于 Monaco Editor (VS Code 开源内核) 的 Web AI 编程工作台 — 可写编辑器 + Git 基线 + 真实 LLM Agent 工具调用循环（OpenAI 兼容），无 Key 时演示引擎保底",
+  "description": "本地优先的 AI 编程工作台 —— Monaco 可写编辑器 + 集成终端 + 真实 LLM Agent 工具循环（OpenAI 兼容 / Anthropic 原生），无 Key 时演示引擎保底",
+  "keywords": ["ai", "coding-agent", "llm", "monaco-editor", "electron", "developer-tools", "react", "mcp", "local-first"],
+  "license": "MIT",
+  "author": "pyf2818",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pyf2818/pancode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pyf2818/pancode/issues"
+  },
+  "homepage": "https://github.com/pyf2818/pancode#readme",
   "main": "electron/main.js",
   "scripts": {
     "start": "node server/index.js",
@@ -68,7 +79,6 @@
     "mammoth": "^1.12.0",
     "ws": "^8.17.0"
   },
-  "license": "MIT",
   "devDependencies": {
     "electron": "40.9.3",
     "electron-builder": "^26.0.12",
