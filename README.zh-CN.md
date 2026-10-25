@@ -187,14 +187,14 @@ OPENAI_MODEL=model         # LLM 模型名称
 
 ```bash
 npm run test:unit       # vitest 单测（~1280 项，含沙箱/Anthropic 适配/net-guard/SSE 解析）
-npm run test:verify     # 54 个真实探针：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离 / 浏览器…（仓库共 58 个探针脚本，桌面/界面类单独跑）
+npm run test:verify     # 55 个真探针（跑在活服务器上）：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离 / 浏览器…（scripts/ 下共 62 个验收脚本，桌面/界面类单独跑）
 node scripts/smoke-test.js        # 端到端：启动服务 → Agent 闭环 → 断言失败/修复/通过/Diff → 还原
 npm run test:nightly    # 真实模型夜间回归（read-echo / subagent / apply-edit / compaction）
                         # 无 Key 只打印 SKIP 并 exit 0 —— SKIP 不算通过，别把它报成"夜间回归绿了"
 npm test                # 完整套件：单测 + 探针 + smoke + integration/patch/lsp/code-index
 ```
 
-CI（`.github/workflows/ci.yml`）：lint → 单测 → 54 探针 → smoke，Windows 单环境先稳住链路；`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过）。
+CI（`.github/workflows/ci.yml`）：lint → 单测 → 55 探针 → smoke → 文件操作，Windows 单环境先稳住链路（Node 24，与 `engines` 一致）；`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过并打 `RESULT: SKIP`——SKIP 不算通过）。
 
 ---
 

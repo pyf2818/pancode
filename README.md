@@ -93,13 +93,13 @@ Both windows stay in sync — conversations, terminal, state.
 
 ```bash
 npm run test:unit       # vitest, ~1,280 tests (sandbox, net-guard, SSE, Anthropic, sub-agents…)
-npm run test:verify     # 54 live-server probes (render, repo map, tools, agents, isolation…; 58 probe scripts in total, UI/desktop ones run separately)
+npm run test:verify     # 55 probes on a live server (render, repo map, tools, agents, isolation…; 62 acceptance scripts under scripts/, desktop/UI ones run separately)
 npm run smoke           # end-to-end loop with the demo engine
 npm run test:nightly    # real-LLM nightly regression — no key means SKIP, which is NOT a pass
 npm test                # full suite: unit + probes + smoke + integration/patch/lsp/code-index
 ```
 
-CI runs lint → unit → 54 probes → smoke on Windows; a nightly workflow runs the real-LLM regression when `NIGHTLY_LLM_KEY` is configured.
+CI runs lint → unit → 55 probes → smoke → file ops on Windows (Node 24, matching `engines`); a nightly workflow runs the real-LLM regression when `NIGHTLY_LLM_KEY` is configured — without it the nightly prints `RESULT: SKIP`, which is not a pass.
 
 ---
 
