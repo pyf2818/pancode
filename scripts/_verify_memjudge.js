@@ -90,7 +90,10 @@ function mkAgent(memCfg) {
     term: { run: async () => ({ out: "", code: 0 }) },
   });
   a.running = false;
-  a.userMemory = new MemoryStore(path.join(memDir, "mj-user.json"));
+  /* 用户级库在生产里位于 ~/.pancode/memory（与 _memDir 不同目录），
+     search_memory 的 global 扫描会把 _memDir 下每个 .json 都当成"别的工作区分片"，
+     所以探针这边也不能把它塞进 memDir，否则会被自己数成第二个项目。 */
+  a.userMemory = new MemoryStore(path.join(SANDBOX.dataDir, "mj-user-memory.json"));
   return a;
 }
 /* 记忆块按块切出来单独判：索引行自带正文开头 44 字，
@@ -209,6 +212,21 @@ function buckets(a, userText) {
     "见上一条判据");
   const nothing = await memoryTools.search_memory(toolAgent, {});
   ok("ids 与 query 都不给时拒答并说清怎么给", /要么带 ids|要么带 query/.test(nothing), nothing.slice(0, 160));
+
+  /* 跨工作区（scope=global）那条路：命中的是别的项目的分片，台账不许记成"本项目"。
+     模型侧看得到行首 [项目 xxxx·type] 前缀，但回显卡只认 scope，写错就是界面在替来源撒谎。 */
+  const otherShard = path.join(memDir, "othrwsmj.json");
+  fs.writeFileSync(otherShard, JSON.stringify([
+    { id: "xsec1", type: "lesson", topic: "隔壁项目的坑", content: "rename 被杀软锁住时改用 copyFile 兜底一次", ts: Date.now(), accessCount: 3, lastAccessAt: Date.now(), valueScore: 5 },
+  ]), "utf8");
+  const cross = await memoryTools.search_memory(toolAgent, { query: "copyFile 兜底", scope: "global" });
+  ok("global 检索把别的工作区的命中点上来源", /\[项目 othrwsmj·/.test(cross), cross.slice(0, 220));
+  ok("跨工作区那条在台账里记成 other，不再冒充本项目",
+    (toolAgent._usedMemory || []).some((u) => u.id === "xsec1" && u.scope === "other"),
+    J((toolAgent._usedMemory || []).filter((u) => u.id === "xsec1")));
+  ok("跨片检索没写回那个分片（只读）",
+    JSON.parse(fs.readFileSync(otherShard, "utf8"))[0].accessCount === 3, "被改了就是越权写盘");
+  fs.unlinkSync(otherShard);
 
   section("⑦ 真跑一局：常驻 + 自查两条来源在收尾事件里分得开");
   const B = mkAgent();

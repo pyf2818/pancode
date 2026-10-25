@@ -478,6 +478,13 @@ describe("记忆溯源台账：只记真的在场的那几条（回显卡不许�
     expect(a._usedMemory.find((u) => u.id === "q1").scope).toBe("project");
   });
 
+  it("来自别的工作区分片的命中记成 other，不并进 project", () => {
+    const a = makeAgent({ memory: { enabled: true } }, memStubs([], []));
+    a.buildAugmentParts("问题");
+    a.noteMemoryUse([entry("x1")], "other");
+    expect(a._usedMemory.find((u) => u.id === "x1").scope).toBe("other");
+  });
+
   it("收尾补强只碰常驻提醒：自查条目已在 search_memory 计过一次，再加就是自己抬自己", () => {
     const src = fs.readFileSync(path.join(__dirname, "../server/agent-llm.js"), "utf8");
     const tail = src.slice(src.indexOf("记忆溯源回推"));
