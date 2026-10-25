@@ -3537,14 +3537,22 @@ function drawOrchEdges(host) {
   const deps = host._orchDeps || {};
   const els = [...host.querySelectorAll(".orch-step")];
   const hb = host.getBoundingClientRect();
+  /* getBoundingClientRect 给的是"变换后的屏幕尺寸"，而 svg 里的 d 是用户坐标（=布局尺寸）。
+     模态入场那条 pc-modal-in 会把整框缩到 0.985 再放开：画的时候若还带着缩放，
+     边就按 0.985 倍的位置写进用户坐标，动画结束后节点回到真位置、边留在那儿 ——
+     实测偏差不随距离摊薄而是越靠右越大（第 2、3 列分别差 4.3px、8.6px，正是 1.5%×列位）。
+     除以屏幕宽/布局宽之比把这一层缩放除掉，画出来的才是布局坐标。 */
+  const k = (host.offsetWidth && hb.width) ? hb.width / host.offsetWidth : 1;
   const pos = {};
   els.forEach((el) => {
     const r = el.getBoundingClientRect();
-    pos[el.dataset.id] = { x: r.left - hb.left, y: r.top - hb.top, w: r.width, h: r.height,
+    pos[el.dataset.id] = { x: (r.left - hb.left) / k, y: (r.top - hb.top) / k, w: r.width / k, h: r.height / k,
       st: ["running", "done", "fail", "pending"].find((c) => el.classList.contains(c)) || "pending" };
   });
-  const W = Math.max(host.scrollWidth, Math.ceil(hb.width));
-  const H = Math.max(host.scrollHeight, Math.ceil(hb.height));
+  /* 画布尺寸也取布局空间那套（scrollWidth/offsetWidth 都不含祖先缩放），
+     否则 viewBox 与用户坐标不在同一个尺子上，等于把偏差又乘回去。 */
+  const W = Math.max(host.scrollWidth, host.offsetWidth || Math.ceil(hb.width));
+  const H = Math.max(host.scrollHeight, host.offsetHeight || Math.ceil(hb.height));
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
   svg.setAttribute("width", W);
   svg.setAttribute("height", H);
@@ -3620,7 +3628,8 @@ function onOrchStepFail(ev) {
   replaceIcons();
   redrawOrch();
 }
-/* 状态一变，节点矩形可能变（图标/文案换行），边必须跟着重画；同样补一帧取落定后的布局 */
+/* 状态一变，节点矩形可能变（图标/文案换行），边必须跟着重画；
+   容器尺寸那一路由 bindOrchResize 的 ResizeObserver 兜，这里只补当前这一帧的落定。 */
 function redrawOrch() {
   const host = $("orchSteps");
   if (!host || !host.classList.contains("orch-dag")) return;

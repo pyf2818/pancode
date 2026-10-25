@@ -970,19 +970,38 @@ async function main() {
         changed: ["a.js", "b.js"], conflicts: 1 });
       await wait(60);
       const afterS1 = read();
-      /* 边必须真的连在两个节点上：拿节点矩形反查边的两个端点，误差 2px 以内 */
-      const rects = {};
-      [...host.querySelectorAll(".orch-step")].forEach((el) => {
-        const r = el.getBoundingClientRect();
-        rects[el.dataset.id] = { left: r.left, top: r.top, right: r.right, cy: r.top + r.height / 2 };
-      });
-      const svgBox = host.querySelector(".orch-dag-svg").getBoundingClientRect();
-      const num = (d) => (d.match(/-?\d+(\.\d+)?/g) || []).map(Number);
-      /* 路径形状是 M x1,y1 C mx,y1 mx,y2 (x2-7),y2 —— 首两点是源节点右缘，末两点是目标节点左缘 */
-      const joined = afterS1.edges.map((e) => {
-        const n = num(e.d);
-        return { x1: svgBox.left + n[0], y1: svgBox.top + n[1], x2: svgBox.left + n[n.length - 2] + 7, y2: svgBox.top + n[n.length - 1] };
-      });
+      /* 边必须真的连在两个节点上：拿节点真实矩形反查每条边的两个端点。
+         换算走 getScreenCTM —— d 是 svg 用户坐标（布局空间），节点矩形是屏幕空间。
+         模态那条 pc-modal-in 入场动画会把整框缩到 0.985：按 svgBox.left + n[0] 直接加，
+         等于赌"读的那一刻没有缩放"，于是同一版产品动画期间一种结果、放完另一种结果，
+         红不红取决于机器快慢（CI 就是这么红的，本机 60ms 那一眼恰好是绿的）。 */
+      const snapJoin = () => {
+        const svg = host.querySelector(":scope > .orch-dag-svg");
+        if (!svg) return { count: 0, worst: null, ok: false };
+        const ctm = svg.getScreenCTM();
+        const rects = {};
+        [...host.querySelectorAll(".orch-step")].forEach((el) => {
+          const r = el.getBoundingClientRect();
+          rects[el.dataset.id] = { left: r.left, right: r.right, cy: r.top + r.height / 2 };
+        });
+        const ids = Object.keys(rects);
+        const num = (d) => (d.match(/-?\d+(\.\d+)?/g) || []).map(Number);
+        const edges = [...svg.querySelectorAll(".orch-edge")];
+        let worst = 0;
+        edges.forEach((p) => {
+          const n = num(p.getAttribute("d") || "");
+          /* 路径形状 M x1,y1 C mx,y1 mx,y2 (x2-7),y2 —— 首点是源节点右缘，末点回退 7px 是目标节点左缘 */
+          const a = { x: ctm.a * n[0] + ctm.e, y: ctm.d * n[1] + ctm.f };
+          const b = { x: ctm.a * (n[n.length - 2] + 7) + ctm.e, y: ctm.d * n[n.length - 1] + ctm.f };
+          /* 容差 4px：flex 等分宽度和滚动条能让布局差 1~2px；这条抓的是"边连没连到节点上"，
+             连错节点差的是整列宽（>100px），混用坐标空间差的是 1.5%×列位（实测 4.3 / 8.7px）。 */
+          const d1 = Math.min(...ids.map((k) => Math.max(Math.abs(rects[k].right - a.x), Math.abs(rects[k].cy - a.y))));
+          const d2 = Math.min(...ids.map((k) => Math.max(Math.abs(rects[k].left - b.x), Math.abs(rects[k].cy - b.y))));
+          worst = Math.max(worst, d1, d2);
+        });
+        return { count: edges.length, worst: Math.round(worst * 10) / 10, ok: edges.length > 0 && worst <= 4 };
+      };
+      const join = snapJoin();
       window.handleEvent({ type: "orch.step.fail", stepId: "s2", name: "左支", elapsed: 2, error: "子智能体超时" });
       await wait(60);
       const afterFail = read();
@@ -1002,8 +1021,36 @@ async function main() {
       window.handleEvent({ type: "orch.start", title: "平铺对照", steps: [{ id: "f1", name: "F1", layer: 0, depends_on: [] }, { id: "f2", name: "F2", layer: 0, depends_on: [] }] });
       await wait(60);
       const flat = read();
+      /* 第二条反向对照的靶子是"混用坐标空间"：把屏幕坐标当布局坐标写进 svg，
+         画的那一刻与读的那一刻都带着缩放时误差正好抵消 —— 靠抢动画时机做判据，
+         本机永远绿（压根进不到那个时机），CI 上才红。所以这里不赌时机：
+         直接把框缩成 pc-modal-in 中段那个 0.985 再画一次，然后放开看边跟不跟得上。 */
+      window.handleEvent({
+        type: "orch.start", title: "缩放落定对照",
+        steps: [
+          { id: "s1", name: "起点", layer: 0, parallel: false, depends_on: [] },
+          { id: "s2", name: "左支", layer: 1, parallel: true, depends_on: ["s1"] },
+          { id: "s3", name: "右支", layer: 1, parallel: true, depends_on: ["s1"] },
+          { id: "s4", name: "汇合", layer: 2, parallel: false, depends_on: ["s2", "s3"] },
+        ],
+      });
+      await wait(60);
+      /* 缩这块框要用 important：.orch-box 上那条 pc-modal-in 入场动画带填充，
+         动画声明的优先级高于普通内联样式 —— 直接 style.transform= 会被它盖掉，
+         于是"缩着画"这一步空转，判据变成永远绿的空测（本轮实测踩过：worst 报 0 而 transform 压根没生效）。
+         所以这里既要用 important 压过动画，也要把"这一刻真的被缩了"本身当一条前提断言。 */
+      const boxEl = host.closest(".orch-box") || document.querySelector(".orch-box");
+      boxEl.style.setProperty("transform", "scale(0.985)", "important");
+      const hr = host.getBoundingClientRect();
+      const kApplied = host.offsetWidth ? Math.round((hr.width / host.offsetWidth) * 1000) / 1000 : 1;
+      window.handleEvent({ type: "orch.step.done", stepId: "s1", name: "起点", elapsed: 1, output: "起点结论", changed: ["a.js", "b.js"], conflicts: 1 });
+      await wait(80);
+      const scaledJoin = snapJoin();   // 缩着画完：这一刻新旧实现都对（误差正好抵消）
+      boxEl.style.removeProperty("transform");
+      await wait(80);
+      const releasedJoin = snapJoin(); // 放开后必须仍连着 —— 只有按布局空间画的实现过得了这一眼
       document.getElementById("orchClose").click();
-      return { first, afterS1, afterFail, flat, rects, joined, click: { beforeClick, afterClick, outText, reCollapsed }, s1Status };
+      return { first, afterS1, afterFail, flat, join, scaledJoin, releasedJoin, kApplied, click: { beforeClick, afterClick, outText, reCollapsed }, s1Status };
     });
     ok("多批依赖画成泳道图（3 列，节点数 1/2/1）",
       dag.first.graphed === true && dag.first.lanes.length === 3 && dag.first.lanes.map((l) => l.nodes).join(",") === "1,2,1",
@@ -1013,14 +1060,15 @@ async function main() {
       JSON.stringify(dag.first.lanes.map((l) => l.head)));
     ok("依赖边数量等于边数（s1→s2,s1→s3,s2→s4,s3→s4 共 4 条）", dag.first.edges.length === 4, "实际 " + dag.first.edges.length);
     ok("边的端点落在源节点右缘与目标节点左缘（不是凭空画的装饰线）",
-      dag.joined.every((e) => {
-        /* 4px 容差：泳道等分宽度和滚动条会让布局差 1~2px，这条断言要抓的是
-           "边连没连到节点上"，不是亚像素；连错节点的话差的是整列宽度（>100px）。 */
-        const src = Object.keys(dag.rects).find((k) => Math.abs(dag.rects[k].right - e.x1) < 4 && Math.abs(dag.rects[k].cy - e.y1) < 4);
-        const dst = Object.keys(dag.rects).find((k) => Math.abs(dag.rects[k].left - e.x2) < 4 && Math.abs(dag.rects[k].cy - e.y2) < 4);
-        return !!src && !!dst;
-      }),
-      JSON.stringify(dag.joined[0]));
+      dag.join.ok === true,
+      "边数=" + dag.join.count + " 最大偏差=" + dag.join.worst + "px（容差 4px）");
+    /* 混用屏幕/布局坐标空间的破口只在"缩放变化之后"才显形：本机抢不到入场动画那一帧，
+       所以这一条自己制造缩放。前提（那一刻真的缩着）单独判，否则整条会退化成空测。 */
+    ok("前提成立：那一刻这块框真的被缩着（不是内联样式被动画盖掉的空测）",
+      dag.kApplied > 0.9 && dag.kApplied < 0.99, "host 屏幕宽/布局宽 = " + dag.kApplied);
+    ok("框被缩着画完再放开，边仍跟着节点（不许把屏幕坐标当布局坐标写进 svg）",
+      dag.scaledJoin.ok === true && dag.releasedJoin.ok === true,
+      "缩着时最大偏差=" + dag.scaledJoin.worst + "px，放开后=" + dag.releasedJoin.worst + "px（容差 4px，边数 " + dag.releasedJoin.count + "）");
     ok("点开步骤标题真能看到结果（实时那一步原先永远展不开）",
       dag.click.beforeClick === "none" && dag.click.afterClick === "block" && /起点结论/.test(dag.click.outText) && dag.click.reCollapsed === "none",
       JSON.stringify(dag.click));
