@@ -1696,8 +1696,10 @@ async function runUndo(card, btn) {
 }
 function scrollChat(force) {
   // Sticky scroll：用户上翻查看历史时不强制拉回底部；force=true 时无条件滚到底（新消息/审批/选项卡）
-  if (force || chatStream.scrollHeight - chatStream.scrollTop - chatStream.clientHeight < 80) {
-    chatStream.scrollTop = chatStream.scrollHeight;
+  // 网格模式下滚动容器是各会话 pane 自身（chatStream 不滚），滚"当前写入的那个"
+  const box = (gridMode ? (convPanes[_boundConvId || convId] || chatStream) : chatStream);
+  if (force || box.scrollHeight - box.scrollTop - box.clientHeight < 80) {
+    box.scrollTop = box.scrollHeight;
   }
   updateScrollBtns();
   if (_ctxRaf) return;
@@ -1832,10 +1834,64 @@ function chatFlow(pane) {
   return flow;
 }
 
-function appendChatBlock(el) {
-  chatFlow(chatPane()).appendChild(el);
+/* ---------- W17 · 轮次收纳 ----------
+   长任务动辄十几轮、每轮"思考 + N 张工具卡"，全部平铺在一条时间轴上就是"全部罗列"。
+   现在按 Agent 轮次分组：每组头部一行摘要（R3 · 动词 目标 · N 步 · 时长），
+   新一轮开始时自动折叠上一轮，当前轮保持展开；点击头部可重新展开。
+   组的归属状态完全从 DOM 推导（最后一组 + data-round），会话切换/恢复零额外状态。 */
+function finalizeRoundGrp(grp) {
+  grp.classList.remove("live");
+  const body = grp.querySelector(".rg-body");
+  /* 含截图的轮组不自动折叠：截图是"用户想立刻看到的证据"，tool.image 特意不收进
+     .tool-body（折叠卡里 display:none）就是为了它常显——轮组折叠会把这层设计整个
+     推翻（shotui 探针抓的就是这个）。头部仍可手动收起。 */
+  if (!body.querySelector(".tool-shots")) grp.classList.remove("open");
+  const txt = (sel) => { const n = body.querySelector(sel); return n ? String(n.textContent || "").trim() : ""; };
+  const label = (txt(".tool-card .t-name") + (txt(".tool-card .t-target") ? " " + txt(".tool-card .t-target") : ""))
+    || txt(".think-block .tk-label");
+  const dur = grp.dataset.t0 ? Math.max(1, Math.round((Date.now() - Number(grp.dataset.t0)) / 1000)) : 0;
+  grp.querySelector(".rg-sum").textContent = (label.slice(0, 60) + " · " + body.children.length + " 步" + (dur ? " · " + dur + "s" : "")).replace(/^ · /, "");
+}
+
+function appendChatBlock(el, round) {
+  const flow = chatFlow(chatPane());
+  /* 同轮续接要找"flow 里最后一个轮组"而不是最后一个子节点：
+     审批卡/记忆卡等无轮次卡片可能平铺插在两组之间，按 lastElementChild 判断
+     会把同一轮拆成多个组（实测演示引擎一轮被拆成 5 组、摘要全空）。 */
+  const grps = flow.querySelectorAll(".round-grp");
+  const lastGrp = grps.length ? grps[grps.length - 1] : null;
+  if (round != null && round > 0) {
+    if (lastGrp && Number(lastGrp.dataset.round) === round) {
+      lastGrp.querySelector(".rg-body").appendChild(el);          // 同轮续接
+    } else {
+      /* 新一轮：收起上一个仍展开的组。它可能在更早的 flow 段里（回答气泡会开新段），
+         必须跨整个 pane 找 —— 限定在当前 flow 里找的话，旧段的组永远收不掉、摘要全空。 */
+      const openGrps = chatPane().querySelectorAll(".round-grp.open");
+      if (openGrps.length) finalizeRoundGrp(openGrps[openGrps.length - 1]);
+      const grp = document.createElement("div");
+      grp.className = "round-grp open live";
+      grp.dataset.round = round;
+      grp.dataset.t0 = String(Date.now());
+      grp.innerHTML = '<div class="rg-head"><span class="rg-badge">R' + round + '</span><span class="rg-sum"></span><span class="chev">' + ico("chevR") + '</span></div><div class="rg-body"></div>';
+      flow.appendChild(grp);
+      grp.querySelector(".rg-body").appendChild(el);
+    }
+  } else if (lastGrp && lastGrp.classList.contains("open")) {
+    // 无轮次号的过程块（审批卡等）跟在当前轮组里，不打断分组
+    lastGrp.querySelector(".rg-body").appendChild(el);
+  } else {
+    flow.appendChild(el);   // 任务级卡片（结算/记忆）与旧数据：保持平铺
+  }
   buildMsgNav();
   foldOldMessages();
+}
+
+/* 任务收尾：给最后一个仍展开的轮组填摘要并收起（否则它永远挂着呼吸点、摘要空白）。
+   在 handleEvent 的事件上下文里调用 —— chatFlow(chatPane()) 已绑定到对应会话的 pane。 */
+function finalizeOpenRoundGrp() {
+  const openGrps = chatPane().querySelectorAll(".round-grp.open");
+  const last = openGrps.length ? openGrps[openGrps.length - 1] : null;
+  if (last) finalizeRoundGrp(last);
 }
 
 /* 长会话折叠：直接子消息超过阈值时，把最早的批次收入折叠容器（可展开），降低 DOM 渲染压力 */
@@ -1861,9 +1917,19 @@ function foldOldMessages() {
 /* 折叠按钮事件委托：会话 dom 持久化恢复后按钮事件依然有效 */
 chatStream.addEventListener("click", (e) => {
   const btn = e.target.closest(".fold-old-btn");
-  if (!btn) return;
-  const c = btn.closest(".fold-old");
-  if (c) { c.classList.add("expanded"); btn.style.display = "none"; buildMsgNav(); }
+  if (btn) {
+    const c = btn.closest(".fold-old");
+    if (c) { c.classList.add("expanded"); btn.style.display = "none"; buildMsgNav(); }
+    return;
+  }
+  /* 轮组/工具卡/思考块的头部长事件委托：会话 dom 是 innerHTML 序列化恢复的，
+     逐元素挂的 onclick 在恢复后全部失联（折叠卡点不开是老问题），委托天然免疫。
+     头部内嵌的按钮（撤销/批准等）不触发折叠。 */
+  const head = e.target.closest(".rg-head, .tool-head, .think-head");
+  if (head && !e.target.closest("button")) {
+    const card = head.closest(".round-grp, .tool-card, .think-block");
+    if (card) card.classList.toggle("open");
+  }
 });
 
 function mdLite(s) {
@@ -2170,7 +2236,9 @@ function applyEngineInfo(info) {
   state.engine = info;
   const label = info.mode === "llm" ? info.model : t("engineDemo");
   $("cpModelEditor").textContent = label;
+  $("cpModelEditor").title = label;
   $("cpModelAgents").textContent = label + " · " + t("agentModeLabel");
+  $("cpModelAgents").title = label;
   $("btnSettings").classList.toggle("llm-on", info.mode === "llm");
   const chip = document.querySelector("#ciModelTxt");
   if (chip) chip.textContent = label.length > 22 ? label.slice(0, 21) + "…" : label;
@@ -2274,7 +2342,7 @@ function renderApproval(ev) {
       (ev.tool !== "delete_file" ? '<button class="btn-approve-session" data-id="' + esc(ev.id) + '" title="' + escHtml(t("approveSessionTip", { tool: ev.tool || "" })) + '">' + ico("shield") + " " + t("approveSessionBtn") + "</button>" : "") +
       '<button class="btn-reject" data-id="' + esc(ev.id) + '">' + ico("close") + " 拒绝</button>" +
     "</div>";
-  appendChatBlock(el); scrollChat(true);
+  appendChatBlock(el, ev.round); scrollChat(true);
   blocks["ap_" + ev.id] = { el };   // 服务端超时自动拒绝时通过合成 tool.end 收尾
   const statusEl = el.querySelector(".t-status");
   let cdStop = null;
@@ -2325,7 +2393,7 @@ function renderChoice(ev) {
         '</button>'
       ).join("") + '</div>' +
     '</div>';
-  appendChatBlock(el); scrollChat(true);
+  appendChatBlock(el, ev.round); scrollChat(true);
   blocks["choice_" + ev.id] = { el };   // 服务端超时/取消时通过合成 tool.end 收尾
   const statusEl = el.querySelector(".t-status");
   let cdStop = null;
@@ -2464,8 +2532,7 @@ function handleEventInner(ev) {
       const el = document.createElement("div");
       el.className = "think-block open live";
       el.innerHTML = '<div class="think-head">' + ico("bulb") + '<span class="tk-label">思考中…（第 ' + thinkCount + ' 步）</span><span class="chev">' + ico("chevR") + '</span></div><div class="think-body"></div>';
-      el.querySelector(".think-head").onclick = () => el.classList.toggle("open");
-      appendChatBlock(el); scrollChat();
+      appendChatBlock(el, ev.round); scrollChat();
       const body = el.querySelector(".think-body");
       body.classList.add("type-caret");
       blocks[ev.id] = { el, body, buf: "", step: thinkCount, startTime: Date.now() };
@@ -2553,8 +2620,7 @@ function handleEventInner(ev) {
         roundBadge +
         '<span class="t-dur"></span>' +
         '<span class="t-status running">' + t("apHandleEventInnerH21") + '</span></div><div class="tool-body"></div>';
-      el.querySelector(".tool-head").onclick = () => el.classList.toggle("open");
-      appendChatBlock(el); scrollChat();
+      appendChatBlock(el, ev.round); scrollChat();
       blocks[ev.id] = { el, name: ev.name, startTime: Date.now() };
       bumpStepProgress(ev.name, ev.convId);
       // 实时进度：状态栏显示当前轮次 + 工具名
@@ -2694,6 +2760,7 @@ function handleEventInner(ev) {
       if (!ev.convId || ev.convId === convId) {
         answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx();
       }
+      finalizeOpenRoundGrp();   // W22：任务收尾给最后的轮组填摘要（呼吸点停掉）
       renderConvList();
       break;
     }
@@ -4175,6 +4242,7 @@ function renderConvList() {
   groups.forEach((items, gi) => renderGroup(items.length ? t(CONV_GROUP_KEYS[gi]) : "", items));
 
   replaceIcons();
+  if (gridMode) applyLayout();   // W22：运行态/时间排序变了，网格里的格序与运行点跟着刷新
 }
 
 function buildConvItem(c, isPinned) {
@@ -4242,7 +4310,7 @@ function showConvCtxMenu(e, c) {
 (function() { const cs = $("convSearch"); if (cs) cs.addEventListener("input", renderConvList); })();
 
 function openConv(id) {
-  if (id === convId) return;
+  if (id === convId) { applyLayout(); return; }   // 网格模式下重复点击本会话：只刷新布局
   if (goalMode) setGoalMode(false);   // 切换会话时退出 goal 模式
   persistConv();                       // 切走前保存当前会话 pane
   convId = id;
@@ -4255,7 +4323,7 @@ function openConv(id) {
   // 多会话并行：pane 内存中有则直接 move 挂载；无（刷新后首次打开）则从快照 hydrate
   const c = loadConvList().find((x) => x.id === id);
   if (!convPanes[id]) hydratePane(id, (c && loadConvDom(id)) || "");
-  mountPane(id);
+  applyLayout();   // W22：单视图与网格共用这一个挂载入口
   foldOldMessages();
   scrollChat();
   buildMsgNav();
@@ -4280,6 +4348,71 @@ function openConv(id) {
       btn.onclick = window._doSend || (() => {});
     }
   }
+}
+
+/* ---------- W22 · 多会话网格视图 ----------
+   对齐 Codex App 的并行会话网格：一个开关把最近/运行中的会话 pane 并排挂进
+   #chatStream（CSS grid），每格独立滚动、带头部（标题 + 运行点 + 点击聚焦）。
+   事件路由零改动：后台会话的写入本来就落在各自 pane（withConv），网格只是
+   把"一次只挂一个"放宽成"按序多挂"。输入/发送仍作用于聚焦的那个会话。
+   状态全部可从 DOM 与 loadConvList 推导，切换/刷新零额外恢复逻辑。 */
+const GRID_KEY = "cw-grid-mode";
+const GRID_MAX = 6;
+let gridMode = localStorage.getItem(GRID_KEY) === "1";
+
+/* 统一挂载入口：单视图 = 仅活跃 pane；网格 = 有内容的会话并排挂载并刷新各格头部 */
+function applyLayout() {
+  if (!gridMode || typeof chatPane !== "function") {
+    chatStream.classList.remove("grid-on");
+    mountPane(convId);
+    return;
+  }
+  chatStream.classList.add("grid-on");
+  const titles = {};
+  loadConvList().forEach((c) => { titles[c.id] = c.title || t("convUntitled"); });
+  const ids0 = (() => {
+    const ids = loadConvList().sort((a, b) => b.ts - a.ts).map((c) => c.id);
+    const run = ids.filter((id) => state.convRunning[id]);
+    const rest = ids.filter((id) => run.indexOf(id) < 0);
+    const out = run.concat(rest);
+    if (convId && out.indexOf(convId) < 0) out.unshift(convId);
+    return out;
+  })();
+  /* 先从快照恢复再过滤：网格里非活跃 pane 若不 hydrate 就是空壳，
+     直接按"有没有消息"过滤会把有内容的历史会话全判成空（实测整屏空格子）。
+     hydrate 上限 24 个：再多先不恢复，等真正进入前 6 格的才需要内容。 */
+  const hydrated = ids0.slice(0, 24).map((id) => {
+    const ctx = ensureConvCtx(id);
+    if (!ctx.pane.childNodes.length) hydratePane(id, loadConvDom(id) || "");
+    return id;
+  });
+  const hasContent = (id) => {
+    const p = convPanes[id];
+    return !!(id === convId || (p && p.querySelector(".msg-user, .tool-card, .round-grp")));
+  };
+  const ids = hydrated.filter((id) => hasContent(id)).slice(0, GRID_MAX);
+  if (convId && ids.indexOf(convId) < 0) ids.unshift(convId);
+  for (const child of Array.from(chatStream.children)) {
+    if (child.classList && child.classList.contains("conv-pane") && ids.indexOf(child.dataset.convId) < 0) {
+      chatStream.removeChild(child);
+    }
+  }
+  ids.forEach((id) => {
+    const ctx = ensureConvCtx(id);
+    let head = ctx.pane.querySelector(":scope > .gp-head");
+    if (!head) {
+      head = document.createElement("div");
+      head.className = "gp-head";
+      head.innerHTML = '<span class="gp-dot"></span><span class="gp-title"></span><span class="gp-focus">' + ico("target") + "</span>";
+      head.onclick = () => openConv(id);
+      ctx.pane.insertBefore(head, ctx.pane.firstChild);
+    }
+    head.querySelector(".gp-title").textContent = titles[id] || t("convUntitled");
+    ctx.pane.classList.toggle("grid-active", id === convId);
+    ctx.pane.classList.toggle("grid-running", !!state.convRunning[id]);
+    if (ctx.pane.parentNode !== chatStream) chatStream.appendChild(ctx.pane);
+  });
+  replaceIcons();
 }
 
 function deleteConv(id) {
@@ -4347,7 +4480,7 @@ function reloadConvForWs() {
   else {
     convId = id;
     hydratePane(id, loadConvDom(id) || "");
-    mountPane(id);
+    applyLayout();
     scrollChat();
     loadPlan(convId);
   }
@@ -4386,6 +4519,19 @@ $("agExport").onclick = exportConversation;
 (function () {
   const nc = $("btnNewConv");
   if (nc) nc.onclick = newConversation;
+
+  /* W22 网格开关：切换并记住偏好；回单视图时只保留活跃 pane */
+  const gv = $("btnGridView");
+  if (gv) {
+    gv.classList.toggle("on", gridMode);
+    gv.onclick = () => {
+      gridMode = !gridMode;
+      localStorage.setItem(GRID_KEY, gridMode ? "1" : "0");
+      gv.classList.toggle("on", gridMode);
+      applyLayout();
+      scrollChat();
+    };
+  }
 
   const tog = $("btnToggleOrchHist");
   if (tog) tog.onclick = function () {
@@ -4520,6 +4666,21 @@ window.doLogout = async function () {
   userAuth.token = ""; userAuth.username = ""; AUTH.token = "";
   location.reload();
 };
+
+/* W25 个人模式静默身份：GET /api/auth/auto 向本机服务领身份（服务端保证仅
+   TCP 回环可达；多账号时返回 multiUser，这里回退登录弹窗）。
+   成功路径与 submitAuth 同款赋值：token 落 localStorage（等同"记住我"），
+   下次启动 checkAuth 直接通过，不再有任何弹窗。 */
+async function autoLogin() {
+  try {
+    const r = await fetch("/api/auth/auto").then((x) => x.json());
+    if (!r || !r.ok || !r.token) return false;
+    userAuth.token = r.token; userAuth.username = r.username || "local"; AUTH.token = r.token;
+    rememberToken(r.token, userAuth.username, true);
+    setAuthUserUI(userAuth.username);
+    return true;
+  } catch (e) { return false; }
+}
 
 $("tbUserBtn").onclick = () => showAuthModal();
 $("authClose").onclick = () => ($("authModal").style.display = "none");
@@ -4886,7 +5047,10 @@ function hideBoot() {
 
 
 bootstrap().then(async () => {
-  const loggedIn = await checkAuth();
+  let loggedIn = await checkAuth();
+  /* W25 个人模式：没有有效会话时先向本机服务静默领身份（免注册免登录）。
+     只有服务端拒绝（users.json 里多于一个账号）才弹出登录框。 */
+  if (!loggedIn) loggedIn = await autoLogin();
   checkApiStamp();
   hideBoot();
   if (loggedIn) { startApp(); maybeOnboard(); }

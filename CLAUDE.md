@@ -82,13 +82,19 @@ npm test                 # 运行全部测试套件（首尾带 .pancode 数据�
 - **lsp-bridge.js** — 真实 LSP 桥接：按需 spawn 语言服务器，诊断注入 Agent 上下文
 - **code-index.js** — 轻量代码向量索引（BM25 词法兜底，可插拔 embedding）
 - **mcp.js** — MCP（Model Context Protocol）外部工具服务器管理器
-- **auth.js** — 用户认证（注册/登录/token 验证），服务端 WS 和 REST 敏感端点统一鉴权
+- **auth.js** — 本机身份（token 验证 + 自动身份签发），服务端 WS 和 REST 敏感端点统一鉴权
 - **patch.js** — 补丁审阅引擎：Agent 修改先存为补丁，用户逐文件接受/拒绝
+- **sandbox.js** — 命令沙箱运行器（policy 默认 / docker 硬隔离 / wsl 软隔离 / auto 探测）
+- **llm-anthropic.js** — Anthropic Messages API 原生适配（thinking 增量 / tool_use 流式 / prompt caching）
+- **agent-helpers.js** — agent-llm 的纯函数层（tool_call 净化 / CJK token 估算 / 轮次组切分 / 规则预算）
+- **demo-seed.js** — 演示引擎的示例项目种子（空工作区自动铺设）
 
-**鉴权体系：**
+**鉴权体系（个人模式，免登录）：**
 
-- `NO_AUTH` 白名单端点（health / version / login / register / 代码索引等）无需鉴权
-- 业务端点要求 `x-user-token`（登录后下发）
+- 前端启动即经 `/api/auth/auto` 静默领取本机身份（仅 TCP 回环可达；无账号自动建 `local`，单账号直接签发），无任何登录 UI
+- 多于一个账号（users.json）时 auto 拒绝、前端回退登录弹窗 —— 存量多用户的保护
+- `NO_AUTH` 白名单端点（health / version / auth/auto / 代码索引等）无需鉴权
+- 业务端点要求 `x-user-token`（自动身份或登录后下发）——这层闸门挡 DNS rebinding 与恶意网页直调 API，不因免登录而移除
 - 本地 `bootstrap` 端点仅限 127.0.0.1 领取 AUTH_TOKEN
 - CORS 收紧：仅允许本机回环访问
 

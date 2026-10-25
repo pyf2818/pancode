@@ -28,6 +28,8 @@
     close: `<path d="M4 4l8 8M12 4l-8 8" ${S}/>`,
     /* 展开箭头 */
     chevR: `<path d="M6 3.5L10.5 8 6 12.5" ${S}/>`,
+    /* 四宫格（多会话网格视图） */
+    grid4: `<rect x="2" y="2" width="5" height="5" rx="1" ${S}/><rect x="9" y="2" width="5" height="5" rx="1" ${S}/><rect x="2" y="9" width="5" height="5" rx="1" ${S}/><rect x="9" y="9" width="5" height="5" rx="1" ${S}/>`,
     chevD: `<path d="M3.5 6L8 10.5 12.5 6" ${S}/>`,
     /* 文件夹 */
     folder: `<path d="M2 4.2c0-.7.5-1.2 1.2-1.2h3l1.4 1.6h5.2c.7 0 1.2.5 1.2 1.2v6c0 .7-.5 1.2-1.2 1.2H3.2c-.7 0-1.2-.5-1.2-1.2v-7.6z" ${S}/>`,

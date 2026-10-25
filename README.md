@@ -13,7 +13,7 @@
 | 维度 | 能力 |
 | --- | --- |
 | **功能** | 真实 LLM 工具循环（ReAct）、Plan Mode 规划/执行分离、Aider 式 search/replace 补丁 + 逐 hunk 审阅、LSP 实时诊断、MCP 外部工具扩展、多智能体编排、目标驱动（Goal）+ 工作流模板、完整 Git 基线/Git 还原 |
-| **便捷人性化** | 命令面板（Ctrl/⌘+Shift+P）、首次引导、深浅主题、中英 i18n、登录注册、会话持久化与按会话隔离、聊天历史复用/复制、模式秒切（Ctrl/⌘+.）、上下文占用实时条、审批流（120s 超时 + 记住此操作） |
+| **便捷人性化** | 命令面板（Ctrl/⌘+Shift+P）、首次引导、深浅主题、中英 i18n、免登录（本机自动身份，打开即用）、会话持久化与按会话隔离、多会话网格视图、轮次折叠收纳、聊天历史复用/复制、模式秒切（Ctrl/⌘+.）、上下文占用实时条、审批流（120s 超时 + 记住此操作） |
 | **美观** | 统一 SVG 图标体系、双窗口 VS Code 风格布局、实时预览面板、启动 splash、结构化弹窗与 toast、深浅主题一致 |
 | **智能** | 仓库地图（Repo Map）、语义代码索引（向量/BM25 + 实时增量）、@file/@folder 引用注入、上下文预算 + 自动压缩、错误回灌自纠、智能上下文检索 |
 | **用户数据** | 结构化长期记忆（偏好/经验/约定/反例）、自动沉淀与记忆归纳、灵魂（价值观/边界/原则）演进、进化阶段与路线、Skills 市场、会话级结算沉淀 |
@@ -182,13 +182,14 @@ OPENAI_MODEL=model         # LLM 模型名称
 ## 🧪 测试
 
 ```bash
-npm run test:verify     # 离线验证：渲染 / 仓库地图 / 工具 / Agent 流
+npm run test:unit       # vitest 单测（~1200 项，含沙箱/Anthropic 适配/net-guard/SSE 解析）
+npm run test:verify     # 57 个真实探针：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离 / 浏览器…
 node scripts/smoke-test.js        # 端到端：启动服务 → Agent 闭环 → 断言失败/修复/通过/Diff → 还原
-node scripts/verify-mcp.js        # MCP 全链路（initialize→tools/list→tools/call）
-node scripts/verify-multiagent.js # 多智能体编排
-node scripts/verify-undo.js       # 撤销检查点
-npm test                        # 完整套件（需 LLM Key 以跑 smoke）
+npm run test:nightly    # 真实模型夜间回归（read-echo / subagent / apply-edit / compaction；无 Key 自动跳过）
+npm test                        # 完整套件
 ```
+
+CI（`.github/workflows/ci.yml`）：lint → 单测 → 57 探针 → smoke，Windows 单环境先稳住链路；`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过）。
 
 ---
 
@@ -203,9 +204,11 @@ npm test                        # 完整套件（需 LLM Key 以跑 smoke）
 
 ## 📜 版本
 
-当前：**v3.1.0** —— 界面与可用性收口：主题配色库（深浅各自成套、切模式不跳回）、设置重做为全屏工作台 + Agent 资产可视化管理中心（角色 / 技能 / 规则 / 记忆 / 沉淀 / 进化全部可编辑）、对话输出改成单条时间轴步骤流 + 任务进度胶囊、长任务不再中途卡断（心跳 / 审批计时 / 工具与命令分级超时）、模型配置一屏化（直连你填的接口地址拉取与测试、多份配置一键切换、删掉内置假模型清单）、Git 提交并推送打通、markdown 渲染搬进 Worker。验证口径：`test:unit` 290 项 + `test:verify` 10 个真实浏览器/服务探针。
+当前：**v3.7.0** —— 系统优化与对齐收口：修复子智能体对真实 LLM 恒空参的 P0（多智能体路径自此真实可用）、并发正确性收口（深层会话归属改走 AsyncLocalStorage）、命令沙箱运行器（policy 默认 / docker 硬隔离 / wsl 软隔离）、Anthropic 原生协议（thinking 增量 / tool_use 流式 / prompt caching 断点）、出网域名白黑名单 + 浏览器导航门、net-guard 连接期 IP 钉住（TOCTOU）、MCP 工具纳入审批门、看门狗豁免审批/长测试等待、真实模型夜间回归集、CI 起死回生（package-lock 入库，57 探针真绿）、agent-llm 拆出纯函数层；前端：免登录（本机自动身份）、轮次折叠收纳、多会话网格视图、VS Code 扩展脚手架（ide/vscode）、演示引擎空工作区自动铺示例项目。验证口径：vitest ~1235 项 + 57 探针 + smoke 全绿。
 
-上一版：**v3.0.0** —— 在 v2.3.0 之上完成代际跃迁：Plan Mode、MCP、LSP 诊断、实时增量代码索引、逐 hunk 补丁审阅、/undo 检查点、多智能体编排、目标驱动 + 工作流模板、会话结算记忆、会话持久化与按会话隔离、命令面板、首次引导、登录注册、深浅主题、中英 i18n 等。详见 `docs/`。
+上一版（v3.1.0 – v3.6.x）：界面与可用性收口：主题配色库（深浅各自成套、切模式不跳回）、设置重做为全屏工作台 + Agent 资产可视化管理中心（角色 / 技能 / 规则 / 记忆 / 沉淀 / 进化全部可编辑）、对话输出改成单条时间轴步骤流 + 任务进度胶囊、长任务不再中途卡断（心跳 / 审批计时 / 工具与命令分级超时）、模型配置一屏化、Git 提交并推送打通、markdown 渲染搬进 Worker、桌面版图标与托盘。
+
+更早：**v3.0.0** —— 在 v2.3.0 之上完成代际跃迁：Plan Mode、MCP、LSP 诊断、实时增量代码索引、逐 hunk 补丁审阅、/undo 检查点、多智能体编排、目标驱动 + 工作流模板、会话结算记忆、会话持久化与按会话隔离、命令面板、首次引导、深浅主题、中英 i18n 等。详见 `docs/`。
 
 ## 📄 许可证
 

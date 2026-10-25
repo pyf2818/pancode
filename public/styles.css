@@ -726,13 +726,32 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 #chatPanel{width:360px;border-left:1px solid var(--border);background:var(--bg2);display:flex;flex-direction:column;flex-shrink:0;position:relative;z-index:0}
 #chatPanel.collapsed{display:none}
 .cp-head{height:38px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;flex-shrink:0}
-.cp-model{font-size:11px;color:var(--text-dim);font-weight:400;background:var(--bg4);padding:2px 8px;border-radius:8px}
+.cp-model{font-size:11px;color:var(--text-dim);font-weight:400;background:var(--bg4);padding:2px 8px;border-radius:8px;white-space:nowrap;flex-shrink:0;max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .chat-slot{flex:1;min-height:0;overflow:hidden;display:flex;position:relative}
 
 /* ============ 聊天流（扁平时间线布局） ============ */
 #chatStream{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:2px;position:relative}
 /* 多会话并行：每会话独立 DOM pane（后台 pane detached，流式输出照常写入） */
 .conv-pane{display:flex;flex-direction:column;gap:2px;position:relative;flex:1 0 auto;width:100%}
+/* W22 · 多会话网格视图：#chatStream 切成 CSS grid，每格独立滚动。
+   非 pane 的直接子节点（任务进度胶囊等）跨满整行，不挤进某一格；
+   绝对定位的滚动按钮/导航条不受 grid 影响。 */
+#chatStream.grid-on{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:10px;overflow:hidden;padding:10px;align-content:start}
+#chatStream.grid-on>*:not(.conv-pane){grid-column:1/-1}
+#chatStream.grid-on .conv-pane{flex:none;min-height:220px;max-height:none;height:100%;overflow-y:auto;border:1px solid var(--border);border-radius:9px;background:var(--bg2);padding:8px}
+#chatStream.grid-on .conv-pane.grid-active{border-color:var(--accent-hi);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent-hi) 35%,transparent)}
+#chatStream.grid-on .conv-pane.grid-running{border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
+.conv-pane>.gp-head{display:none}
+#chatStream.grid-on .gp-head{display:flex;align-items:center;gap:7px;padding:4px 6px;margin-bottom:6px;font-size:12px;color:var(--text-dim);cursor:pointer;border-radius:6px;position:sticky;top:0;background:var(--bg2);z-index:2;border-bottom:1px solid var(--border)}
+#chatStream.grid-on .gp-head:hover{color:var(--text);background:var(--bg4)}
+#chatStream.grid-on .gp-head .gp-dot{width:7px;height:7px;border-radius:50%;background:var(--text-dim);opacity:.5;flex-shrink:0}
+#chatStream.grid-on .conv-pane.grid-running .gp-dot{background:var(--accent);opacity:1;box-shadow:0 0 8px -1px var(--accent);animation:thinkDot 1.2s ease-in-out infinite}
+#chatStream.grid-on .gp-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+#chatStream.grid-on .gp-head .gp-focus{flex-shrink:0;display:inline-flex;opacity:.6}
+#chatStream.grid-on .gp-head .gp-focus .ico{width:12px;height:12px}
+/* 轮组头部已标 R 号，组内工具卡自带的 R 徽标是重复信息，藏掉 */
+.round-grp .tool-head .t-round{display:none}
+.ag-side-btn.on{background:color-mix(in srgb,var(--accent-hi) 16%,transparent);color:var(--accent-hi)}
 /* 计划进度常驻条（C1：意图→结果闭环提速） */
 .plan-sticky{display:flex;align-items:center;gap:10px;padding:7px 14px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:12px;color:var(--text)}
 .plan-sticky[hidden]{display:none}
@@ -799,6 +818,22 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 @keyframes thinkDot{0%,100%{opacity:.4}50%{opacity:1}}
 @keyframes msgIn{from{opacity:0;transform:translateY(8px);filter:blur(3px)}to{opacity:1;transform:none;filter:blur(0)}}
 .think-block:not(.open) .tk-label{opacity:.75;font-size:11.5px}
+
+/* W17 · 轮次收纳：同一轮的思考/工具/审批收进一个可折叠轮组，头部一行摘要。
+   头部也是时间轴上的一个节点（与思考/工具卡同列的小圆点），竖线仍由 .step-flow 统一画；
+   折叠后旧轮只剩这一行，长任务不再"全部罗列"。 */
+.round-grp{position:relative}
+.rg-head{display:flex;align-items:center;gap:8px;padding:3px 10px 3px 24px;font-size:12px;color:var(--text-dim);cursor:pointer;user-select:none;border-radius:6px;transition:background .15s;position:relative}
+.rg-head::before{content:'';position:absolute;left:9.5px;top:10px;width:5px;height:5px;border-radius:50%;background:var(--accent-hi);opacity:.45}
+.rg-head:hover{background:var(--bg4);color:var(--text)}
+.round-grp.live .rg-head::before{background:var(--accent);opacity:1;box-shadow:0 0 8px -1px var(--accent);animation:thinkDot 1.2s ease-in-out infinite}
+.rg-badge{font-size:10px;font-weight:700;color:var(--accent-hi);background:var(--bg4);padding:1px 6px;border-radius:8px;flex-shrink:0;letter-spacing:.3px}
+.rg-sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;opacity:.85}
+.rg-head .chev{flex-shrink:0;transition:.2s;display:flex;align-items:center}
+.rg-head .chev .ico{width:11px;height:11px}
+.round-grp.open .chev{transform:rotate(90deg)}
+.rg-body{display:none}
+.round-grp.open .rg-body{display:flex;flex-direction:column;gap:1px}
 
 /* 工具调用：单行扁平行；语义色标在图标上（竖线只由 .step-flow 画一条） */
 .tool-card{padding:2px 0 2px 24px;position:relative;animation:msgIn .42s var(--ease-out) both}
@@ -1112,6 +1147,8 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .trace-stats .ts-item b{display:block;font-size:15px;font-weight:700;color:var(--text);line-height:1.2}
 .trace-stats .ts-item span{font-size:10px;color:var(--text-dim)}
 .trace-list{flex:1;min-height:0;overflow-y:auto;padding:0 8px 8px}
+/* W26 空态：演示引擎不产生 trace，给一句说明而不是一块静止的 0 */
+.trace-empty{padding:14px 10px;font-size:11.5px;line-height:1.7;color:var(--text-dim);opacity:.85}
 .trace-row{display:flex;align-items:baseline;gap:8px;padding:5px 6px;font-size:12px;border-top:1px solid var(--border);font-family:var(--mono)}
 .trace-row:first-child{border-top:none}
 .trace-row .tr-time{color:var(--text-dim);font-variant-numeric:tabular-nums;min-width:38px}

@@ -61,6 +61,7 @@ function onTraceEvent(ev, isHistory) {
   paintUsage();
   setTraceText("agTraceCount", t("nEvents", { n: ++traceState.seq }));
   /* 局部变量别叫 t：这个函数下面还要用全局 t() 取字典，同名 const 会让整段进 TDZ */
+  const empty = list.querySelector(".trace-empty"); if (empty) empty.remove();
   const stamp = (((ev.t || Date.now()) % 60000) / 1000).toFixed(1) + "s";
   const row = document.createElement("div");
   row.className = "trace-row tr-" + ev.type.replace(/\./g, "-") + (isHistory ? " tr-history" : "");
@@ -75,6 +76,7 @@ function clearTrace() {
   traceState.rounds = traceState.tools = traceState.loops = traceState.errors = traceState.seq = 0;
   traceState.tokens = 0; traceState.cost = 0; traceState.currency = "";
   const list = $("traceList"); if (list) list.innerHTML = "";
+  paintTraceEmpty();
   setTraceText("traceRounds", "0"); setTraceText("traceTools", "0"); setTraceText("traceLoops", "0");
   setTraceText("traceErrors", "0"); setTraceText("traceTokens", "0"); setTraceText("agTraceCount", t("nEvents", { n: 0 }));
   setTraceText("traceCtx", "—");
@@ -98,5 +100,16 @@ async function loadTraceHistory(convId) {
     list.scrollTop = list.scrollHeight;
   } catch (e) { /* 静默：历史缺失不应影响实时面板 */ }
 }
+/* W26 空态行：列表为空时放一句说明。clearTrace / 初始 / 换语言三处都会调。 */
+function paintTraceEmpty() {
+  const list = $("traceList"); if (!list) return;
+  if (list.children.length) return;
+  const hint = document.createElement("div");
+  hint.className = "trace-empty";
+  hint.textContent = t("traceEmptyHint");
+  list.appendChild(hint);
+}
 /* 「N 事件」是界面文案不是计数值：换语言后要立刻跟着改，否则英文界面钉着中文 */
+if (typeof onLang === "function") onLang(() => { setTraceText("agTraceCount", t("nEvents", { n: traceState.seq })); paintTraceEmpty(); });
+paintTraceEmpty();   // 初始（reload 后 restoreConv 不走 clearTrace，这里兜住）
 if (typeof onLang === "function") onLang(() => setTraceText("agTraceCount", t("nEvents", { n: traceState.seq })));
