@@ -92,7 +92,7 @@ describe("并行不再排队（按文件认领取代全局锁）", () => {
       if (me.n === 1) {
         live++; peak = Math.max(peak, live);
         await tick(25);
-        return { toolCalls: [{ id: "t" + me.owner, name: "write_file", args: { path: me.label === "A" ? "x.js" : "y.js", content: me.label + "写的" } }] };
+        return { toolCalls: [{ id: "t" + me.owner, name: "write_file", arguments: JSON.stringify({ path: me.label === "A" ? "x.js" : "y.js", content: me.label + "写的" }) }] };
       }
       live--;
       return { content: me.label + " 完成" };
@@ -118,13 +118,13 @@ describe("并行不再排队（按文件认领取代全局锁）", () => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
       if (me.label === "A") {
-        if (me.n === 1) return { toolCalls: [{ id: "a1", name: "write_file", args: { path: "shared.js", content: "A写的" } }] };
+        if (me.n === 1) return { toolCalls: [{ id: "a1", name: "write_file", arguments: JSON.stringify({ path: "shared.js", content: "A写的" }) }] };
         held.go();                            // A 已认领 shared.js，放 B 进来撞
         await bumped.wait();
         return { content: "A 完成" };
       }
       await held.wait();
-      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", args: { path: "shared.js", content: "B写的" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", arguments: JSON.stringify({ path: "shared.js", content: "B写的" }) }] };
       seenMsgs.push(messages[messages.length - 1].content);
       bumped.go();
       return { content: "B 完成" };
@@ -151,13 +151,13 @@ describe("并行不再排队（按文件认领取代全局锁）", () => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
       if (me.label === "A") {
-        if (me.n === 1) return { toolCalls: [{ id: "a1", name: "write_file", args: { path: "shared.js", content: "A写的" } }] };
+        if (me.n === 1) return { toolCalls: [{ id: "a1", name: "write_file", arguments: JSON.stringify({ path: "shared.js", content: "A写的" }) }] };
         held.go();                            // A 已认领，放 B 用另一种大小写进来撞
         await bumped.wait();
         return { content: "A 完成" };
       }
       await held.wait();
-      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", args: { path: "Shared.js", content: "B写的" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", arguments: JSON.stringify({ path: "Shared.js", content: "B写的" }) }] };
       bumped.go();
       return { content: "B 完成" };
     };
@@ -174,7 +174,7 @@ describe("并行不再排队（按文件认领取代全局锁）", () => {
     a._chatStream = async (messages) => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
-      if (me.n === 1) return { toolCalls: [{ id: "o1", name: "write_file", args: { path: "one.js", content: "第一遍" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "o1", name: "write_file", arguments: JSON.stringify({ path: "one.js", content: "第一遍" }) }] };
       return { content: "好" };
     };
     await a.runSubAgent("第一遍改", { label: "第一步" });
@@ -206,12 +206,12 @@ describe("并行时只收回自己认领的（不互抹）", () => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
       if (me.label === "A") {
-        if (me.n === 1) { aIn.go(); await bHolds.wait(); return { toolCalls: [{ id: "a1", name: "run_command", args: { __p: "命令造的.txt", command: "造个文件" } }] }; }
+        if (me.n === 1) { aIn.go(); await bHolds.wait(); return { toolCalls: [{ id: "a1", name: "run_command", arguments: JSON.stringify({ __p: "命令造的.txt", command: "造个文件" }) }] }; }
         return { content: "A 完成" };
       }
       await aIn.wait();
       /* B 晚一步进来 → A 起跑时拍的整盘快照作废，两人都降级成逐文件口径 */
-      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", args: { path: "sibling.js", content: "B 的改动" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", arguments: JSON.stringify({ path: "sibling.js", content: "B 的改动" }) }] };
       bHolds.go();
       return { content: "B 完成" };
     };
@@ -232,7 +232,7 @@ describe("并行时只收回自己认领的（不互抹）", () => {
     a._chatStream = async () => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
-      if (me.n === 1) return { toolCalls: [{ id: "c1", name: "run_command", args: { __p: "命令造的.txt", command: "造个文件" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "c1", name: "run_command", arguments: JSON.stringify({ __p: "命令造的.txt", command: "造个文件" }) }] };
       return { content: "完成" };
     };
     const r = {};
@@ -251,7 +251,7 @@ describe("并行时只收回自己认领的（不互抹）", () => {
     a._chatStream = async () => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
-      if (me.n === 1) return { toolCalls: [{ id: "d1", name: "write_file", args: { path: "d.js", content: "改后的内容" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "d1", name: "write_file", arguments: JSON.stringify({ path: "d.js", content: "改后的内容" }) }] };
       return { content: "好" };
     };
     await a.runSubAgent("改 d.js", { label: "改盘" });
@@ -265,7 +265,7 @@ describe("并行时只收回自己认领的（不互抹）", () => {
     a._chatStream = async () => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
-      if (me.n === 1) return { toolCalls: [{ id: "s1", name: "write_file", args: { path: "same.js", content: "本来就是这段" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "s1", name: "write_file", arguments: JSON.stringify({ path: "same.js", content: "本来就是这段" }) }] };
       return { content: "好" };
     };
     const r = {};
@@ -281,7 +281,7 @@ describe("并行时只收回自己认领的（不互抹）", () => {
     a._chatStream = async () => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
-      if (me.n === 1) return { toolCalls: [{ id: "g1", name: "delete_file", args: { path: "gone.js" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "g1", name: "delete_file", arguments: JSON.stringify({ path: "gone.js" }) }] };
       return { content: "删了" };
     };
     await a.runSubAgent("删文件", { label: "删除者" });

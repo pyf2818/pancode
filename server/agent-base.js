@@ -42,7 +42,8 @@ class AgentBase {
   /* ---------- 流式思考（演示引擎打字机；LLM 引擎直接透传增量） ---------- */
   thinkStart() {
     const id = this.id();
-    this.emit({ type: "think.start", id });
+    /* round 与 tool.start 同口径：前端按轮次把思考/工具步骤收进同一个可折叠轮组 */
+    this.emit({ type: "think.start", id, round: this.round });
     return {
       delta: (text) => this.emit({ type: "think.delta", id, text }),
       end: () => this.emit({ type: "think.end", id }),
@@ -75,7 +76,7 @@ class AgentBase {
        只读工具一个都不推、被拒绝规则拦下时也不推），任何一份前端名字表都会先漂。
        栈深差值是唯一不会说谎的判据。 */
     const depth0 = (this._undoStack || []).length;
-    this.emit({ type: "tool.start", id, kind, name, target, round: this.round + 1 });
+    this.emit({ type: "tool.start", id, kind, name, target, round: this.round });
     return {
       body: (text) => this.emit({ type: "tool.body", id, text: String(text).slice(0, 8000) }),
       /* 截图通道：只发"图在会话截图目录里的相对路径"，字节由前端向 /api/shot 取。
@@ -171,10 +172,17 @@ class AgentBase {
     const riskSummary = risk.summarize(risks);
     this._lastRiskSummary = riskSummary;
     this.convRisk = this.convRisk || {};
-    this.convRisk[this._currentConv] = riskSummary;
-    this.emit({ type: "changes", list, card: !!card, risk: riskSummary, convId: this._currentConv });
+    const _cid = this._convIdNow();
+    this.convRisk[_cid] = riskSummary;
+    this.emit({ type: "changes", list, card: !!card, risk: riskSummary, convId: _cid });
     return list;
   }
+
+  /* 当前会话 id。真实引擎（LlmAgent）的工具跑在 AsyncLocalStorage 里，会覆写此方法
+     取"正在执行的那条会话"；基类/演示引擎没有并行，引擎级 _currentConv 就是真相。
+     pushChanges 这类深层路径必须走这个口径 —— 多会话并行时 this._currentConv 是前台那条，
+     会把 A 会话的改动归属到 B 头上（风险摘要错桶 + changes 事件错会话）。 */
+  _convIdNow() { return this._currentConv || "default"; }
 
   /* 工具审批：基类默认无操作（真实 LLM 引擎 LlmAgent 覆写以支持人工确认） */
   resolveApproval() { return false; }

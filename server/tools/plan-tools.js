@@ -4,7 +4,7 @@ const { fillGoal } = require("../workflow-store");
 
 module.exports = {
   create_plan: async (agent, args) => {
-    const plan = agent.plan.create(agent._currentConv, args.title, args.tasks);
+    const plan = agent.plan.create(agent._convIdNow(), args.title, args.tasks);
     if (plan) {
       agent.emit({ type: "plan.created", plan, convId: plan.convId });
       return "计划已创建: " + plan.title + " (" + plan.tasks.length + " 个任务)";
@@ -13,7 +13,7 @@ module.exports = {
   },
 
   update_plan: async (agent, args) => {
-    const active = agent.plan.getActive(agent._currentConv);
+    const active = agent.plan.getActive(agent._convIdNow());
     if (!active) return "没有活跃的计划";
     const plan = agent.plan.updateTask(active.id, args.taskIndex, args.status, args.note);
     if (plan) {
@@ -28,14 +28,14 @@ module.exports = {
     const goal = (args.goal || "").trim();
     if (!goal) {
       agent._goal = null; agent._saveGoal();
-      if (agent._goalState) agent._goalState[agent._currentConv] = undefined;
+      if (agent._goalState) agent._goalState[agent._convIdNow()] = undefined;
       agent.emit({ type: "goal.set", goal: null });
       return "已清除会话目标";
     }
     agent._goal = goal; agent._saveGoal();
     // 新目标 = 续跑预算与停滞计数归零，否则上一轮 Goal 的预算会把这次提前掐掉
     agent._goalState = agent._goalState || {};
-    agent._goalState[agent._currentConv] = { turns: 0, stall: 0, lastSig: "" };
+    agent._goalState[agent._convIdNow()] = { turns: 0, stall: 0, lastSig: "" };
     agent.emit({ type: "goal.set", goal, maxTurns: 40 });
     let extra = "";
     if (args.template) {
@@ -43,7 +43,7 @@ module.exports = {
       if (tpl) {
         const title = fillGoal(tpl.title, goal);
         const tasks = tpl.tasks.map((x) => fillGoal(x, goal));
-        const plan = agent.plan.create(agent._currentConv, title, tasks);
+        const plan = agent.plan.create(agent._convIdNow(), title, tasks);
         if (plan) {
           agent.emit({ type: "plan.created", plan, convId: plan.convId });
           extra = "；已用模板「" + tpl.name + "」生成执行计划（" + plan.tasks.length + " 步）";
@@ -57,7 +57,7 @@ module.exports = {
 
   goal_status: async (agent, args) => {
     if (!agent._goal) return "当前未设定会话目标（可用 set_goal 设定）";
-    const active = agent.plan.getActive(agent._currentConv);
+    const active = agent.plan.getActive(agent._convIdNow());
     let txt = "【会话目标】" + agent._goal + "\n";
     if (active) {
       const done = active.tasks.filter((t) => t.status === "done" || t.status === "skipped").length;

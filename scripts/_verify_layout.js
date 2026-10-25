@@ -742,9 +742,13 @@ async function main() {
     ok("正文没被拼进用户消息（旧格式与新格式都不许出现）", live.skillInBody === false, live.userTxt);
     ok("真实事件流下每张步骤卡都在时间轴分组里（" + live.stepsInGroups + "/" + live.steps + "）",
       live.groups >= 1 && live.stepsInGroups === live.steps, JSON.stringify({ groups: live.groups, in: live.stepsInGroups, steps: live.steps }));
+    /* W22 轮组之后会出现"只含一行折叠思考块"的小组（groupH≈22px）：
+       .step-flow::before 上下各留 8px，小组里 2px 线高只剩 6px —— 量不到线、
+       也谈不上"贯穿"，属于量法边界而非渲染缺陷。对 <40px 的小组豁免两条判定。 */
+    const isTiny = (g) => g.groupH < 40;
     ok("真实运行后每个分组的左槽依然只有 1 条竖线",
-      live.perGroup.every((g) => g.lines === 1 && g.onlyRail), JSON.stringify(live.perGroup));
-    ok("时间轴贯穿整段真实步骤", live.perGroup.every((g) => g.railH >= g.groupH * 0.72),
+      live.perGroup.every((g) => (isTiny(g) ? g.lines <= 1 : g.lines === 1) && g.onlyRail), JSON.stringify(live.perGroup));
+    ok("时间轴贯穿整段真实步骤", live.perGroup.every((g) => isTiny(g) || g.railH >= g.groupH * 0.72),
       JSON.stringify(live.perGroup.map((g) => g.railH + "/" + g.groupH)));
     await page.screenshot({ path: path.join(OUT, "layout_stepflow_live.png") }).catch(() => {});
 
@@ -778,6 +782,7 @@ async function main() {
         { scope: "project", id: "p1", type: "lesson", topic: "端口约定", content: "dev 服务器固定跑 5178 端口，换端口要同步改 electron 配置", valueScore: 4, accessCount: 2, via: "guard" },
         { scope: "user", id: "u1", type: "preference", topic: "启动项目", content: "启动项目后要先装依赖再跑 dev，否则端口会冲突", valueScore: 3, accessCount: 0, via: "pull" },
         { scope: "project", id: "p2", type: "decision", topic: "只有标题没有正文", content: "", valueScore: 2, accessCount: 0, via: "pull" },
+        { scope: "other", id: "o1", type: "lesson", topic: "隔壁项目的坑", content: "另一个工作区里 rename 被杀软锁过一次", valueScore: 3, accessCount: 0, via: "pull" },
       ] });
       const cards = document.querySelectorAll(".recall-card");
       const card = cards[cards.length - 1];
@@ -787,29 +792,35 @@ async function main() {
       const topic = (r) => (r.querySelector(".rc-topic") || {}).textContent || "";
       const content = (r) => (r.querySelector(".rc-content") || {}).textContent || "";
       const via = (r) => { const s = r.querySelector(".rc-via"); return s ? s.textContent : ""; };
+      const scope = (r) => { const s = r.querySelector(".rc-scope"); return s ? s.textContent + "|" + s.className : ""; };
       return {
         found: true, rows: rows.length,
         head: (card.querySelector(".rc-title") || {}).textContent || "",
         t0: topic(rows[0]), c0: content(rows[0]), v0: via(rows[0]), v1: via(rows[1]),
         t1: topic(rows[1]), c1: content(rows[1]),
         c2: content(rows[2]),
-        scope1: rows[1] ? rows[1].querySelector(".rc-scope.user") != null : false,
+        scope0: scope(rows[0]), scope1: scope(rows[1]), scope3: scope(rows[3]),
       };
     });
     /* P6 口径：卡片不再说"读进了 N 条"。正文只有硬提醒那类每轮在场，
        其余要模型自己调 search_memory 取——两个来源在标题里分开计，行上也有各自的那枚标。 */
-    ok("记忆回显卡渲染出来（3 条明细），标题按常驻/自查分开计",
-      recall.found === true && recall.rows === 3
-      && /常驻提醒 1 条/.test(recall.head) && /我自己查了 2 条/.test(recall.head),
+    ok("记忆回显卡渲染出来（4 条明细），标题按常驻/自查分开计",
+      recall.found === true && recall.rows === 4
+      && /常驻提醒 1 条/.test(recall.head) && /我自己查了 3 条/.test(recall.head),
       JSON.stringify(recall).slice(0, 240));
     ok("回显卡正文行显示记忆内容（不再只有 topic）",
       recall.c0 === "dev 服务器固定跑 5178 端口，换端口要同步改 electron 配置", JSON.stringify(recall).slice(0, 300));
     ok("常驻与自查在行上分得开（第一枚标常驻、第二枚标自查）",
       /常驻/.test(recall.v0) && /自查/.test(recall.v1), "v0=" + recall.v0 + " v1=" + recall.v1);
+    /* scope 三档都要有各自的写法：从别的工作区分片捞来的那条不能挂着"本项目"，
+       否则用户会以为这个库早记过这件事。 */
+    ok("三种来源在卡片上各有名字（本项目 / 跨项目 / 别的工作区）",
+      /本项目/.test(recall.scope0) && /跨项目/.test(recall.scope1) && /别的工作区/.test(recall.scope3)
+      && /rc-scope other/.test(recall.scope3) && !/rc-scope proj/.test(recall.scope3),
+      "r0=" + recall.scope0 + " r1=" + recall.scope1 + " r3=" + recall.scope3);
     ok("像样的 topic 保留显示", recall.t0 === "端口约定", "t0=" + recall.t0);
     ok("topic 与正文开头重复（旧的原话切片）不再重复显示", recall.t1 === "", "t1=" + recall.t1);
     ok("无正文的条目不出空内容行", recall.c2 === "", "c2=" + recall.c2);
-    ok("跨项目记忆仍带用户级标色", recall.scope1 === true, "scope1=" + recall.scope1);
 
     /* #45：编排历史侧栏要能看到"分发出去的子 agent 任务与结果"。
        mock /api/orch/history 灌一条三步记录（成功/失败/进行中），断言步骤行渲染出 task 与 output 摘要。

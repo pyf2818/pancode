@@ -49,6 +49,7 @@ function mkAgent(convId, cfg) {
   const a = {
     cfg: Object.assign({ computer: {} }, cfg || {}),
     _currentConv: convId,
+    _convIdNow() { return this._currentConv; },   // 手搓 agent 需自带：tools 层已改走 agent._convIdNow() 取执行会话
     _gate: async () => ({ blocked: false, approved: true }),
     state() {},
     visionCalls: [],

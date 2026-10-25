@@ -1,0 +1,37 @@
+{
+  "name": "pancode-vscode",
+  "displayName": "pancode",
+  "description": "pancode AI 编程工作台 —— 在 VS Code 里打开本地 pancode 界面（编辑器 + AI 对话 + 终端同屏）",
+  "version": "0.1.0",
+  "publisher": "pancode",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["AI", "Other"],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "pancode.open", "title": "pancode: 打开工作台", "icon": "$(sparkle)" }
+    ],
+    "configuration": {
+      "title": "pancode",
+      "properties": {
+        "pancode.serverDir": {
+          "type": "string",
+          "default": "",
+          "description": "pancode 仓库目录（含 package.json）。留空 = 用本插件随附的相对路径 ../../ 或当前工作区。"
+        },
+        "pancode.port": {
+          "type": "number",
+          "default": 8766,
+          "description": "pancode 服务端口（默认 8766；Electron 桌面版内置端口为 8767）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package"
+  }
+}

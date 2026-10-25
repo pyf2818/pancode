@@ -208,7 +208,7 @@ function parsePatchText(text) {
   };
   for (const line of lines) {
     if (line.startsWith("<<<<<<<")) { inBlock = true; phase = "old"; curPath = pendingPath; continue; }
-    if (line.startsWith("=======") && inBlock) { phase = "new"; continue; }
+    if (line === "=======" && inBlock) { phase = "new"; continue; }   // 整行恰好 7 个 =：startsWith 会把 "==========" 下划线 / "======= 注释" 误判成块分隔
     if (line.startsWith(">>>>>>>") && inBlock) { flush(); continue; }
     if (inBlock) {
       if (phase === "old") oldBuf.push(line); else newBuf.push(line);

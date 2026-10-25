@@ -39,6 +39,15 @@ module.exports = {
   web_fetch: async (agent, args) => {
     const t = agent.tool("read", "Web 抓取", args.url);
     try {
+      /* W23 出网域名策略：先过 blockDomains/allowDomains（应用层收口），再进 IP 守卫。
+         拦下来说明原因但不教绕法 —— 换地址要先问用户。 */
+      let _host = "";
+      try { _host = new URL(String(args.url)).hostname; } catch (e) {}
+      const pol = netGuard.policyAllows(_host, (agent.cfg && agent.cfg.net) || {});
+      if (!pol.ok) {
+        t.done(false, "出网策略拦截");
+        return "已拒绝抓取：" + pol.reason + "（net.allowDomains/blockDomains 由用户配置，不在范围内的地址请先与用户确认。）";
+      }
       /* 走守卫而不是裸 fetch：web_fetch 的 URL 由模型自己决定，等于把"能连到本机任何端口"
          的能力交给了模型。守卫查解析后的 IP、逐跳复检重定向，并把正文包成显式的不可信数据块。 */
       const guarded = await netGuard.fetchGuarded(args.url, {

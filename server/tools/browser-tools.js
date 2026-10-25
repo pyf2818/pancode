@@ -15,6 +15,7 @@ const ab = require("../computer/agent-browser");
 const shots = require("../computer/shots");
 const vision = require("../computer/vision");
 const PA = require("../computer/page-assert");
+const netGuard = require("../net-guard");   // W23：导航目标过出网策略 + SSRF 守卫
 
 const MAX_TEXT = 12000;
 
@@ -45,7 +46,7 @@ async function run(agent, cmdArgs, opts) {
   const st = ab.status(agent.cfg);
   if (!st.enabled) return { ok: false, error: "浏览器自动化已关闭（配置 computer.browser=false）。要用的话去 设置 → 电脑控制 打开。" };
   if (!st.available) return { ok: false, error: st.reason };
-  const session = ab.sessionName(agent._currentConv);
+  const session = ab.sessionName(agent._convIdNow());
   const argv = ["--session", session]
     .concat(ab.globalArgs(agent.cfg))
     .concat(["--json"], cmdArgs);
@@ -86,6 +87,23 @@ module.exports = {
 
   browser_navigate: async (agent, args) => {
     const t = agent.tool("tool", "浏览器·导航", args.action);
+    /* W23 出网收口：goto 的目标由模型决定，与 web_fetch 同一套判据 ——
+       先过域名策略，再过 SSRF 守卫（字面量私网/元数据/localhost 直接拒）。 */
+    const navUrl = String(args.action || "").match(/https?:\/\/[^\s"']+/);
+    if (navUrl) {
+      let host = "";
+      try { host = new URL(navUrl[0]).hostname; } catch (e) {}
+      const pol = netGuard.policyAllows(host, (agent.cfg && agent.cfg.net) || {});
+      if (!pol.ok) {
+        t.done(false, "出网策略拦截");
+        return "已拒绝导航：" + pol.reason + "（不在用户配置的出网范围内的地址，先与用户确认。）";
+      }
+      try { await netGuard.checkUrl(navUrl[0], {}); }
+      catch (e) {
+        t.done(false, "目标被拦");
+        return "已拒绝导航：" + (e && e.message) + "（浏览器不该访问本机/内网地址，与 web_fetch 同一条底线。）";
+      }
+    }
     const r = await run(agent, [args.action]);
     if (!r.ok) return err(t, r);
     t.body(where(r.data) || args.action);
@@ -199,7 +217,7 @@ module.exports = {
     const t = agent.tool("tool", "浏览器·截图", (args.full ? "整页" : "可视区") + (forModel ? " · 交给模型" : ""));
     let abs;
     /* 要交给模型时用 jpeg：同样画面比 png 小一个量级，直接决定这一次像素往返花多少 token。 */
-    try { abs = path.join(shots.convDir(agent._currentConv), shots.fileName(args.name || "page", forModel ? "jpeg" : "png")); }
+    try { abs = path.join(shots.convDir(agent._convIdNow()), shots.fileName(args.name || "page", forModel ? "jpeg" : "png")); }
     catch (e) { t.done(false, "落盘失败"); return "截图无法落盘：" + e.message; }
     const cmd = ["screenshot", abs];
     if (args.full) cmd.push("--full");

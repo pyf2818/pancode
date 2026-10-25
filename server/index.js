@@ -289,6 +289,10 @@ function mountWorkspace(dir) {
   term = new TerminalLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"), cfg.permissions.strictCommand !== false);
   procs = new ProcessLayer(WS_DIR, broadcast, path.join(configMod.ROOT, ".pancode", "audit"));
   buildEngine();
+  /* W26：演示引擎 + 完全空的工作区 → 铺示例项目。演示剧本要读 README/src/tests 并
+     真实跑 tests/run-tests.js，空工作区上第一跑就是一串 ENOENT，观感是"演示坏了"。
+     只在 readdir 为空时铺，绝不碰用户已有文件（smoke/探针的夹具工作区都不受影响）。 */
+  require("./demo-seed").seedDemoWorkspace(WS_DIR, configMod.engineMode(cfg) !== "llm");
   files.startWatch((batch) => { syncAfterExternalChange(batch).catch((e) => log.tag("fs").warn("外部改动同步失败: " + e.message)); });
   log.tag("workspace").info("workspace 已挂载: " + WS_DIR);
 }
@@ -417,14 +421,38 @@ app.use(express.json({ limit: "2mb" }));
 app.use("/vendor", express.static(path.join(__dirname, "..", "public", "vendor"), { maxAge: "1y", immutable: true }));
 app.use(express.static(path.join(__dirname, "..", "public")));
 
+/* A8+：本机回环判定的唯一口径（HTTP Host 头与 WS 升级共用）。
+   注意必须精确匹配：前缀正则曾是 `^localhost` 无 `$` 锚 —— localhost.evil.com
+   一样通过，等于没拦。取 hostname（剥端口、剥 IPv6 方括号）后查集合。 */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+function hostNameOf(hostHeader) {
+  const h = String(hostHeader || "").trim();
+  if (!h) return "";
+  if (h[0] === "[") { const i = h.indexOf("]"); return i < 0 ? h.slice(1) : h.slice(1, i); }
+  const i = h.lastIndexOf(":");
+  return i > -1 ? h.slice(0, i) : h;
+}
+function isLocalHostHeader(hostHeader) {
+  return LOOPBACK_HOSTS.has(hostNameOf(hostHeader).toLowerCase());
+}
+
+/* DNS rebinding 防护：evil.com 的域名重绑到 127.0.0.1 后，页面发起的请求变"同源"，
+   浏览器对同源 GET 不带 Origin —— CORS 整套对它失效，只能靠 Host 头还认不认得出
+   "这不是发给我们这个本机服务的请求"。所有 HTTP 请求（含静态资源）统一过这道闸。 */
+app.use((req, res, next) => {
+  if (!isLocalHostHeader(req.headers.host)) {
+    return res.status(403).json({ ok: false, error: "非法 Host（本服务仅本机回环可达）" });
+  }
+  next();
+});
+
 /* A8：CORS 收紧——本地优先工具只允许同源或本机回环访问，拒绝跨站请求（防 CSRF 式滥用） */
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (!origin) return next();                               // 非浏览器（curl/同源）放行
-  let host;
-  try { host = new URL(origin).host; } catch (e) { return res.status(403).json({ ok: false, error: "非法 Origin" }); }
-  const loopback = /^(127\.0\.0\.1|localhost|\[::1\])/.test(host);
-  if (!loopback) return res.status(403).json({ ok: false, error: "跨站请求被拒绝" });
+  let hostname;
+  try { hostname = new URL(origin).hostname; } catch (e) { return res.status(403).json({ ok: false, error: "非法 Origin" }); }
+  if (!LOOPBACK_HOSTS.has(hostname.toLowerCase())) return res.status(403).json({ ok: false, error: "跨站请求被拒绝" });
   res.setHeader("Access-Control-Allow-Origin", origin);     // 本机 Origin 反射
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,x-user-token");
@@ -441,6 +469,7 @@ const NO_AUTH = new Set([
   "/api/auth/register", // 注册（首次建账号）
   "/api/auth/login",    // 登录
   "/api/auth/status",   // 查询登录态（前端启动判定）
+  "/api/auth/auto",     // W25 个人模式：本机自动身份（路由内再验 remoteAddress；多账号时拒绝）
   "/api/preview/docx",  // 仅预览渲染辅助，不泄露源码正文
   "/api/index/status",  // 本地代码索引状态查询（本地优先工具，与 health 同级）
   "/api/index/build",   // 本地代码索引构建
@@ -630,6 +659,18 @@ app.get("/api/bootstrap", (req, res) => {
 app.get("/api/auth/status", (req, res) => {
   const user = auth.verify(tokenOf(req));
   res.json({ ok: true, loggedIn: !!user, username: user ? user.username : null, hasUsers: auth.hasUsers() });
+});
+/* W25 个人模式：本机自动身份。个人本机产品不该有登录门槛，但 token 闸门要留着 ——
+   这里按"谁够得着 TCP 回环就发给谁"静默发身份（与 /api/bootstrap 同口径，只认
+   remoteAddress，任何伪造头都无效；服务本身也只绑 127.0.0.1）。
+   多账号（users.json 里 >1 个用户）时拒绝，前端回退登录弹窗 —— 免密发给"其中一个"
+   等于替用户选了人。已有账号不受影响：单账号直接免登，多账号照旧。 */
+app.get("/api/auth/auto", async (req, res) => {
+  if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(String((req.socket && req.socket.remoteAddress) || ""))) {
+    return res.status(403).json({ ok: false, error: "仅本机可领取自动身份" });
+  }
+  try { res.json(await auth.autoIdentity()); }
+  catch (e) { res.json({ ok: false, error: "自动身份失败：" + e.message }); }
 });
 app.post("/api/auth/register", async (req, res) => {
   /* 首个账号才能自助注册，之后必须显式开窗（修 C-B1）。
@@ -1045,7 +1086,18 @@ app.get("/api/shot", (req, res) => {
   } catch (e) { res.status(404).send("截图读取失败: " + e.message); }
 });
 
-/* docx → HTML 预览（mammoth，与 VS Code Office Viewer 同类方案） */
+/* docx → HTML 预览（mammoth，与 VS Code Office Viewer 同类方案）。
+   mammoth 对超链接 href 原样透传、不做 scheme 过滤 —— 恶意 docx 里塞一条
+   javascript: 链接，前端 innerHTML 渲染后点一下就在应用源内执行（可携
+   userToken 调 API，等于接管 Agent）。渲染前在服务端把非 http(s)/mailto/
+   相对路径的 href 摘掉。 */
+function sanitizePreviewHtml(html) {
+  return String(html).replace(/href\s*=\s*(["'])([\s\S]*?)\1/gi, (m, q, url) => {
+    const u = String(url).trim();
+    const safe = /^(https?:|mailto:)/i.test(u) || !/^[a-z][a-z0-9+.\-]*:/i.test(u);
+    return safe ? m : "href=" + q + "#" + q;
+  });
+}
 app.get("/api/preview/docx", async (req, res) => {
   try {
     const rel = String(req.query.path || "");
@@ -1057,7 +1109,7 @@ app.get("/api/preview/docx", async (req, res) => {
     const result = await mammoth.convertToHtml({ path: abs }, { convertImage: mammoth.images.imgElement((img) =>
       img.read("base64").then((b64) => ({ src: "data:" + img.contentType + ";base64," + b64 })))
     });
-    res.json({ ok: true, html: result.value, warnings: (result.messages || []).length });
+    res.json({ ok: true, html: sanitizePreviewHtml(result.value), warnings: (result.messages || []).length });
   } catch (e) { res.status(400).json({ ok: false, error: "无法解析该文档: " + e.message }); }
 });
 
@@ -2499,6 +2551,9 @@ function wsTokenFromProtocol(h) {
   return "";
 }
 server.on("upgrade", (req, socket, head) => {
+  /* rebinding 防护与 HTTP 侧同口径：握手也是一次 HTTP 请求，Host 不是本机回环就销毁。
+     LSP 端点一并覆盖（它分流在鉴权之前）。 */
+  if (!isLocalHostHeader(req.headers.host)) { socket.destroy(); return; }
   const u = new URL(req.url, "http://localhost");
   // LSP 走独立端点 /lsp，避免与主聊天 WS 混流
   if (u.pathname === "/lsp") { lspManager.handleUpgrade(req, socket, head); return; }

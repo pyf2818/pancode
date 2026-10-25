@@ -90,7 +90,7 @@ function mkAgent() {
       if (me.n === 1) {
         live++; peak = Math.max(peak, live);
         await sleep(40);                       // 旧实现里那支全局锁就是在这里把第二个卡住的
-        return { toolCalls: [{ id: "w" + me.owner, name: "write_file", args: { path: me.label === "甲" ? "one.js" : "two.js", content: me.label + " 写的新内容" } }] };
+        return { toolCalls: [{ id: "w" + me.owner, name: "write_file", arguments: JSON.stringify({ path: me.label === "甲" ? "one.js" : "two.js", content: me.label + " 写的新内容" }) }] };
       }
       live--;
       return { content: me.label + " 完成" };
@@ -134,12 +134,12 @@ function mkAgent() {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
       if (me.label === "甲") {
-        if (me.n === 1) return { toolCalls: [{ id: "a1", name: "write_file", args: { path: "shared.js", content: "甲写的" } }] };
+        if (me.n === 1) return { toolCalls: [{ id: "a1", name: "write_file", arguments: JSON.stringify({ path: "shared.js", content: "甲写的" }) }] };
         held.go(); await done.wait();
         return { content: "甲 完成" };
       }
       await held.wait();
-      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", args: { path: "shared.js", content: "乙写的" } }] };
+      if (me.n === 1) return { toolCalls: [{ id: "b1", name: "write_file", arguments: JSON.stringify({ path: "shared.js", content: "乙写的" }) }] };
       seen.push(messages[messages.length - 1].content);
       done.go();
       return { content: "乙 完成" };
@@ -169,7 +169,7 @@ function mkAgent() {
       if (me.n === 1) {
         at.push({ label: me.label, t: Date.now() });
         await sleep(45);
-        return { toolCalls: [{ id: "x" + me.owner, name: "write_file", args: { path: "shared.js", content: me.label + " 写的" } }] };
+        return { toolCalls: [{ id: "x" + me.owner, name: "write_file", arguments: JSON.stringify({ path: "shared.js", content: me.label + " 写的" }) }] };
       }
       return { content: me.label + " 完成" };
     };
@@ -203,7 +203,7 @@ function mkAgent() {
       if (me.n === 1) {
         /* 走真 execTool → 真 board handler，不直接调 board.post：
            要验的就是"工具名、参数形状、归属上下文"这三者接得上。 */
-        return { toolCalls: [{ id: "p" + me.owner, name: "board", args: { action: "write", kind: "blocker", key: "shared.js", text: me.label + " 说：这里有一处不能再改的约束" } }] };
+        return { toolCalls: [{ id: "p" + me.owner, name: "board", arguments: JSON.stringify({ action: "write", kind: "blocker", key: "shared.js", text: me.label + " 说：这里有一处不能再改的约束" }) }] };
       }
       return { content: me.label + " 完成" };
     };
@@ -229,7 +229,7 @@ function mkAgent() {
     a._chatStream = async () => {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
-      if (me.n === 1) return { toolCalls: [{ id: "l" + me.owner, name: "list_files", args: {} }] };
+      if (me.n === 1) return { toolCalls: [{ id: "l" + me.owner, name: "list_files", arguments: JSON.stringify({}) }] };
       return { content: "读完了" };
     };
     const r = {};
@@ -259,7 +259,7 @@ function mkAgent() {
       const me = currentSub();
       me.n = (me.n || 0) + 1;
       if (me.n === 1) {
-        return { toolCalls: [{ id: "n" + me.owner, name: "write_file", args: { path: "one.js", content: "one 原文\n第二行\n" } }] };
+        return { toolCalls: [{ id: "n" + me.owner, name: "write_file", arguments: JSON.stringify({ path: "one.js", content: "one 原文\n第二行\n" }) }] };
       }
       return { content: "原样写了一遍" };
     };

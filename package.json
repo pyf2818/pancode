@@ -24,6 +24,7 @@
     "index:build": "node scripts/index-build.js",
     "verify:search": "node scripts/verify-search.js",
     "test:vitest": "vitest run",
+    "test:nightly": "node scripts/nightly-real-llm.js",
     "test:unit": "node scripts/_verify_dataroot.js mark && vitest run && node scripts/_verify_dataroot.js check",
     "lint": "npx eslint server/ test/ public/ scripts/ --quiet",
     "lint:fix": "npx eslint server/ test/ public/ scripts/ --quiet --fix",

@@ -30,7 +30,9 @@ const WebSocket = require("ws");
 const { chromium } = require("playwright");
 
 const ROOT = path.resolve(__dirname, "..");
-const PORT = Number(process.env.RLEEVO_PORT || 8829);
+/* let：Windows 的动态端口保留段（Hyper-V）偶尔把固定端口划进去，listen 直接 EACCES。
+   boot() 检测到这种失败会换一个随机高位端口重试一次，别让 CI 偶发红。 */
+let PORT = Number(process.env.RLEEVO_PORT || 8829);
 const WS_DIR = SANDBOX.wsDir;
 const OUT = path.join(ROOT, "scripts", "_verify_out");
 const HOME = path.join(SANDBOX.root, "home");
@@ -124,6 +126,12 @@ async function boot(gwBase) {
     try { const h = await req("GET", "/api/health"); if (h.json && h.json.ok) return { child, log: () => out }; } catch (e) {}
   }
   child.kill();
+  /* EACCES = 端口被 Windows 保留段占用（偶发、与代码无关）：换随机高位端口重试一次 */
+  if (/EACCES/.test(out) && !process.env.RLEEVO_PORT) {
+    PORT = 20000 + Math.floor(Math.random() * 20000);
+    console.log("[ruleevo] 端口被系统保留段占用，换 " + PORT + " 重试");
+    return boot(gwBase);
+  }
   throw new Error("服务未就绪\n" + out.slice(-1500));
 }
 

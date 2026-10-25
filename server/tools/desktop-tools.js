@@ -60,7 +60,7 @@ const HANDLERS = {
     const forModel = args.for_model === true;
     const t = agent.tool("tool", "桌面·截图", args.window_ref ? "某个窗口" : "整屏" + (forModel ? " · 交给模型" : ""));
     let abs;
-    try { abs = path.join(shots.convDir(agent._currentConv), shots.fileName(args.name || "screen", "png")); }
+    try { abs = path.join(shots.convDir(agent._convIdNow()), shots.fileName(args.name || "screen", "png")); }
     catch (e) { t.done(false, "落盘失败"); return "截图无法落盘：" + e.message; }
     const a = { path: abs };
     if (args.window_ref) { try { a.ref = ref(args.window_ref); } catch (e) { t.done(false, "参数不对"); return "desktop_screenshot 参数不对：" + e.message; } }

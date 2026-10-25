@@ -52,14 +52,23 @@ const ENCODED_EXEC = [
 
 /* W15：解释器管道——任意管道段的首命令是解释器即拦（与 BASE "| sh" 同语义，覆盖任意位置） */
 const INTERPRETERS = new Set(["sh", "bash", "zsh", "ksh", "dash", "powershell", "pwsh", "cmd"]);
+/* 解释器头归一：剥包裹引号 → 取路径基名 → 折叠可执行后缀变体。
+   修复前 powershell.exe -Command / cmd.exe /c 直接放行 —— 集合里只有裸名，
+   加后缀、写全路径（C:\Windows\...\powershell.exe，盘符冒号还会截断旧正则的捕获）就绕过了。
+   注意边界：xxx.bat / xxx.cmd 是"脚本文件"不是解释器，不在此拦（跑已存在的脚本是正常开发行为）。 */
+function normalizeInterpHead(raw) {
+  return String(raw).toLowerCase()
+    .replace(/^["']|["']$/g, "")
+    .replace(/^\.?\//, "")
+    .replace(/^%[a-z0-9_]+%[\/\\]?/, "")
+    .split(/[\/\\]/).pop()
+    .replace(/\.(exe|com)$/i, "");
+}
 function hasInterpreterPipe(cmd) {
   const segs = String(cmd).split(/(?<!\|)\|(?!\|)/); // 排除 || 逻辑或
   for (const seg of segs) {
-    const m = seg.trim().match(/^([a-z0-9_.\/\\-]+)\b/i);
-    if (m) {
-      const head = m[1].toLowerCase().replace(/^\.?\//, "").replace(/^%[a-z0-9_]+%$/, "");
-      if (INTERPRETERS.has(head)) return true;
-    }
+    const first = seg.trim().split(/\s+/)[0];
+    if (first && INTERPRETERS.has(normalizeInterpHead(first))) return true;
   }
   return false;
 }

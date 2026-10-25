@@ -234,4 +234,30 @@ const _sessSweep = setInterval(() => {
 }, 30 * 60 * 1000);
 if (_sessSweep && _sessSweep.unref) _sessSweep.unref();
 
-module.exports = { register, login, verify, logout, hasUsers, removeUser, listUsers, flushSessions, USERS_FILE, SESS_FILE, tokenKey };
+/* ---------- 本机自动身份（个人模式，W25） ----------
+   pancode 是个人本机产品，注册/登录门槛是多余的；但 userToken 闸门本身必须保留
+   （它挡着 DNS rebinding / 恶意网页直接调 API —— 见 index.js 的鉴权注释）。
+   折中：由"仅本机回环可达"的 /api/auth/auto 静默发身份——
+     · 没有任何用户 → 创建 local 用户（密码随机且不外泄，谁也无法"登录"它），签发 token
+     · 恰好一个用户 → 直接给它签发 token（免密；单账号即机主，这是个人模式的本意）
+     · 多个用户     → 拒绝（multiUser），前端回退登录弹窗 —— 多账号语义下免密等于冒充。
+   调用方（index.js）负责再验一次 TCP 层 remoteAddress。 */
+async function autoIdentity() {
+  const users = loadUsers();
+  const names = Object.keys(users);
+  if (names.length > 1) return { ok: false, multiUser: true };
+  let username = names[0];
+  const created = !username;
+  if (created) {
+    username = "local";
+    const salt = genSalt();
+    const hash = await hashPassword(genToken() + genToken(), salt);
+    users[username] = { salt, hash, ts: Date.now() };
+    await saveUsers(users);
+  }
+  const token = newSession(username);
+  await writeSessions();
+  return { ok: true, token, username, created };
+}
+
+module.exports = { register, login, verify, logout, hasUsers, removeUser, listUsers, flushSessions, autoIdentity, USERS_FILE, SESS_FILE, tokenKey };

@@ -1,0 +1,37 @@
+name: Nightly (real LLM)
+
+# 真实模型夜间回归集（scripts/nightly-real-llm.js）：
+#   单测/探针都打桩在传输层，mock 形状漂移能遮住真 bug（2026-10 的子智能体 P0 即是）。
+#   这条流水线每晚用真实模型跑 read-echo / subagent / apply-edit / compaction 四场景。
+#   · 没配 NIGHTLY_LLM_KEY secret 时脚本自己打印 SKIP 并 exit 0 —— 不会把主 CI 拖红。
+#   · 想手动触发：Actions → Nightly (real LLM) → Run workflow。
+on:
+  schedule:
+    - cron: "0 20 * * *"   # UTC 20:00 = 北京 04:00
+  workflow_dispatch: {}
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+jobs:
+  nightly:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Real-LLM regression (skip when no key)
+        env:
+          PANCODE_NIGHTLY_BASE_URL: ${{ secrets.NIGHTLY_LLM_BASE_URL }}
+          PANCODE_NIGHTLY_KEY: ${{ secrets.NIGHTLY_LLM_KEY }}
+          PANCODE_NIGHTLY_MODEL: ${{ secrets.NIGHTLY_LLM_MODEL }}
+        run: npm run test:nightly

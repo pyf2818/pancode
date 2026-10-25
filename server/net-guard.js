@@ -188,6 +188,80 @@ async function checkUrl(rawUrl, opts) {
    MAX_REDIRECT 是硬上限 —— 不设上限的话 A↔B 可以把单次工具调用挂到超时。 */
 const MAX_REDIRECT = 5;
 
+/* 连接期把 IP 钉给 socket 的取回实现。
+   为什么不用全局 fetch：fetch(checked.url) 会按域名**再解析一次** —— checkUrl 刚查过的
+   答案不作数（TOCTOU / DNS rebinding）：恶意 DNS 第一次回公网 IP 通过检查、真正连接时
+   回 127.0.0.1。http/https.request 的 lookup 钩子把判过的 IP 直接交给 socket：
+     · 已钉（checkUrl 的 ips）→ DNS 不再被咨询，连接目标就是判过的那个地址；
+     · 未钉（allowPrivate 旁路 / 字面量）→ 连接那一刻解析到的每个候选 IP 再过一遍私网判据。
+   TLS 不受影响：servername/证书校验按原域名走，不按钉住的 IP。 */
+function requestPinned(urlStr, init, pinned, allowPrivate) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const isTLS = u.protocol === "https:";
+    const mod = isTLS ? require("https") : require("http");
+    const host = u.hostname.replace(/^\[|\]$/g, "");
+    const headers = Object.assign({}, (init && init.headers) || {});
+    if (u.username || u.password) {
+      headers["Authorization"] = "Basic " + Buffer.from(decodeURIComponent(u.username) + ":" + decodeURIComponent(u.password)).toString("base64");
+    }
+    const reqOpts = {
+      protocol: u.protocol,
+      hostname: host,
+      port: u.port || (isTLS ? 443 : 80),
+      path: u.pathname + u.search,
+      method: ((init && init.method) || "GET").toUpperCase(),
+      headers,
+      lookup(hostname, opts, cb) {
+        /* Node ≥ 18 的连接层以 { all: true } 调 lookup：回调必须给数组（单值形式
+           会被当成"每个候选都 undefined"→ Invalid IP address）。两种形状都兼容。 */
+        const done = (ip, family) => {
+          const f = family || (net.isIPv6(ip) ? 6 : 4);
+          if (opts && opts.all) cb(null, [{ address: ip, family: f }]);
+          else cb(null, ip, f);
+        };
+        if (pinned && pinned.length) {
+          return done(pinned[0]);
+        }
+        dns.promises.lookup(hostname, { all: true }).then((addrs) => {
+          if (!allowPrivate) {
+            for (const a of addrs) {
+              if (isPrivateIp(a.address)) {
+                return cb(new NetGuardError(hostname + " 在连接时解析到内网地址 " + a.address + "（先查后连之间 DNS 答案被换过）", "PRIVATE_CONNECT", urlStr));
+              }
+            }
+          }
+          done(addrs[0].address, addrs[0].family);
+        }).catch(cb);
+      },
+    };
+    if (isTLS) reqOpts.servername = host;   // SNI/证书按域名，不按钉住的 IP
+    if (init && init.signal) reqOpts.signal = init.signal;
+    const req = mod.request(reqOpts, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          headers: {
+            get(k) {
+              const v = res.headers[String(k).toLowerCase()];
+              return v == null ? null : (Array.isArray(v) ? v.join(", ") : String(v));
+            },
+          },
+          text: () => Promise.resolve(buf.toString("utf8")),
+          buffer: buf,
+        });
+      });
+      res.on("error", (e) => reject(e instanceof NetGuardError ? e : new NetGuardError("读响应失败：" + e.message, "FETCH_FAIL", urlStr)));
+    });
+    req.on("error", (e) => reject(e instanceof NetGuardError ? e : new NetGuardError("请求失败：" + e.message, "FETCH_FAIL", urlStr)));
+    req.end();
+  });
+}
+
 async function fetchGuarded(rawUrl, init, opts) {
   const o = opts || {};
   let current = String(rawUrl);
@@ -195,14 +269,7 @@ async function fetchGuarded(rawUrl, init, opts) {
   for (;;) {
     const checked = await checkUrl(current, o);
     let r;
-    try {
-      r = await fetch(checked.url.toString(), Object.assign({}, init, {
-        // 自己跟，不能让 fetch 自动跟：自动跟的每一跳都绕过了上面的判据
-        redirect: "manual",
-      }));
-    } catch (e) {
-      throw new NetGuardError("请求失败：" + e.message, "FETCH_FAIL", current);
-    }
+    r = await requestPinned(checked.url.toString(), init, checked.ips, !!o.allowPrivate);
     const loc = r.headers.get("location");
     const isRedirect = r.status >= 300 && r.status < 400 && loc;
     if (!isRedirect) return { res: r, url: checked.url.toString(), redirects };
@@ -236,8 +303,35 @@ function wrapUntrusted(text, sourceUrl) {
   ].join("\n");
 }
 
+/* W23 · 出网域名策略（应用层收口）：
+     · blockDomains 恒拒（优先级最高）；
+     · allowDomains 非空 = 白名单模式，仅列内域名（含子域）可出网；
+     · 两者都空 = 现状（私网判据之外不设限）。
+   覆盖 web_fetch 与浏览器导航（模型自己决定去哪的两种方式）；
+   llm.js 的模型端点是用户自己配的，不在此列。 */
+function hostMatchesList(host, list) {
+  const h = String(host || "").toLowerCase().replace(/\.$/, "");
+  return (Array.isArray(list) ? list : []).some((p) => {
+    const s = String(p || "").toLowerCase().trim().replace(/^\*\./, "");
+    if (!s) return false;
+    return h === s || h.endsWith("." + s);
+  });
+}
+function policyAllows(hostname, netCfg) {
+  const n = netCfg || {};
+  const host = String(hostname || "").toLowerCase();
+  if (hostMatchesList(host, n.blockDomains)) {
+    return { ok: false, reason: host + " 命中 net.blockDomains 出网黑名单" };
+  }
+  if (Array.isArray(n.allowDomains) && n.allowDomains.length && !hostMatchesList(host, n.allowDomains)) {
+    return { ok: false, reason: host + " 不在 net.allowDomains 出网白名单内（配置了白名单即仅放行列内域名）" };
+  }
+  return { ok: true };
+}
+
 module.exports = {
   isPrivateIp, isPrivateV4, isPrivateV6, ipVer,
-  checkUrl, fetchGuarded, wrapUntrusted,
+  checkUrl, fetchGuarded, requestPinned, wrapUntrusted,
+  hostMatchesList, policyAllows,
   NetGuardError, METADATA_HOSTS, MAX_REDIRECT,
 };

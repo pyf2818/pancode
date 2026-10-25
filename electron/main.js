@@ -99,7 +99,8 @@ async function createWindow() {
     minWidth: 960,
     minHeight: 600,
     title: "pancode",
-    /* 窗口/任务栏图标：不设的话开发态直接显示 Electron 默认图标，打包态才退回 exe 内嵌的。
+    /* 窗口/任务栏图标：无边框窗口不管开发态还是打包态都不会退回 exe 内嵌图标——
+       不设就显示 Electron 默认原子（2026-10-19 实锤：exe 嵌了新图标、任务栏仍是原子）。
        与托盘同一个文件（托盘那段的教训：直接喂 ico 在部分 Windows 主题下拿空图，用 png 缩）。 */
     icon: path.join(__dirname, "..", "assets", "icon-1024.png"),
     backgroundColor: bgFor(),
@@ -162,9 +163,18 @@ async function createWindow() {
   });
   win.webContents.once("did-navigate", () => { pageReady = false; });
 
-  /* 外部链接交给系统默认浏览器打开 */
+  /* 外部链接交给系统默认浏览器打开。只放行 http(s)/mailto：openExternal 会把任意
+     scheme 交给系统处理器，file:/smb:/自定义协议都可能是提权入口（win上加 \\.\ 一类
+     设备路径甚至能直接崩 shell）。docx 预览里被塞进来的奇怪链接也走这道闸。 */
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    try {
+      const u = new URL(url);
+      if (u.protocol === "http:" || u.protocol === "https:" || u.protocol === "mailto:") {
+        shell.openExternal(u.href);
+      } else {
+        console.log("[pc] 拒绝打开非白名单协议链接:", u.protocol);
+      }
+    } catch (e) { console.log("[pc] 链接解析失败，忽略:", String(url).slice(0, 120)); }
     return { action: "deny" };
   });
 

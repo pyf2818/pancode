@@ -6,33 +6,41 @@ on:
   pull_request:
     branches: [master]
 
+# 为什么现在只跑 windows-latest：
+#  ① 此前 43 次运行全红，根因是仓库一直没有 package-lock.json —— npm ci 第一步就阵亡，
+#    任何测试从未真正执行过。先让链路在"与开发者本机一致的环境"里稳定绿起来，再扩矩阵。
+#  ② test:verify 里的 57 个探针（agent-browser / 端口 / Windows 路径折叠）只在 Windows 上验证过；
+#    ubuntu 需要单独过一遍再放开（届时把 strategy.matrix 加回来即可）。
+# ELECTRON_SKIP_BINARY_DOWNLOAD / PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD：本链路不打包、
+# 不起 Electron、verify-ui（需 Playwright 浏览器）不在 CI 里 —— 两个大下载都跳过。
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
-      - name: Install dependencies
+      - name: Install dependencies (npm ci, lockfile 已入库)
         run: npm ci
 
-      - name: Lint (server + test + public)
+      - name: Lint (server + test + public + scripts)
         run: npm run lint
 
       - name: Unit tests (vitest)
         run: npm run test:unit
 
-      - name: Verify scripts (render / repo_map / tools / agentflow / ws / sediment)
+      - name: Verify scripts (57 个真探针：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离…)
         run: npm run test:verify
 
-      - name: Smoke test (Agent 闭环端到端)
+      - name: Smoke test (Agent 闭环端到端, 演示引擎无需 Key)
         run: npm run smoke
 
       - name: File ops test (CRUD 全链路)

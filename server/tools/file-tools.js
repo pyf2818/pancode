@@ -396,7 +396,7 @@ module.exports = {
 
   apply_edit: async (agent, args) => {
     const t = agent.tool("edit", "暂存改动", args.path || "多文件");
-    const res = agent.patch.stage(agent._currentConv, args);
+    const res = agent.patch.stage(agent._convIdNow(), args);
     if (!res.ok) {
       t.done(false, "编辑未应用", false);
       return "编辑未应用：" + res.error + "。请修正 old_string 使其「逐字、唯一且存在于文件中」，然后重试同一处修改。";
@@ -408,7 +408,7 @@ module.exports = {
     const permMode = (agent.cfg.permissions || {}).mode || "ask";
     if (permMode === "auto") {
       const paths = files.map((f) => f.path);
-      const { applied, conflicts } = agent.applyPatch(agent._currentConv, paths);
+      const { applied, conflicts } = agent.applyPatch(agent._convIdNow(), paths);
       t.body(paths.join("\n"));
       if (conflicts.length) {
         t.done(true, "已应用 " + applied.length + " 个文件，" + conflicts.length + " 个冲突跳过", false);
@@ -419,7 +419,7 @@ module.exports = {
     }
     agent.emit({
       type: "patch.review",
-      convId: agent._currentConv,
+      convId: agent._convIdNow(),
       files: files.map((f) => ({
         path: f.path, status: f.status, isNew: f.isNew,
         original: f.original, modified: f.modified, add: f.add, del: f.del,

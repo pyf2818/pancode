@@ -23,7 +23,7 @@ module.exports = {
     const goal = args.goal || "";
     const title = fillGoal(tpl.title, goal);
     const tasks = tpl.tasks.map((x) => fillGoal(x, goal));
-    const plan = agent.plan.create(agent._currentConv, title, tasks);
+    const plan = agent.plan.create(agent._convIdNow(), title, tasks);
     if (plan) {
       agent.emit({ type: "plan.created", plan, convId: plan.convId });
       return "已用模板「" + tpl.name + "」生成计划：" + title + "（" + plan.tasks.length + " 步）";
@@ -34,7 +34,7 @@ module.exports = {
   save_template: async (agent, args) => {
     let tasks = args.tasks;
     if (!Array.isArray(tasks) || tasks.length === 0) {
-      const active = agent.plan.getActive(agent._currentConv);
+      const active = agent.plan.getActive(agent._convIdNow());
       if (!active) return "没有活跃计划，且未提供 tasks，无法保存模板";
       tasks = active.tasks.map((t) => t.text);
     }

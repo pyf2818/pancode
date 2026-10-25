@@ -145,6 +145,15 @@ class LlmAbortedError extends Error {
 function withEndpoint(err, url) { err.endpoint = url; return err; }
 
 async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
+  /* W20：Anthropic 原生协议分发 —— provider 显式声明或 baseURL 指向 anthropic.com 时，
+     走 messages API 适配层（thinking 增量 / tool_use 流式 / prompt caching 断点，
+     这些经 OpenAI 兼容网关转译会丢）。惰性 require 避免加载环。 */
+  {
+    const c = cfg || {};
+    if (c.provider === "anthropic" || /(^|\.)anthropic\.com/i.test(String(c.baseURL || ""))) {
+      return require("./llm-anthropic").chatStream(cfg, messages, tools, cb, attemptOrOpts);
+    }
+  }
   /* 两种调用形状都留着：内部递归传数字 attempt；外部（agent 层）传 { attempt, signal }。
      历史调用点有 5 个（ping / _summarize / 子智能体 / 主循环 / index.js 连通性测试），
      统一改成对象会波及全部调用点，而递归路径需要继续用数字。 */
@@ -330,7 +339,9 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
         const slot = tcMap.get(idx);
         if (t.id) slot.id = t.id;
         if (t.function) {
-          if (t.function.name) slot.name += t.function.name;
+          // name 只在该 tool_call 的首个 delta 出现一次：直接覆盖。若网关在后续 chunk
+          // 重发完整 name，追加会拼成 "read_fileread_file" 导致工具不存在（404 类错误）。
+          if (t.function.name) slot.name = t.function.name;
           // arguments 可能以字符串分片流式到达；个别网关也可能直接给对象，统一转为字符串累积
           if (typeof t.function.arguments === "string") slot.arguments += t.function.arguments;
           else if (t.function.arguments != null) slot.arguments += JSON.stringify(t.function.arguments);

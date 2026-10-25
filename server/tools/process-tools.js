@@ -1,6 +1,14 @@
 "use strict";
 /* 进程工具：run_command / start_process / stop_process / read_process / check_port */
 const { AI_TERM_TAB } = require("../terminal");
+const sandbox = require("../sandbox");
+
+/* W18：命令过沙箱包装（docker 硬隔离 / wsl 软隔离 / policy 现状）。
+   默认 policy 时原样返回零开销；显式配了 docker/wsl 才生效。
+   黑名单（strict）仍按原文检查——沙箱是加固层，不是替代。 */
+function wrapCmd(agent, command) {
+  return sandbox.wrap(command, { workspace: agent.files && agent.files.dir, cfg: agent.cfg });
+}
 
 module.exports = {
   run_command: async (agent, args) => {
@@ -20,7 +28,9 @@ module.exports = {
     // 前台等待上限：模型可显式要更久；再长的任务应走 start_process 后台 + read_process 轮询
     const defSec = (agent.cfg && agent.cfg.timeouts && agent.cfg.timeouts.commandSec) || 600;
     const sec = Math.max(15, Math.min(7200, Math.round(Number(args.timeout) || defSec)));
-    const r = await agent.term.run(AI_TERM_TAB, args.command, null, { timeout: sec * 1000, strict: true, ai: true });
+    const sb = wrapCmd(agent, args.command);
+    if (sb.sandboxed) t.body("[沙箱·" + sb.backend + "] " + sb.note);
+    const r = await agent.term.run(AI_TERM_TAB, sb.command, null, { timeout: sec * 1000, strict: true, ai: true });
     if (r.blocked) {
       t.body("命令被安全沙箱拦截：" + args.command);
       t.done(false, "已拦截", false);
@@ -50,7 +60,9 @@ module.exports = {
     if (gate.blocked) { const t = agent.tool("terminal", "启动被拦截", args.command); t.done(false, "被拒绝规则拦截", false); return "命令被拒绝规则拦截，未执行：" + args.command; }
     if (!gate.approved) { const t = agent.tool("terminal", "启动被拒", args.command); t.done(false, "用户拒绝", false); return "用户拒绝了启动进程：" + args.command; }
     const t = agent.tool("terminal", "后台启动进程", "[" + args.name + "] " + args.command);
-    const r = agent.procs.start(args.name, args.command);
+    const sb = wrapCmd(agent, args.command);
+    if (sb.sandboxed) t.body("[沙箱·" + sb.backend + "] " + sb.note);
+    const r = agent.procs.start(args.name, sb.command);
     if (!r.ok) {
       t.body(r.error);
       t.done(false, r.blocked ? "已拦截" : "启动失败", false);

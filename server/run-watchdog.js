@@ -26,14 +26,21 @@ function wallMsOf(cfg) {
    progressAt 取"最近一次进展"的两个来源里较新的那个：
      · lastProgress —— 循环自己打的点（新轮次 / 流里出了字）
      · lastToolAt   —— 工具跑完时打的点（记在引擎上，按会话分桶，别处的事件不许替这条会话掩盖它卡死）
+   toolBusySince —— 该会话当前有工具在执行（人工审批默认等 20 分钟、run_tests 自身允许
+   1800s，都远超 6 分钟停滞窗口）：工具在跑就是"有事在发生"，停滞判定挂起，
+   由工具自身的执行超时与墙钟兜底。修复前"一次工具执行最多几分钟"的假设
+   覆盖不了这两条路径 —— 超长的测试/等审批的任务会被当成卡死而误杀。
    返回 null = 一切正常；否则返回中断原因（要能直接给人看）。 */
 function decideWatchdog(s) {
   const st = s || {};
   const now = Number(st.now) || Date.now();
-  const last = Math.max(Number(st.lastProgress) || 0, Number(st.lastToolAt) || 0);
-  const idle = now - (last || now);
-  if (idle >= stallMsOf(st.cfg || {})) {
-    return "连续 " + Math.max(1, Math.round(idle / 60000)) + " 分钟没有任何进展";
+  const busySince = Number(st.toolBusySince) || 0;
+  if (!busySince) {
+    const last = Math.max(Number(st.lastProgress) || 0, Number(st.lastToolAt) || 0);
+    const idle = now - (last || now);
+    if (idle >= stallMsOf(st.cfg || {})) {
+      return "连续 " + Math.max(1, Math.round(idle / 60000)) + " 分钟没有任何进展";
+    }
   }
   const ranFor = now - (Number(st.startedAt) || now);
   if (ranFor >= wallMsOf(st.cfg || {})) {

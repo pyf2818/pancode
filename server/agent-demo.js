@@ -93,6 +93,9 @@ class DemoAgent extends AgentBase {
   async base(rel) { const b = await this.git.baseline(rel); return b === null ? "" : b; }
 
   async mainFlow(userText) {
+    /* 轮次号在流程一开始就置 1：tool/think 事件按 this.round 发轮次（前端按轮次分组收纳）。
+       修复前这句在流程末尾 —— 整场演示的工具卡全不带轮次，轮组收纳对演示引擎不生效。 */
+    this.round = 1;
     this.state(true, "AI 分析任务中");
 
     await this.think(
@@ -135,6 +138,7 @@ class DemoAgent extends AgentBase {
       "4. 终端运行 node tests/run-tests.js 验证全部通过");
 
     await this.say("**定位到 bug 了。** `filterTodos` 里 active / done 两个分支的条件写反了。我的计划：\n1. 修复条件反转 bug\n2. 新增 `sortByPriority` 并接入筛选流程\n3. 补充测试用例\n4. 在终端自主运行测试验证");
+    this.round++;   // W22 段落轮次：每段叙述后的动作进下一轮（前端按轮分组收纳）
 
     t = this.tool("edit", "编辑文件", "src/todo.js — 修复筛选 bug + 接入排序");
     await sleep(800);
@@ -168,6 +172,7 @@ class DemoAgent extends AgentBase {
 
     this.state(true, "AI 正在运行测试");
     await this.say("代码写好了。现在我调用终端真实运行测试来验证：");
+    this.round++;
     t = this.tool("terminal", "运行终端", "node tests/run-tests.js");
     const r1 = await this.term.run(AI_TERM_TAB, "node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
     t.body(r1.out.trim() + "\n\n(exit code " + r1.code + ")");
@@ -185,6 +190,7 @@ class DemoAgent extends AgentBase {
         "修复后重新运行测试确认。");
 
       await this.say("测试帮我抓到一个问题：排序方向写成了**升序**，应该是 `b - a` 的降序。马上修复并重新验证。");
+      this.round++;
 
       this.state(true, "AI 修复问题中");
       t = this.tool("edit", "编辑文件", "src/utils.js — 修正排序方向");
@@ -207,10 +213,10 @@ class DemoAgent extends AgentBase {
     const changes = await this.pushChanges(false);
     await this.say("**任务完成。** 全部测试通过（真实执行，非模拟）。\n\n**做了什么：**\n1. 修复了 `filterTodos` 中 active/done 条件反转的 bug\n2. 新增 `sortByPriority`，筛选结果按 high > normal > low 排序\n3. 补充了排序回归测试\n4. 期间测试抓到一个排序方向错误，已自主修复并复测通过\n\n共改动 " + changes.length + " 个文件，点击下方任意文件可查看 Diff：");
     this.pushChanges(true);
-    this.round = 1;
   }
 
   async followupFlow(userText) {
+    this.round++;   // 追问是一段新动作，进下一轮
     this.state(true, "AI 思考中");
     await this.think("用户说：" + userText + "\n主任务已经完成。我重新真实跑一遍测试，确认工作区状态后再回复。");
     const t = this.tool("terminal", "运行终端", "node tests/run-tests.js（复核）");

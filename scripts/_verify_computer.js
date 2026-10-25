@@ -38,6 +38,7 @@ function mkAgent(computerOverride) {
   return {
     cfg: { computer: Object.assign({ desktop: true }, computerOverride || {}) },
     _currentConv: "compProbe",
+    _convIdNow() { return this._currentConv; },   // 手搓 agent 需自带：tools 层已改走 agent._convIdNow() 取执行会话
     _gate: async (name, args, danger) => { gates.push({ name, danger }); return { blocked: false, approved: true }; },
     state() {},
     tool(kind, name, target) {

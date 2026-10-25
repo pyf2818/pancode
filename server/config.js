@@ -76,6 +76,20 @@ const DEFAULTS = {
     pre: [],
   },
   planMode: false,        // 规划模式：开启后 Agent 仅可读/检索/规划，禁止任何写文件/执行命令，待用户批准再切回执行
+  // W18 命令沙箱（server/sandbox.js）：policy=黑名单+审批门（默认，与现状一致）；
+  // docker=一次性容器硬隔离（只有工作区可写、默认断网）；wsl=软隔离（/mnt 仍可写宿主盘）；
+  // auto=探测 docker→wsl→policy 依次降级。探测失败一律退回 policy，绝不静默裸跑。
+  sandbox: {
+    backend: "policy",    // policy | docker | wsl | auto
+    image: "",            // docker 镜像，空 = node:20-slim
+    network: false,       // docker 后端是否放开网络（默认断网）
+  },
+  // W23 出网域名策略：web_fetch 与浏览器导航统一过这套判据（模型端点不在此列）。
+  // allowDomains 非空 = 白名单模式（仅列内域名含子域可出网）；blockDomains 恒拒。
+  net: {
+    allowDomains: [],
+    blockDomains: [],
+  },
   persona: {
     active: "default",    // default | fullstack | frontend | backend | custom
     systemPrompt: "",     // 自定义人格覆盖（非空时优先于预设）

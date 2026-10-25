@@ -38,6 +38,20 @@ describe("看门狗：跑得多久不是问题，停着不动才是", () => {
     expect(decideWatchdog({ now, startedAt: now - MIN, lastProgress: now - 7 * MIN, lastToolAt: now - 5000, cfg: {} })).toBe(null);
   });
 
+  it("工具执行中不判停滞 —— 审批默认等 20 分钟、run_tests 允许 1800s，都远超 6 分钟窗口", () => {
+    const now = 1_000_000_000_000;
+    // 对照：没有工具在跑时，同样的静默要中断
+    expect(decideWatchdog({ now, startedAt: now - 30 * MIN, lastProgress: now - 30 * MIN, cfg: {} })).toMatch(/没有任何进展/);
+    // 有工具在执行（toolBusySince 有值）→ 停滞判定挂起
+    expect(decideWatchdog({ now, startedAt: now - 30 * MIN, lastProgress: now - 30 * MIN, toolBusySince: now - 25 * MIN, cfg: {} })).toBe(null);
+  });
+
+  it("工具真挂死也逃不过墙钟兜底", () => {
+    const now = 1_000_000_000_000;
+    const why = decideWatchdog({ now, startedAt: now - DEFAULT_WALL_MS - 1000, lastProgress: now - 1000, toolBusySince: now - 60 * MIN, cfg: {} });
+    expect(why).toMatch(/最长运行时长/);
+  });
+
   it("墙钟到点仍然中断（防真失控的死循环一直烧钱）", () => {
     const now = 1_000_000_000_000;
     const why = decideWatchdog({ now, startedAt: now - DEFAULT_WALL_MS - 1000, lastProgress: now - 1000, cfg: {} });

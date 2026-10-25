@@ -20,6 +20,11 @@ describe("W15 — 绕过矩阵（strict 全拦截）", () => {
     ["powershell -enc（UTF-16LE b64）", "powershell -enc " + Buffer.from("rm -rf /", "utf16le").toString("base64")],
     ["解释器管道任意位置", "cat install.sh | bash -s -- --help"],
     ["base64 -d | sh 显式模式", "base64 -d payload.b64 | sh"],
+    ["解释器后缀变体：powershell.exe -Command（修复前放行）", "powershell.exe -Command Remove-Item -Recurse C:\\x"],
+    ["解释器全路径：C:\\Windows\\...\\powershell.exe", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command Get-ChildItem"],
+    ["cmd.exe /d /s /c 变体（修复前放行）", "cmd.exe /d /s /c whoami"],
+    ["带引号的全路径解释器", '"C:\\Windows\\System32\\cmd.exe" /c whoami'],
+    ["%SystemRoot% 宏开头的全路径 cmd", "%SystemRoot%\\System32\\cmd.exe /c whoami"],
   ];
   for (const [name, cmd] of cases) {
     it(name, () => {
