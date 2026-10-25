@@ -2713,6 +2713,10 @@ function handleEventInner(ev) {
           const full = htmlToMarkdown(b.el).trim() || b.el.textContent.trim();
           addMsgCopyBtn(row, full);
         }
+        /* 结论卡：加「结论」角标 + 操作条（复制/重新生成/分支）。
+           只有最终答案块（.ans-row）才挂 —— 过程叙述（tool 前的那些）
+           不该有"重新生成"，用户要重跑的是整轮任务，不是某句话。 */
+        if (row) markFinalAnswer(row);
         scrollChat();
         send({ type: "ctx.query" });   // 回答结束拉一次服务端实测水位，校正圆圈进度
       };
@@ -3449,6 +3453,125 @@ function renderGoalBanner(html) {
 
 /* ---------------- 多 Agent 编排面板 ---------------- */
 let orchSteps = {};
+
+/* ---------------- AI 最终结论卡：角标 + 操作条 ----------------
+   结论是用户真正要拿走的东西。此前只能选中复制，且与过程消息长得一样。
+   这里给它：①「结论」角标（与思路链路拉开量级）；②操作条（复制/重新生成/分支）。 */
+
+/* 给一条已完成的 AI 结论补上角标与操作条。挂之前先摘掉旧的 —— 历史会话
+   的 DOM 是快照恢复的，hydrate 后会再跑一次，不能叠出两套按钮。 */
+function markFinalAnswer(row) {
+  if (!row || !row.classList || !row.classList.contains("ans-row")) return;
+  const el = row.querySelector(".msg-ai");
+  if (!el) return;
+  el.setAttribute("data-final-label", t("finalAnswerLabel") || "结论");
+  if (row.querySelector(".msg-actions")) return;
+  const bar = document.createElement("div");
+  bar.className = "msg-actions";
+
+  /* 复制：正文转 markdown 后的可读版（与导出对话同口径） */
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "ma-copy";
+  copyBtn.innerHTML = ico("copy") + "<span>" + t("finalCopy") + "</span>";
+  copyBtn.title = t("finalCopy");
+  copyBtn.onclick = (e) => {
+    e.stopPropagation();
+    const full = htmlToMarkdown(el).trim() || el.textContent.trim();
+    navigator.clipboard.writeText(full).then(() => toast(t("apWireCopyButtonstextContentT32")));
+  };
+  bar.appendChild(copyBtn);
+
+  const sep = document.createElement("span");
+  sep.className = "ma-sep";
+  bar.appendChild(sep);
+
+  /* 重新生成：截断到这条结论之前，重发上一条用户消息。
+     底座是 rewind（服务端截断历史 + 按原文重发），与用户气泡的「重跑」同源。 */
+  const regenBtn = document.createElement("button");
+  regenBtn.className = "ma-regen";
+  regenBtn.innerHTML = ico("reset") + "<span>" + t("finalRegenerate") + "</span>";
+  regenBtn.title = t("finalRegenerate");
+  regenBtn.onclick = (e) => { e.stopPropagation(); regenerateFromAnswer(row); };
+  bar.appendChild(regenBtn);
+
+  /* 分支：把到这条结论为止的历史复制成新会话 */
+  const branchBtn = document.createElement("button");
+  branchBtn.className = "ma-branch";
+  branchBtn.innerHTML = ico("branch") + "<span>" + t("finalBranch") + "</span>";
+  branchBtn.title = t("finalBranch");
+  branchBtn.onclick = (e) => { e.stopPropagation(); branchFromAnswer(row); };
+  bar.appendChild(branchBtn);
+
+  el.appendChild(bar);
+  replaceIcons(bar);
+}
+
+/* 找到这条结论之前最近的一条用户消息（重发的对象） */
+function prevUserMsgBefore(row) {
+  const pane = row.closest(".conv-pane") || chatPane();
+  let n = row.previousElementSibling;
+  while (n) {
+    if (n.classList && n.classList.contains("msg-user")) return n;
+    n = n.previousElementSibling;
+  }
+  return null;
+}
+
+/* 重新生成：截断到这条结论之前，重发上一条用户消息。
+   与用户气泡「重跑」同一条路（rewind），但目标不同：这里以 AI 结论为锚点。 */
+function regenerateFromAnswer(row) {
+  const bubble = prevUserMsgBefore(row);
+  if (!bubble) { toast(t("finalRegenNoUser")); return; }
+  const pane = row.closest(".conv-pane") || chatPane();
+  const cvid = pane.dataset.convId || convId;
+  if (state.convRunning[cvid]) { toast(t("rerunBusyTip")); return; }
+  const text = ([...bubble.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("")).trim();
+  if (!text) { toast(t("rerunEmptyTip")); return; }
+  /* 删掉这条结论及其之后的一切（DOM 层面），再让服务端按同样口径截断 */
+  let n = row;
+  while (n) { const nx = n.nextElementSibling; n.remove(); n = nx; }
+  const userMsgs = [...pane.querySelectorAll(".msg-user")];
+  const backIndex = userMsgs.length - 1 - userMsgs.indexOf(bubble);
+  send({ type: "rewind", convId: cvid, backIndex, text });
+}
+
+/* 分支：把到这条结论为止的历史复制成一个新会话。
+   会话历史分开存（列表 cw-conv-v1:<hash> / DOM 快照 cw-convdom-v1:<hash>:<id>），
+   所以分支 = 复制列表项 + 复制快照到新 id + 切过去。 */
+function branchFromAnswer(row) {
+  const pane = row.closest(".conv-pane") || chatPane();
+  const srcId = pane.dataset.convId || convId;
+  if (!srcId) { toast(t("finalBranchFailed")); return; }
+  const list = loadConvList();
+  const src = list.find((c) => String(c.id) === String(srcId));
+  if (!src) { toast(t("finalBranchFailed")); return; }
+  /* 截到这条结论为止：取 row 之前（含）的 DOM */
+  const nodes = [];
+  let n = row;
+  while (n) { nodes.unshift(n); n = n.previousElementSibling; }
+  const holder = document.createElement("div");
+  nodes.forEach((x) => holder.appendChild(x.cloneNode(true)));
+  /* 去掉克隆里的操作条与角标：新会话里那些结论会各自重新挂上 */
+  holder.querySelectorAll(".msg-actions").forEach((x) => x.remove());
+
+  const newId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const title = (src.title || t("convUntitled")) + " · " + t("finalBranchSuffix");
+  const item = { id: newId, title, ts: Date.now() };
+  /* 顺序要紧：先 persistConv 把当前会话的快照与标题落定（它内部会 load→改→写回
+     整个会话列表），再把新分支项加进去。反过来的话，openConv 里的 persistConv()
+     会拿旧列表写回，把刚加的分支项**覆盖掉** —— 分支会话凭空消失。 */
+  persistConv();
+  const next = loadConvList();
+  next.unshift(item);
+  saveConvList(next);
+  saveConvDom(newId, holder.innerHTML);
+  /* 切到新会话：服务端起一份新上下文，本地挂载那份快照 */
+  send({ type: "newchat", convId: newId });
+  openConv(newId);
+  renderConvList();
+  toast(t("finalBranchDone"));
+}
+
 /* ---------------- 编排步骤图（P2-C1） ----------------
    原来这里是一条平铺列表：谁等谁、哪几步同批并行，服务端事件里都带着
    （depends_on / layer），前端拿到就扔，用户只看得到「N 步在跑」。
@@ -3488,7 +3611,10 @@ function orchSetOutput(el, text) {
   const out = el.querySelector(".orch-step-out");
   if (!out) return;
   out.textContent = text;
-  out.style.display = "none";            // 先表态，否则第一次点击读到空串会被判成"已展开"，点了两下才出结果
+  /* 默认展开：节点只有 40px 高的标题条时，一眼看过去全是框、看不到内容
+     （"输出效果也不显示"）。CSS 里 .orch-step-out 也是 display:block。
+     点标题仍可折叠。 */
+  out.style.display = "block";
   const head = el.querySelector(".orch-step-head");
   head.onclick = () => { out.style.display = out.style.display === "none" ? "block" : "none"; };
   head.title = t("apOrchSetOutputtitleT52");
@@ -3573,12 +3699,15 @@ function drawOrchEdges(host) {
          绿色=前置结论已经流过来，红色=这条依赖断在这里，虚线=还没轮到。
          按下游着色会出现"s1 已经完成但 s1→s2 仍是灰虚线"，看起来像什么都没发生。 */
       const st = f.st;
-      const x1 = f.x + f.w, y1 = f.y + f.h / 2, x2 = t.x, y2 = t.y + t.h / 2;
-      const mx = Math.max(x1 + 12, x2 - 12);
+      /* 竖向连线：从上游底边中点弯到下游顶边中点。
+         泳道改成竖排（层=先后）后，横向画法会让箭头指向"右边"，
+         而"右边"在竖排布局里没有先后含义 —— 箭头必须指向下一批。 */
+      const x1 = f.x + f.w / 2, y1 = f.y + f.h, x2 = t.x + t.w / 2, y2 = t.y;
+      const my = Math.max(y1 + 12, y2 - 12);
       out += '<path class="orch-edge ' + st + '" d="M' + x1.toFixed(1) + ',' + y1.toFixed(1) +
-        ' C' + mx.toFixed(1) + ',' + y1.toFixed(1) + ' ' + mx.toFixed(1) + ',' + y2.toFixed(1) +
-        ' ' + (x2 - 7).toFixed(1) + ',' + y2.toFixed(1) + '"/>' +
-        '<path class="orch-edge-head ' + st + '" d="M' + x2.toFixed(1) + ',' + y2.toFixed(1) + ' l-8,-4 v8 z"/>';
+        ' C' + x1.toFixed(1) + ',' + my.toFixed(1) + ' ' + x2.toFixed(1) + ',' + my.toFixed(1) +
+        ' ' + x2.toFixed(1) + ',' + (y2 - 7).toFixed(1) + '"/>' +
+        '<path class="orch-edge-head ' + st + '" d="M' + x2.toFixed(1) + ',' + y2.toFixed(1) + ' l-4,-8 h8 z"/>';
     });
   });
   svg.innerHTML = out;
@@ -3658,7 +3787,12 @@ function onOrchDone(ev) {
    文件是按工作区存的，以前整份摊到侧栏 → 换个对话看到的内容一模一样，
    分不清哪次是自己刚跑的。现在默认只看本会话，别的会话的记录仍在，可一键切到全部。 */
 let _orchHistCache = [];
-let _orchScope = "conv";        // conv = 只看本会话，all = 本工作区全部
+/* 默认看"本工作区全部"，不是"本会话"。
+   编排历史是工作区级资产（服务端按工作区分片落盘、跨会话可见），
+   而编排多半发生在别的会话里 —— 默认只显示本会话等于把它藏起来，
+   用户看到的永远是「这个会话还没有编排记录」。
+   "全部"视图里每条都带归属会话名，不会认不出是哪条。 */
+let _orchScope = "all";         // conv = 只看本会话，all = 本工作区全部
 function orchConvTitle(id) {
   if (!id) return "";
   try {
@@ -4651,7 +4785,7 @@ function startNewConv(announce) {
   list.unshift({ id: convId, title: t("apStartNewConvtitleT71"), ts: Date.now() });
   saveConvList(list);
   clearPlanPanel();                  // 新会话无任务计划
-  _orchScope = "conv";               // 新会话的编排历史必然是空的，别带着「全部」视图过来
+  /* 不重置 scope：编排历史是工作区级的，切会话不该把它藏回"本会话"视图。 */
   renderOrchHistory();               // 编排历史跟着会话走
   mountPane(convId);                 // 多会话并行：新会话独立空 pane
   for (const k in blocks) delete blocks[k];

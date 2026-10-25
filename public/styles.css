@@ -808,9 +808,33 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .msg-row{display:flex;gap:0;align-items:flex-start;animation:msgIn .42s var(--ease-out) both}
 .msg-row .msg{max-width:100%}
 .msg-avatar{display:none}
-.msg-row.ans-row{position:relative;padding-left:0}
-.msg-row.ans-row::before{content:'';position:absolute;left:12px;top:8px;bottom:8px;width:2px;border-radius:2px;background:color-mix(in srgb,var(--accent-hi) 26%,transparent)}
-.ans-row .msg-ai{background:none;border:none;padding:6px 0 6px 24px;border-radius:0;font-size:13.5px;line-height:1.72}
+/* ---------- 最终结论卡 ----------
+   过程（think-block）是轻量的点线，结论是带分量的卡片 —— 两者量级要拉开，
+   否则用户读不出"这段是结论、上面那些是过程"。 */
+.msg-row.ans-row{position:relative;padding-left:0;margin:10px 0 14px}
+.msg-row.ans-row::before{content:'';position:absolute;left:12px;top:8px;bottom:8px;width:2px;border-radius:2px;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--accent-hi) 8%,transparent),color-mix(in srgb,var(--accent-hi) 46%,transparent))}
+.ans-row .msg-ai{position:relative;
+  background:color-mix(in srgb,var(--bg3) 72%,transparent);
+  border:1px solid color-mix(in srgb,var(--accent-hi) 22%,var(--border));
+  border-radius:10px;padding:12px 16px 12px 26px;font-size:13.5px;line-height:1.75;
+  box-shadow:0 1px 0 color-mix(in srgb,var(--accent-hi) 8%,transparent)}
+
+/* "结论"角标：贴在卡片左上角外侧，过程没有这个标记 */
+.ans-row .msg-ai::before{content:attr(data-final-label);position:absolute;left:26px;top:-9px;
+  font-size:9.5px;letter-spacing:.06em;padding:1px 7px;border-radius:999px;
+  color:var(--accent-hi);background:var(--bg2);border:1px solid color-mix(in srgb,var(--accent-hi) 30%,transparent);
+  white-space:nowrap;pointer-events:none}
+
+/* 结论卡里的操作条（复制 / 重新生成 / 分支） */
+.ans-row .msg-actions{display:flex;align-items:center;gap:2px;margin-top:10px;padding-top:8px;
+  border-top:1px dashed color-mix(in srgb,var(--border) 80%,transparent)}
+.ans-row .msg-actions button{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;
+  border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text-dim);
+  font-size:10.5px;font-family:var(--ui);cursor:pointer;transition:color .15s,background .15s,border-color .15s}
+.ans-row .msg-actions button:hover{color:var(--text);background:var(--bg4);border-color:var(--border)}
+.ans-row .msg-actions button .ico{width:12px;height:12px}
+.ans-row .msg-actions .ma-sep{width:1px;height:12px;background:var(--border);margin:0 4px}
 .ans-row .msg-ai code{background:var(--code-bg);padding:1px 5px;border-radius:3px;font-family:var(--mono);font-size:12px;color:var(--orange)}
 .ans-row .msg-ai pre{background:var(--pre-bg);padding:8px 10px;border-radius:6px;overflow-x:auto;margin:6px 0;font-family:var(--mono);font-size:12px;color:var(--pre-fg)}
 .ans-row .msg-ai b{color:var(--text)}
@@ -1812,6 +1836,11 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 #filePalette .cmd-label{color:var(--text)}
 
 /* 多 Agent 编排面板 */
+/* 编排图遮罩。此前 #orchOverlay 在本文件里出现 0 次 —— 它没继承任何 modal
+   样式，也不是 position:fixed，就作为普通 div 参与文档流被推到页面下方。
+   实测：视口 980 高时编排节点在 y=1069/1117，整块在屏幕外，
+   点开回放只能看到一片空白。这里补齐与其余 modal 一致的定位。 */
+#orchOverlay{position:fixed;inset:0;background:#000000aa;z-index:var(--z-modal);display:flex;align-items:center;justify-content:center;padding:24px}
 .orch-box{width:560px}
 .orch-steps{display:flex;flex-direction:column;gap:8px}
 .orch-step{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg);transition:border-color .15s}
@@ -1828,14 +1857,26 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .orch-step.running .orch-step-status{color:var(--warn)}
 .orch-step.done .orch-step-status{color:var(--ok)}
 .orch-step.fail .orch-step-status{color:var(--err)}
-.orch-step-out{display:none;padding:8px 12px;font-size:11.5px;color:var(--text-dim);font-family:var(--mono);line-height:1.5;max-height:120px;overflow-y:auto;white-space:pre-wrap;border-top:1px solid var(--border);background:var(--bg2)}
+/* 节点默认摊开输出摘要：原来 display:none，节点只有 40px 高的标题条，
+   一眼看过去全是框、看不到任何内容（"输出效果也不显示"）。
+   改为默认显示（限高可滚），点标题仍可折叠。 */
+.orch-step-out{display:block;padding:8px 12px;font-size:11.5px;color:var(--text-dim);font-family:var(--mono);line-height:1.55;max-height:132px;overflow-y:auto;white-space:pre-wrap;border-top:1px solid var(--border);background:var(--bg2)}
+.orch-step-out:empty{display:none}
 /* 编排依赖图（P2-C1）：一列泳道 = 一批（同批并行），一条边 = 谁等谁 */
 .orch-box-wide{width:min(880px,92vw)}
+/* 编排多时不能把整页顶出屏幕：框本身封顶，内容区自己滚。 */
+.orch-box{max-height:92vh}
+.orch-box .set-body{overflow-y:auto;min-height:0}
 #orchSteps.orch-dag{position:relative;display:block}
 .orch-dag-svg{position:absolute;left:0;top:0;pointer-events:none;overflow:visible;z-index:1}
-.orch-lanes{display:flex;gap:26px;overflow-x:auto;padding-bottom:6px;position:relative;z-index:2}
-.orch-lane{flex:1 0 210px;min-width:210px;display:flex;flex-direction:column;gap:8px}
-.orch-lane-head{font-size:10.5px;color:var(--text-dim);padding:0 2px 2px;white-space:nowrap}
+/* 泳道改成竖向：层 = 执行批次，批次是**先后**关系。
+   横向排列读起来像"并列"，竖向才读得出"第 2 批等第 1 批"；
+   而且连线也跟着改成竖向（原实现是横向贝塞尔配横向泳道，方向对不上，
+   跨列的长依赖会横穿整行）。 */
+.orch-lanes{display:flex;flex-direction:column;gap:18px;position:relative;z-index:2}
+.orch-lane{display:flex;flex-direction:column;gap:8px;position:relative}
+.orch-lane-head{font-size:10.5px;color:var(--text-dim);padding:0 2px 1px;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.orch-lane-head::after{content:"";flex:1;height:1px;background:var(--border)}
 .orch-edge{fill:none;stroke:var(--border-strong);stroke-width:1.4}
 .orch-edge.running{stroke:var(--warn)}
 .orch-edge.done{stroke:var(--ok)}
