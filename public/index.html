@@ -133,12 +133,8 @@
       </div>
       <div class="skm-toolbar">
         <input id="skillSearch" type="text" placeholder="搜索技能" data-i18n-ph="skillSearchPh" data-i18n-title="skillSearchTip" title="按名称 / 描述 / 标签 / 分类筛选" autocomplete="off" spellcheck="false">
-        <div class="skm-sort" id="skillSort">
-          <button data-sort="usage" class="on" data-i18n="sortUsage" data-i18n-title="sortUsageTip" title="按累计使用次数">用量</button>
-          <button data-sort="rating" data-i18n="sortRating" data-i18n-title="sortRatingTip" title="按本机评分">评分</button>
-          <button data-sort="recent" data-i18n="sortRecent" data-i18n-title="sortRecentTip" title="按最近改动">最新</button>
-          <button data-sort="name" data-i18n="sortName" data-i18n-title="sortNameTip" title="按名称">名称</button>
-        </div>
+        <!-- 排序按钮组（用量/评分/最新/名称）已移除：侧边栏只留搜索。排序固定为默认的“按用量”
+             （skillSort="usage"），DOM 删除后 skill-market.js 里的委托代码自然失活，无需改动。 -->
       </div>
       <div id="skillCatChips" class="skm-cats"></div>
       <div id="skillsList" class="skills-list" data-i18n-skip></div>
