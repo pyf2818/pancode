@@ -62,6 +62,53 @@ function isIgnored(name) {
   return IGNORE.has(name) || (name.startsWith(".") && name !== ".gitignore" && name !== ".env.example");
 }
 
+/* ============================================================
+   价值分层：决定「配额紧张时谁先出局」
+   ------------------------------------------------------------
+   分层依据不是文件大小，而是「对理解这个项目有没有用」：
+     0 层 = 源码与配置（模型改代码真正要碰的东西）
+     1 层 = 文档（人写的说明，有参考价值）
+     2 层 = 其余文本（探针日志、构建清单、归档产物……）
+   同层内按路径字典序，保证同一项目每次结果一致（可复现，不随 NTFS 目录项顺序漂移）。
+
+   目录级降权（整棵子树压到 2 层）：产物目录、第三方库、探针沙箱。
+   这些不是"垃圾"——read_file 照样能读——只是不该挤占发现入口的配额。
+   ============================================================ */
+const SOURCE_EXTS = new Set([
+  "js", "mjs", "cjs", "jsx", "ts", "tsx", "vue", "svelte",
+  "py", "go", "rs", "java", "kt", "swift", "c", "h", "cpp", "hpp", "cc", "cs", "rb", "php", "lua", "sh", "bash", "zsh", "ps1",
+  "json", "jsonc", "yaml", "yml", "toml", "ini", "env", "conf", "cfg",
+  "html", "htm", "css", "scss", "sass", "less",
+  "sql", "graphql", "proto", "tf", "dockerfile", "makefile", "cmake",
+]);
+const DOC_EXTS = new Set(["md", "mdx", "txt", "rst", "adoc", "org"]);
+
+/* 路径里出现这些片段 → 整棵子树降权（探针产物 / 第三方库目录的共同特征） */
+const LOW_VALUE_PATH_HINTS = [
+  /(^|\/)_verify_out(\/|$)/,
+  /(^|\/)_sandbox(\/|$)/,
+  /(^|\/)archive(\/|$)/,
+  /(^|\/)artifacts?(\/|$)/,
+  /(^|\/)vendor(\/|$)/,
+  /(^|\/)dist(\/|$)/,
+];
+
+function classify(relPath) {
+  const p = String(relPath);
+  for (const re of LOW_VALUE_PATH_HINTS) if (re.test(p)) return 2;
+  const name = p.split("/").pop().toLowerCase();
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1) : "";
+  // 无扩展名的配置文件（Makefile / Dockerfile / LICENSE）
+  if (!ext) {
+    if (/^(makefile|dockerfile|license|licence|readme|changelog|procfile|justfile|rakefile|gemfile)$/.test(name)) return 0;
+    return 1;
+  }
+  if (SOURCE_EXTS.has(ext)) return 0;
+  if (DOC_EXTS.has(ext)) return 1;
+  return 2;
+}
+
 function langOf(p) {
   const ext = p.split(".").pop().toLowerCase();
   return {
@@ -148,16 +195,40 @@ class FileStore {
     } catch (e) {}
   }
 
+  /* ============================================================
+     列出工作区文件（配额受限）
+     ------------------------------------------------------------
+     两阶段：先收集全量候选，再按价值分层取前 MAX_FILES。
+     旧实现是「边走边停」——撞满 500 就 return，谁被截断取决于
+     readdirSync 的原始返回顺序（NTFS 目录项顺序），于是：
+       · 同一项目在不同机器/不同时间看到的文件树可能不一样；
+       · 配额被「产物目录 + 第三方库」这类低价值文件抢光，
+         源码目录整个消失（实测 server/ 与 test/ 曾因此完全不可见）。
+
+     现在改成：
+       · 收集阶段设硬上限 MAX_SCAN，避免超大仓库把遍历拖死；
+       · 排序键 = (价值层级, 路径字典序) —— 同层内字典序保证可复现；
+       · 返回仍是排序后的相对路径数组，truncated 语义不变。
+     ============================================================ */
   list(sub) {
     const base = sub ? this.safePath(sub) : this.dir;
     const out = [];
     this.truncated = false;
+    /* 收集阶段的硬上限：仓库大到几十万文件时不能全遍历。
+       超出即标记 truncated —— 与旧语义一致（"有内容没列全"）。 */
+    const MAX_SCAN = 20000;
+    let scanned = 0;
+    let overflow = false;
+
     const walk = (dir, prefix) => {
-      if (out.length >= MAX_FILES) { this.truncated = true; return; }
+      if (overflow) return;
       let names;
       try { names = fs.readdirSync(dir); } catch (e) { return; }
+      /* 目录项排序：收集顺序稳定，配合后面的字典序兜底，
+         保证同一工作区每次 list() 的候选集完全一致。 */
+      names.sort();
       for (const name of names) {
-        if (out.length >= MAX_FILES) { this.truncated = true; return; }
+        if (overflow) return;
         if (isIgnored(name)) continue;
         const full = path.join(dir, name);
         const r = prefix ? prefix + "/" + name : name;
@@ -165,11 +236,23 @@ class FileStore {
         try { st = fs.lstatSync(full); } catch (e) { continue; }
         // 不跟随软链：既挡住"根内软链指向根外"被列出来再读，也避免自引用软链把遍历绕死
         if (st.isSymbolicLink()) continue;
-        if (st.isDirectory()) walk(full, r);
-        else if (st.size <= MAX_FILE) out.push(r);
+        if (st.isDirectory()) { walk(full, r); continue; }
+        if (st.size > MAX_FILE) continue;
+        if (++scanned > MAX_SCAN) { overflow = true; return; }
+        out.push(r);
       }
     };
     walk(base, sub || "");
+
+    /* 价值分层排序：0 源码/配置 → 1 文档 → 2 其余。
+       同层按路径字典序，取前 MAX_FILES。 */
+    out.sort((a, b) => {
+      const ca = classify(a), cb = classify(b);
+      if (ca !== cb) return ca - cb;
+      return a < b ? -1 : (a > b ? 1 : 0);
+    });
+    if (out.length > MAX_FILES) { this.truncated = true; return out.slice(0, MAX_FILES).sort(); }
+    if (overflow) this.truncated = true;
     return out.sort();
   }
 

@@ -37,6 +37,9 @@ scripts/_verify_out/
 # 常驻的四条 i18n 静态门不在这里，它们在 scripts/i18n-*.js
 scripts/_sandbox/
 
+# 探针产物清理清单（记录删了哪些陈旧产物，临时留证用，不入库）
+scripts/_cleanup_manifest.json
+
 # 第三方 AI 工具本地产物（Claude Code 等配置，不入库）
 .claude/
 
