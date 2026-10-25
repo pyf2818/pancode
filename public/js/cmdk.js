@@ -14,6 +14,9 @@ function buildCmdList() {
     { id: "newfile", title: t("newFile"), icon: "filePlus", group: t("ckGroupFile"), run: () => promptNewFile("") },
     { id: "newdir", title: t("newFolder"), icon: "filePlus", group: t("ckGroupFile"), run: () => { const p = prompt(t("ckNewDirPrompt"), "newdir"); if (p) send({ type: "file.mkdir", path: p }); } },
     { id: "save", title: t("scSave"), icon: "save", group: t("ckGroupFile"), run: () => saveActiveFile() },
+    /* 卡片上的撤销按钮只挂在本次渲染的卡片上，页面一刷就没得点；影子快照里的检查点还在，
+       所以命令面板这条是给"重启之后"留的入口（判据在服务端：跨会话拒绝、初始全量快照不暴露）。 */
+    { id: "undo", title: t("ckUndoLastChange"), icon: "reset", group: t("ckGroupFile"), run: () => typeof undoFromPalette === "function" && undoFromPalette() },
     { id: "closetab", title: t("ckBuildCmdListtitleT106"), icon: "close", group: t("ckGroupFile"), run: () => { if (window.state && state.activeFile) closeTab(state.activeFile); } },
     { id: "newconv", title: t("ckBuildCmdListtitleT107"), icon: "robot", group: t("ckGroupSession"), run: () => startNewConv(true) },
     { id: "ai-explain", title: t("ckBuildCmdListtitleT108"), icon: "search", group: "AI", run: () => aiCurrentFile("请阅读并解释当前打开的文件，说明其功能、关键逻辑和设计思路。") },

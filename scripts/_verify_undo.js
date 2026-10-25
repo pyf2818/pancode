@@ -7,7 +7,8 @@
      ③ 最近一步属于另一个会话时必须拒绝，并且拒绝之后盘上一个字节都没动；
      ④ 撤销栈挂在"这个用户的引擎"上：另一个用户来读必须是空的
         （读一份匿名实例 = 面板与 Agent 两套真相，这个坑本项目踩过不止一次）；
-     ⑤ 聊天卡片上那颗「撤销这步」真点、真回滚、真把按钮交还给上一张卡。
+     ⑤ 聊天卡片上那颗「撤销这步」真点、真回滚、真把按钮交还给上一张卡；
+     ⑥ 真重启一次进程：内存栈空了以后入口来自影子快照，且不会把人退到初始全量快照。
    ============================================================ */
 "use strict";
 const SANDBOX = require("./_sandbox").create({
@@ -97,6 +98,8 @@ function startGateway() {
           { path: "batch/b.txt", old_string: "B1", new_string: "B2" },
           { path: "batch/c.txt", old_string: "C1", new_string: "C2" },
         ] });
+        // ⑧ 用：写一个只属于这一场景的文件，重启之后再从影子快照里退掉它
+        if (scene === "重启") return toolCall("write_file", { path: "undo-shadow.txt", content: "重启后要撤掉\n" });
         return endText("没有匹配的场景：" + scene);
       });
     });
@@ -158,6 +161,7 @@ const doUndo = (convId, token) => req("POST", "/api/undo", { convId }, token || 
     permissions: { mode: "auto", allow: [], deny: [] },
   }, null, 2), "utf8");
   let out = "";
+  let child2 = null;   // ⑧ 重启用的第二个进程：失败中途抛出也要在 finally 里收掉，别留残渣
   const child = spawn(process.execPath, ["server/index.js"], {
     cwd: ROOT, env: SANDBOX.env({ PORT: String(PORT), NODE_NO_WARNINGS: "1", AGENT_FAST: "1", HOME, USERPROFILE: HOME }),
     stdio: ["ignore", "pipe", "pipe"],
@@ -354,10 +358,86 @@ const doUndo = (convId, token) => req("POST", "/api/undo", { convId }, token || 
     ok("整轮没有出现未捕获异常", !/UNCAUGHT|TypeError: |ReferenceError: /.test(out),
       (out.match(/.{0,160}(TypeError|ReferenceError|UNCAUGHT).{0,160}/) || [""])[0]);
     await browser.close();
+
+    /* ⑧ 真的重启一次进程。这一段只能在这里演：
+       内存栈空了以后，撤销入口必须来自影子快照，而 /api/undo 以前在栈空时直接回 empty，
+       等于 P-H2 的持久化只有 agent 自己的 undo 工具够得着。
+       同时要钉住三种"不给入口"：初始全量快照、回退记录、已经退到底。 */
+    section("⑧ 重启之后：撤销入口来自影子快照");
+    /* 失败时把影子仓的真实现场贴出来：这条链断在哪一环（没建仓 / HEAD 不对 / 判成不可回退）
+       只看 steps=[] 是查不出来的。 */
+    const shadowDiag = () => {
+      try {
+        const sg = require("../server/shadow-git");
+        const dir = sg.shadowDirFor(SANDBOX.dataDir, WS_DIR);
+        if (!fs.existsSync(dir)) return "无影子仓目录 " + dir;
+        const head = String(require("child_process").execFileSync("git", ["-C", dir, "log", "--format=%s"], { encoding: "utf8", windowsHide: true })).trim();
+        const st = String(require("child_process").execFileSync("git", ["--git-dir", dir, "--work-tree", WS_DIR, "status", "--porcelain"], { encoding: "utf8", windowsHide: true })).trim();
+        return "head=[" + head.replace(/\n/g, " | ") + "] 未入库=" + (st.replace(/\n/g, " ") || "无") + " ck=" + J(sg.headCheckpoint(dir, WS_DIR));
+      } catch (e) { return "读影子仓失败：" + e.message; }
+    };
+    const rs = await runScene("重启", 30000);
+    ok("⑧ 重启前真写了文件", read("undo-shadow.txt") === "重启后要撤掉\n", String(read("undo-shadow.txt")));
+    const preSt = await stack();
+    ok("⑧ 重启前这一步在内存栈里（还没到影子那条路径）",
+      (preSt.steps || []).some((s) => s.fromShadow !== true && (s.files || []).some((f) => f.path === "undo-shadow.txt")), J(preSt).slice(0, 200));
+    /* 落盘的那一步当场就该进影子仓，否则"重启后还能退"根本无从谈起。
+       放在这里而不是等重启后再查：断在哪一环（没写进去 / 写进去了但读不出）要分得开。 */
+    ok("⑧ 落盘同时留下影子检查点（HEAD 就是这一步）", (() => {
+      const ck = require("../server/shadow-git").headCheckpoint(require("../server/shadow-git").shadowDirFor(SANDBOX.dataDir, WS_DIR), WS_DIR);
+      return !!ck && /undo-shadow\.txt/.test(ck.label || "") && (ck.files || []).some((f) => f.path === "undo-shadow.txt");
+    })(), shadowDiag());
+
+    try { agent.ws && agent.ws.close(); } catch (e) { /* 已经断了 */ }
+    child.kill();
+    for (let i = 0; i < 80; i++) {
+      await wait(250);
+      let alive = true;
+      try { await req("GET", "/api/health"); } catch (e) { alive = false; }
+      if (!alive) break;
+    }
+    child2 = spawn(process.execPath, ["server/index.js"], {
+      cwd: ROOT, env: SANDBOX.env({ PORT: String(PORT), NODE_NO_WARNINGS: "1", AGENT_FAST: "1", HOME, USERPROFILE: HOME }),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child2.stdout.on("data", (c) => { out = (out + c).slice(-40000); });
+    child2.stderr.on("data", (c) => { out = (out + c).slice(-40000); });
+    let up2 = false;
+    for (let i = 0; i < 90; i++) {
+      await wait(200);
+      try { const h = await req("GET", "/api/health"); if (h.json && h.json.ok) { up2 = true; break; } } catch (e) {}
+    }
+    ok("⑧ 服务真的重启过（同一端口重新就绪，同一个用户令牌仍然有效）", up2 && !!TOKEN);
+    if (!up2) throw new Error("重启后的服务未就绪：" + out.slice(-800));
+    await attach(TOKEN);
+    await waitFor((e) => e.type === "hello", 15000);
+
+    const st2 = await stack();
+    const top2 = (st2.steps || [])[0];
+    ok("⑧ 栈空时把影子检查点亮出来（fromShadow + i=-1）",
+      !!top2 && top2.fromShadow === true && top2.i === -1, J(st2).slice(0, 200) + " || " + shadowDiag());
+    ok("⑧ 亮出来的那一步带着归属会话与会动的文件",
+      !!top2 && top2.convId === rs.conv && (top2.files || []).some((f) => f.path === "undo-shadow.txt"), J(top2).slice(0, 220));
+    const wrongConv = await doUndo("un-not-this-conv", TOKEN);
+    ok("⑧ 换个会话点下去被挡（跨会话守卫对影子那一步同样生效）",
+      wrongConv.json.ok === false && (wrongConv.json.cross === true || /另一个会话/.test(wrongConv.json.error || "")), J(wrongConv.json));
+    ok("⑧ 被挡之后盘上一个字节都没动", read("undo-shadow.txt") === "重启后要撤掉\n", String(read("undo-shadow.txt")));
+    const ru1 = await doUndo(rs.conv, TOKEN);
+    ok("⑧ 按对会话时真退回来了：新建的文件从盘上消失",
+      ru1.json.ok === true && read("undo-shadow.txt") === null, J(ru1.json) + " read=" + String(read("undo-shadow.txt")));
+    const st3 = await stack();
+    ok("⑧ 退到底以后不再给第二次入口（不会把人退到初始全量快照）",
+      (st3.steps || []).length === 0, J(st3).slice(0, 220));
+    const ru2 = await doUndo(rs.conv, TOKEN);
+    ok("⑧ 再按一次如实拒绝并说清为什么", ru2.json.ok === false && /没有可撤销/.test(ru2.json.error || ""), J(ru2.json));
+    ok("⑧ 重启这一段的服务端没有未捕获异常", !/UNCAUGHT|TypeError: |ReferenceError: /.test(out),
+      (out.match(/.{0,160}(TypeError|ReferenceError|UNCAUGHT).{0,160}/) || [""])[0]);
+    child2.kill();
   } catch (e) {
     ok("探针自身跑通（未中途抛错）", false, String(e && e.stack || e).slice(0, 400));
   } finally {
     try { agent.ws && agent.ws.close(); } catch (e) {}
+    try { child2 && child2.kill(); } catch (e) {}
     child.kill();
     gw.srv.close();
   }

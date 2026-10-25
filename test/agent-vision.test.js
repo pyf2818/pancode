@@ -11,6 +11,7 @@ const os = require("os");
 const path = require("path");
 const { LlmAgent } = require("../server/agent-llm");
 const vision = require("../server/computer/vision");
+const { VISION_IMAGE_TOKEN_ESTIMATE: EST } = require("../server/agent-helpers");
 
 let TMP;
 beforeAll(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), "pc-vision-")); });
@@ -158,5 +159,35 @@ describe("附图要计入 token 估算", () => {
     const text = { role: "user", content: "看一下这张图" };
     const withImg = { role: "user", content: [{ type: "text", text: "看一下这张图" }, { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }] };
     expect(a._estTokens([withImg])).toBeGreaterThan(a._estTokens([text]));
+  });
+
+  /* 截图通道不进 history（走 rebuildMessages 的临时消息），所以 _ctxUsed 天生量不到它，
+     而请求发出去那一轮的真实 prompt_tokens 里确实含这几张图 —— 发出去之前进度条少算 N×1.5k。 */
+  it("待发像素按张计入水位分子", () => {
+    const a = agent();
+    expect(a._visionTokenExtra("default")).toBe(0);
+    const s1 = mkShot("w1.png", 512), s2 = mkShot("w2.png", 512);
+    a.offerVision({ abs: s1.abs, rel: s1.rel });
+    a.offerVision({ abs: s2.abs, rel: s2.rel });
+    expect(a._visionTokenExtra("default")).toBe(2 * EST);
+    a._clearVision("default");
+    expect(a._visionTokenExtra("default")).toBe(0);
+  });
+
+  it("图掉了就不许还赖在水位里；别的会话的图也不算进这一条", () => {
+    const a = agent();
+    const s = mkShot("w3.png", 512);
+    a.offerVision({ abs: s.abs, rel: s.rel });      // conv = default
+    expect(a._visionTokenExtra("other")).toBe(0);
+    a._visionRejected = true;                        // 已经不发了，就不该再占水位
+    expect(a._visionTokenExtra("default")).toBe(0);
+  });
+
+  it("它是水位上单独的一格，不污染历史估算（压缩判定仍按 history 算）", () => {
+    const a = agent();
+    const s = mkShot("w4.png", 512);
+    a.offerVision({ abs: s.abs, rel: s.rel });
+    const hist = [{ role: "user", content: "hi" }];
+    expect(a._ctxUsed(hist)).toBe((a._ctxPrefix || 0) + a._estTokens(hist));
   });
 });

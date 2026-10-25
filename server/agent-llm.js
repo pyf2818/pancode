@@ -1870,9 +1870,10 @@ ${taskSummary}
        聊天里的撤销按钮只该撤本会话的改动，不然在 A 会话点撤销会回滚掉 B 会话刚写的文件。
        用户自己在编辑器里保存的那一类没有会话上下文，留空串（撤销时按"不是别的会话"放行）。 */
     const ctx = convContext.getStore();
-    this._undoStack.push({ label: label || "改动", entries, at: Date.now(), convId: (ctx && ctx.convId) || "" });
+    const convId = (ctx && ctx.convId) || "";
+    this._undoStack.push({ label: label || "改动", entries, at: Date.now(), convId });
     if (this._undoStack.length > 50) this._undoStack.shift();   // 限制栈深，避免无限增长
-    this._shadowCommit(label, entries);   // P-H2：同步落到 shadow git，跨会话可恢复
+    this._shadowCommit(label, entries, convId);   // P-H2：同步落到 shadow git，跨会话可恢复
   }
 
   /* 撤销栈的对外视图（/api/undo 与聊天里的撤销按钮共用这一份）。
@@ -1892,7 +1893,34 @@ ${taskSummary}
         })),
       });
     }
+    if (!out.length) {
+      /* 内存栈空了（重启 / 换进程）而影子仓里还躺着一次真检查点时，把那一条亮出来，
+         否则 P-H2 的持久化只有 agent 自己的 undo 工具够得着，用户手上仍然是"没有可撤销的"。
+         headCheckpoint 已经挡掉三种不可退的 HEAD（初始全量快照、回退记录、空提交），
+         点下去走的还是 _undoLast 那条路径与它的会话守卫。 */
+      const ck = this._shadowHead();
+      if (ck) {
+        out.push({
+          i: -1, fromShadow: true, label: ck.label, at: ck.at, convId: ck.convId || "",
+          files: ck.files.map((f) => ({ path: f.path, action: f.action, root: path.basename(this.files.dir) })),
+        });
+      }
+    }
     return out;
+  }
+
+  /* 本引擎看得见的影子检查点，判据只这一处：
+     影子仓按工作区分片，同一台机器上多个用户共用一份 —— 撤销栈本身是按用户分的，
+     亮出来的这一步也必须按用户筛（归属别人的不是我的；agent 工具的 _undoLast 同样走这里）。
+     没有 u: 段的老记录（这层前缀上线之前写下的）保持可见，别把历史一笔抹掉。 */
+  _shadowHead() {
+    if (!this._shadowRepoReady || !this._shadowGitDir || !this.files || !this.files.dir) return null;
+    try {
+      const ck = shadowGit.headCheckpoint(this._shadowGitDir, this.files.dir);
+      if (!ck) return null;
+      if (ck.userId && this._userKey && ck.userId !== this._userKey) return null;
+      return ck;
+    } catch (e) { return null; }
   }
 
   _undoLast() {
@@ -1923,7 +1951,7 @@ ${taskSummary}
         /* 改动面板列的是当前工作区的 git 差异：纯跨根的撤销对它没有任何影响，
            却会白跑一遍全量 diff（还要读每个改动文件的全文）。 */
         if (touchedActive) this.pushChanges(false);
-        this._shadowCommit("undo " + ck.label, ck.entries);
+        this._shadowCommit("undo " + ck.label, ck.entries, ck.convId);
         return { ok: true, restored: ck.entries.map((e) => e.path), label: ck.label };
       } catch (err) {
         this._undoStack.push(ck);   // 还原失败，退还检查点以便重试
@@ -1934,6 +1962,12 @@ ${taskSummary}
        只恢复这个 commit 动过的路径：旧实现 reset --hard + clean -fd 会把工作区里
        所有未提交改动和未跟踪文件一起抹掉，那是删工作，不是撤销一步。 */
     if (this._shadowRepoReady) {
+      /* 先问 HEAD 是不是一个"可退的检查点"，再动手：init 那条是全工作区的全量快照，
+       undo 那条是回退自己留下的记录（退它等于把刚撤掉的改动重放回来）。
+       这条守卫不只服务界面入口 —— agent 自己的 undo 工具也走这里，
+       没有它，用户连点两次"撤销"就能把工作区抹回开机那一刻。 */
+      const head = this._shadowHead();
+      if (!head) return { ok: false, reason: "影子仓里没有可回退的检查点（只剩初始全量快照或回退记录，退它们不是撤销一步）" };
       const r = shadowGit.restoreLast(this._shadowGitDir, this.files.dir, this.files);
       /* 部分回退也要把已经变了的文件推给前端：失败的是其中几个，
          另外几个确实已经回到原样了，界面不能停留在旧内容上。 */
@@ -1945,24 +1979,31 @@ ${taskSummary}
       if (touched.length) this.pushChanges(false);
       if (!r.ok) return { ok: false, reason: "shadow-git: " + (r.reason || "回退失败"), restored: r.restored, removed: r.removed };
       this.emit({ type: "term.line",
-        text: "[撤销] 已回退上一个检查点：" + r.restored.length + " 个文件恢复" + (r.removed.length ? "、" + r.removed.length + " 个新建文件移除" : ""),
+        text: "[撤销] 已回退检查点「" + head.label + "」：" + r.restored.length + " 个文件恢复" + (r.removed.length ? "、" + r.removed.length + " 个新建文件移除" : ""),
         cls: "tl-info" });
-      return { ok: true, restored: r.restored, removed: r.removed, label: "shadow-git HEAD~1" };
+      return { ok: true, restored: r.restored, removed: r.removed, label: head.label };
     }
     return { ok: false, reason: "empty" };
   }
 
   /* P-H2：shadow git commit（fire-and-forget，不阻塞 agent 主循环）。
      只记本次检查点真正写过的当前工作区文件：全量快照会把用户自己的未提交改动
-     一起卷进来，跨会话撤销时就会把它们当"agent 新建"删掉。跨根条目不在本仓里。 */
-  _shadowCommit(label, entries) {
+     一起卷进来，跨会话撤销时就会把它们当"agent 新建"删掉。跨根条目不在本仓里。
+     convId 写进 subject 前缀：影子仓按工作区分片，一个仓里混着多个会话的检查点，
+     重启后栈空时只能靠这一层前缀挡住"在 A 会话撤销、回滚掉 B 会话的活"。 */
+  _shadowCommit(label, entries, convId) {
     if (!this._shadowRepoReady) return;
     try {
+      const subject = shadowGit.subjectFor(label, convId, this._userKey);
       const paths = Array.isArray(entries)
         ? entries.filter((e) => e && !e.store && e.path).map((e) => e.path)
         : undefined;
-      shadowGit.commit(this._shadowGitDir, this.files.dir, label, paths);
-    } catch (e) { /* shadow commit 失败不影响主流程 */ }
+      const done = shadowGit.commit(this._shadowGitDir, this.files.dir, subject, paths);
+      if (!done) log.tag("agent").warn("shadow commit 未记下这一步（没有本工作区文件可记）: " + subject);
+    } catch (e) {
+      /* 静默吞掉等于让"跨会话还能退"这句话随机失真：记一笔，界面上那句提示才有依据。 */
+      log.tag("agent").warn("shadow commit 失败（本步只有内存栈可退）: " + e.message);
+    }
   }
 
   /* ============================================================
@@ -3262,6 +3303,17 @@ ${taskSummary}
     return (this._ctxPrefix || 0) + this._estTokens(hist);
   }
 
+  /* 待发像素的水位增量：截图走 rebuildMessages 的临时消息，不进 history，
+     所以 _ctxUsed 天生量不到它 —— 而请求发出去的那一轮，真实 prompt_tokens 里确实含这几张图。
+     两个方向各错一半：发出去之前进度条少算 N×1.5k，发出去之后实测锚点又把已掉的图算着
+     （下一轮 usage 回来自己纠正）。这里只补"发出去之前"那一半。
+     只给进度条用，不参与压缩判定：图是一次性的，为它去压缩历史等于把永久成本当成瞬时成本。 */
+  _visionTokenExtra(conv) {
+    if (this._visionRejected) return 0;
+    const n = this._visionFor(conv).length;
+    return n * VISION_IMAGE_TOKEN_ESTIMATE;
+  }
+
   /* 进度条与压缩判定的唯一分母：自动压缩真正踩线的那个数（_compactSpec().thresholdTokens），
      不是模型窗口的原值。此前分母有三处各说各话（窗口 128000 / index.js 自己乘 0.9 得 115200 /
      压缩线 102400），用户看到的是"永远到不了 100%，但 Agent 已经在一遍遍压缩"。 */
@@ -4437,7 +4489,7 @@ ${taskSummary}
     let runErr = false;   // 这一轮是不是异常收口 —— 给后面的「计划没走完」提示让路，别在错误卡上再叠一句
     await convContext.run({ convId, abortRef, getHist: () => history }, async () => {
       history = await this.compactHistory(history) || history;
-      this.emit({ type: "context.usage", used: this._ctxUsed(history), budget: this._ctxLimit(), est: !(this._lastPrompt && this._lastPromptArr === history) });
+      this.emit({ type: "context.usage", used: this._ctxUsed(history) + this._visionTokenExtra(convId), budget: this._ctxLimit(), est: !(this._lastPrompt && this._lastPromptArr === history) });
 
       // 控制上下文长度：最多保留最近 100 条（压缩后通常远低于此）
       history = trimHistoryGroups(history, 100);
@@ -4777,7 +4829,7 @@ ${taskSummary}
           // 工具调用后检查是否需要压缩（长任务中间也会膨胀）；压缩后同步重建要发的 messages
           history = await this.compactHistory(history) || history;
           messages = rebuildMessages();    // 无论是否压缩都重建（failstreak 的临时 system 消息不保留，属设计意图）
-          this.emit({ type: "context.usage", used: this._ctxUsed(history), budget: this._ctxLimit(), est: !(this._lastPrompt && this._lastPromptArr === history) });
+          this.emit({ type: "context.usage", used: this._ctxUsed(history) + this._visionTokenExtra(convId), budget: this._ctxLimit(), est: !(this._lastPrompt && this._lastPromptArr === history) });
           this.state(true, "AI 思考中");
         }
 

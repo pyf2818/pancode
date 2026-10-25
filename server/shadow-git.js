@@ -65,6 +65,10 @@ function hasHead(gitDir) {
   catch (e) { return false; }
 }
 
+/* 初始化时对整份工作区打的那一份全量快照。它不是"某一步改动"的记录，
+   退它等于把用户所有改动抹回开机那一刻 —— 所以永远不能当成可回退的检查点暴露出去。 */
+const INIT_LABEL = "pancode shadow init";
+
 function initRepo(gitDir, filesDir) {
   fs.mkdirSync(gitDir, { recursive: true });
   run(["init", "--bare", "--quiet", gitDir]);
@@ -75,7 +79,7 @@ function initRepo(gitDir, filesDir) {
   run(["-C", gitDir, "config", "commit.gpgsign", "false"]);
   run(["-C", gitDir, "config", "core.excludesFile", path.join(gitDir, "info", "exclude")]);
   run([...repoArgs(gitDir, filesDir), "add", "-A"]);
-  run([...repoArgs(gitDir, filesDir), "commit", "-m", "pancode shadow init", "--allow-empty", "--quiet"]);
+  run([...repoArgs(gitDir, filesDir), "commit", "-m", INIT_LABEL, "--allow-empty", "--quiet"]);
 }
 
 /* 准备（必要时初始化）影子仓。返回 { ok, dir, reason, adopted }：
@@ -188,7 +192,66 @@ function commit(gitDir, worktree, label, paths) {
   return true;
 }
 
+/* 检查点的归属写在 subject 前缀里：[conv:<会话> u:<用户key>] 标签。
+   影子仓按工作区分片 —— 同一台机器上多个用户、多个会话的检查点混在同一份仓里。
+   没有这一层就挡不住两件事："在 A 会话点撤销、回滚掉 B 会话的活"，
+   以及"换个用户读到别人的检查点并按下去"。 */
+const SUBJECT_PREFIX_RE = /^\[([^\]]*)\]\s?([\s\S]*)$/;
+
+function subjectOf(raw) {
+  const s = String(raw || "");
+  const m = SUBJECT_PREFIX_RE.exec(s);
+  if (!m) return { convId: "", userId: "", label: s };
+  const kv = {};
+  String(m[1]).split(/\s+/).forEach((p) => {
+    const i = p.indexOf(":");
+    if (i > 0) kv[p.slice(0, i)] = p.slice(i + 1);
+  });
+  return { convId: kv.conv || "", userId: kv.u || "", label: m[2] };
+}
+
+/* 只写真的知道的那几段，不知道就不留空壳（老格式 [conv:x] 仍然解析得动）。 */
+function subjectFor(label, convId, userId) {
+  const bits = [];
+  if (convId) bits.push("conv:" + convId);
+  if (userId) bits.push("u:" + userId);
+  const body = String(label || "checkpoint");
+  return bits.length ? "[" + bits.join(" ") + "] " + body : body;
+}
+
+/* HEAD 这一条是不是"可以再往回退一步"的检查点。给不出就回 null（界面据此不摆入口）：
+   · init 是全量快照，退它等于抹掉开机以来的所有改动；
+   · "undo …" 是回退自己留下的记录，退它等于把刚撤掉的改动重放回来，与按钮语义正相反；
+   · 没有 HEAD~1、或这一条压根没改过文件（--allow-empty 打出来的空检查点），都无处可退。 */
+function headCheckpoint(gitDir, worktree) {
+  let raw = "";
+  let ts = 0;
+  try {
+    const one = String(run(["-C", gitDir, "log", "-1", "--format=%s%x00%ct"], { encoding: "utf8" }) || "");
+    const cut = one.indexOf("\0");
+    raw = cut >= 0 ? one.slice(0, cut) : one;
+    ts = cut >= 0 ? Number(one.slice(cut + 1).trim()) * 1000 : 0;
+  } catch (e) { return null; }
+  const subject = String(raw || "").trim();
+  if (!subject || subject === INIT_LABEL) return null;
+  const { convId, userId, label } = subjectOf(subject);
+  /* 回退记录要在剥掉前缀之后再判：真实 subject 长这样
+     "[conv:c-1 u:9f2a] undo 写入 a.txt"，只盯着 subject 开头等于永远判不出来。
+     退它会从 HEAD~1 取回"被撤掉的那一步"的样子 —— 那是重做，不是撤销。 */
+  if (/^undo\b|^undo[ (：:]/.test(label) || /^undo\b/.test(subject)) return null;
+  try { run(["-C", gitDir, "rev-parse", "--verify", "HEAD~1"], { encoding: "utf8" }); }
+  catch (e) { return null; }
+  let changes = [];
+  try { changes = changedAtHead(gitDir, worktree); } catch (e) { return null; }
+  if (!changes.length) return null;
+  return {
+    label: label || subject, convId, userId, at: Number.isFinite(ts) ? ts : 0,
+    files: changes.map((c) => ({ path: c.path, action: c.status === "A" ? "删掉这个新建的文件" : "改回原样" })),
+  };
+}
+
 module.exports = {
   shadowDirFor, legacyShadowDirFor, ensureShadowRepo, worktreeMatches,
-  changedAtHead, restoreLast, commit, initRepo,
+  changedAtHead, restoreLast, commit, initRepo, headCheckpoint,
+  INIT_LABEL, subjectOf, subjectFor,
 };

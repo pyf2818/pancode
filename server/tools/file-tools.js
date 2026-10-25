@@ -31,6 +31,11 @@ function showPath(args, res) {
   return who + ":" + rel;
 }
 
+/* 跨根改动的能力边界要说准。撤销栈里的检查点带着它自己那个 FileStore，所以本进程内退得回来；
+   但影子快照只覆盖当前工作区（scoped commit 刻意滤掉外来 store 的条目），重启后这批退不回来。
+   回执里一句不分阶段的"/undo 可以撤销"，模型就会照抄成对用户的承诺。 */
+const FOREIGN_UNDO_SCOPE = "撤销只在本次服务运行期间有效（检查点记着它自己那个目录；影子快照只覆盖当前工作区，重启后这批退不回来）";
+
 /* —— read_file 的取段底座 ——
    没有这一段之前，读大文件只有两条路：整份进上下文（然后被头 70%/尾 30% 砍掉中段），
    或者撞 FILE_TOO_LARGE 之后自己写脚本按行 dump。两条都丢全局视角，差别只在谁丢。
@@ -380,8 +385,10 @@ module.exports = {
     const t = agent.tool("edit", isNew ? "创建文件" : "编辑文件", shown);
     try {
       const snap = agent._snapshotBefore(rel, store);
-      agent._pushCheckpoint([snap], (isNew ? "创建 " : "写入 ") + shown);
+      /* 先落盘、再记检查点。影子仓记的是"这一步之后的样子"，退到它的父提交才是退一步；
+         记在落盘之前会退两格（新建的文件那时还不存在，git add 直接 pathspec 不匹配）。 */
       store.write(rel, args.content);
+      agent._pushCheckpoint([snap], (isNew ? "创建 " : "写入 ") + shown);
       codeIndex.queueFileUpdate(store.dir, rel);
       const st = require("../agent-base").diffStat(isNew ? "" : snap.beforeContent, args.content);
       t.body((isNew ? "(新文件)\n" : "") + args.content.split("\n").slice(0, 30).join("\n"));
@@ -391,7 +398,7 @@ module.exports = {
            却刷新了 A 的 src/a.js）；LSP 也只跟着当前工作区。所以跨根只给一句终端痕，
            并把落点写在回执里，让模型知道它改的不是本项目。 */
         agent.emit({ type: "term.line", text: "[跨根写入] " + shown + (isNew ? "（新建）" : "") + " → " + store.dir, cls: "tl-info" });
-        return "写入成功: " + shown + "（已授权目录 " + store.dir + "；不在当前工作区，编辑器与改动面板不跟踪它，/undo 可以撤销）";
+        return "写入成功: " + shown + "（已授权目录 " + store.dir + "；不在当前工作区，编辑器与改动面板不跟踪它；" + FOREIGN_UNDO_SCOPE + "）";
       }
       agent.fileChanged(rel);
       agent.pushChanges(false);
@@ -507,13 +514,16 @@ module.exports = {
     }
     const t = agent.tool("edit", "删除文件", shown);
     try {
-      agent._pushCheckpoint([agent._snapshotBefore(rel, store)], "删除 " + shown);
+      const snap = agent._snapshotBefore(rel, store);
+      /* 与 write_file 同一个口径：动完盘再记检查点，影子仓那条路径才退得准。
+         删除失败时不留下"可撤销"的假检查点。 */
       store.remove(rel);
+      agent._pushCheckpoint([snap], "删除 " + shown);
       codeIndex.removeFile(store.dir, rel);
       if (foreign) {
         agent.emit({ type: "term.line", text: "[跨根删除] " + shown + " → " + store.dir, cls: "tl-warn" });
         t.done(true, "已删除");
-        return "删除成功: " + shown + "（已授权目录 " + store.dir + "；/undo 可以恢复）";
+        return "删除成功: " + shown + "（已授权目录 " + store.dir + "；" + FOREIGN_UNDO_SCOPE + "）";
       }
       agent.fileChanged(rel);
       agent.pushChanges(false);
@@ -693,9 +703,11 @@ module.exports = {
       t.done(true, "已写入 " + files.length + " 个文件，共 " + totalEdits + " 处修改", false);
       /* 与 write_file 同一条回灌路径：一批改完，把有诊断的那些文件一起报给模型，
          而不是等它下一轮 run_command 撞车才想起看错误。 */
+      const foreignFiles = files.filter((f) => f.store !== agent.files).map((f) => f.shown);
       const diag = await diagBlock(agent, inWs.map((f) => f.rel));
       return "已原子写入 " + files.length + " 个文件（共 " + totalEdits + " 处修改）: " + files.map((f) => f.shown).join(", ") +
-        "。/undo 可一键回滚本次全部改动。" + diag;
+        "。/undo 可回滚本次全部改动（本次服务运行期间）" +
+        (foreignFiles.length ? "；其中 " + foreignFiles.join("、") + " 属于别的根，" + FOREIGN_UNDO_SCOPE : "") + "。" + diag;
     } catch (e) {
       rollback();
       t.done(false, "原子编辑失败", false);

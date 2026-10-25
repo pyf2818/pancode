@@ -8,7 +8,18 @@ module.exports = {
     const t = agent.tool("edit", "撤销上一步", "undo");
     const r = agent._undoLast();
     if (!r.ok) {
-      if (r.reason === "empty") { t.done(false, "无可撤销", false); return "当前没有可撤销的改动（还没有执行过写入 / 编辑 / 删除操作，或进程重启后检查点已清空）。"; }
+      if (r.reason === "empty") {
+        t.done(false, "无可撤销", false);
+        /* reason=empty 只在"内存栈空 + 影子仓不可用"时出现：
+           这句话以前写"重启后检查点已清空"，而重启后其实还能从影子快照退一步 —— 说少了会让用户白放弃。 */
+        return "当前没有可撤销的改动：本次运行没执行过写入 / 编辑 / 删除，这台引擎也没有可用的影子快照"
+          + "（未配置工作区或影子仓身份校验未通过，详见服务端日志）。";
+      }
+      if (/没有可回退的检查点/.test(String(r.reason || ""))) {
+        t.done(false, "无可撤销", false);
+        return "没有可撤销的改动了：本次运行的改动栈是空的，影子快照里也没有可回退的检查点"
+          + "（初始全量快照与回退记录都不算一步，退它们不是撤销）。";
+      }
       t.done(false, "撤销失败", false);
       return "撤销失败：" + (r.reason || "未知错误");
     }

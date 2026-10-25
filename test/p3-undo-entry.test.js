@@ -6,10 +6,14 @@
      · 撤销栈的视图新的在前，且不把改动前的全文搬进 HTTP；
      · 每一步带着 convId，跨会话的撤销请求必须被挡下（在 A 会话点撤销不该回滚 B 会话的活）。
    ============================================================ */
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { LlmAgent } = require("../server/agent-llm");
 const { AgentBase } = require("../server/agent-base");
 const agentTools = require("../server/tools/agent-tools");
+const shadow = require("../server/shadow-git");
+const { FileStore } = require("../server/files");
 
 /* 只读栈、不碰盘 → 拿原型造一个最小实例就够，不必 boot 一个真引擎 */
 function viewOf(stack, wsDir) {
@@ -132,6 +136,113 @@ describe("路径来源", () => {
   });
 });
 
+/* 内存栈空了（重启 / 换进程）之后，影子仓里那条真检查点要成为用户的入口。
+   关键是"什么都不许露错"：把初始全量快照当成一步暴露出去，用户点一下就把工作区抹回开机那一刻。
+   这里用真影子仓 + 真 FileStore，为的就是把 undoSteps → _undoLast → 磁盘 这条链一次跑通。 */
+describe("栈空时的撤销入口（影子快照）", () => {
+  let box;
+  afterEach(() => {
+    if (!box) return;
+    try { box.eng.files.close && box.eng.files.close(); } catch (e) { /* 已关 */ }
+    try { fs.rmSync(box.root, { recursive: true, force: true }); } catch (e) { /* Windows 句柄未放 */ }
+    box = null;
+  });
+
+  function boot() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pc-undo-entry-"));
+    const ws = path.join(root, "demo");
+    fs.mkdirSync(ws, { recursive: true });
+    fs.writeFileSync(path.join(ws, "a.txt"), "v1", "utf8");
+    const ready = shadow.ensureShadowRepo(path.join(root, "data"), ws);
+    expect(ready.ok).toBe(true);
+    const eng = Object.create(LlmAgent.prototype);
+    eng.files = new FileStore(ws);
+    eng._undoStack = [];
+    eng._shadowRepoReady = true;
+    eng._shadowGitDir = ready.dir;
+    eng.emitted = [];
+    eng.emit = (e) => eng.emitted.push(e);
+    eng.fileChanged = () => {};
+    eng.pushChanges = () => {};
+    box = { root, ws, eng };
+    return box;
+  }
+
+  it("只有初始全量快照时不给入口（宁可不给，也不给一个抹掉全部的一步）", () => {
+    const { eng, ws } = boot();
+    expect(eng.undoSteps()).toEqual([]);
+    const r = eng._undoLast();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/没有可回退的检查点/);
+    expect(fs.readFileSync(path.join(ws, "a.txt"), "utf8")).toBe("v1");
+  });
+
+  it("真检查点亮出来：带着 conv 归属、i=-1、以及会动哪些文件", () => {
+    const { eng, ws } = boot();
+    fs.writeFileSync(path.join(ws, "a.txt"), "v2", "utf8");
+    fs.writeFileSync(path.join(ws, "new.txt"), "created", "utf8");
+    eng._shadowCommit("原子编辑 2 个文件", [{ path: "a.txt" }, { path: "new.txt" }], "c-9");
+    const steps = eng.undoSteps();
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ i: -1, fromShadow: true, label: "原子编辑 2 个文件", convId: "c-9" });
+    const acts = {};
+    steps[0].files.forEach((f) => { acts[f.path] = f.action; });
+    expect(acts["a.txt"]).toBe("改回原样");
+    expect(acts["new.txt"]).toBe("删掉这个新建的文件");
+  });
+
+  it("点下去走的是同一条 _undoLast：真回到 v1，回执报检查点标签而不是 HEAD~1", () => {
+    const { eng, ws } = boot();
+    fs.writeFileSync(path.join(ws, "a.txt"), "v2", "utf8");
+    eng._shadowCommit("写入 a.txt", [{ path: "a.txt" }], "c-1");
+    const r = eng._undoLast();
+    expect(r.ok).toBe(true);
+    expect(r.label).toBe("写入 a.txt");
+    expect(r.restored).toEqual(["a.txt"]);
+    expect(fs.readFileSync(path.join(ws, "a.txt"), "utf8")).toBe("v1");
+    expect(eng.emitted.some((e) => e.type === "term.line" && /\[撤销\].*写入 a\.txt/.test(e.text))).toBe(true);
+  });
+
+  it("退到底以后不再给第二次入口（连着点不会退到初始快照）", () => {
+    const { eng, ws } = boot();
+    fs.writeFileSync(path.join(ws, "a.txt"), "v2", "utf8");
+    eng._shadowCommit("写入 a.txt", [{ path: "a.txt" }], "c-1");
+    expect(eng._undoLast().ok).toBe(true);
+    expect(eng.undoSteps()).toEqual([]);
+    const again = eng._undoLast();
+    expect(again.ok).toBe(false);
+    expect(again.reason).toMatch(/没有可回退的检查点/);
+    expect(fs.readFileSync(path.join(ws, "a.txt"), "utf8")).toBe("v1");
+  });
+
+  it("内存栈还有东西时不掺影子那一步（用户看到的「上一步」仍是本次运行的）", () => {
+    const { eng, ws } = boot();
+    fs.writeFileSync(path.join(ws, "a.txt"), "v2", "utf8");
+    eng._shadowCommit("写入 a.txt", [{ path: "a.txt" }], "c-1");
+    eng._undoStack.push(CK("刚写的 b.txt", [E("b.txt", false)]));
+    const steps = eng.undoSteps();
+    expect(steps).toHaveLength(1);
+    expect(steps[0].fromShadow).toBeUndefined();
+    expect(steps[0].label).toBe("刚写的 b.txt");
+  });
+
+  /* 影子仓按工作区分片：同一台机器上两个用户共用一份。
+     撤销栈本身是按用户各一份的，亮出来的这一步也必须按用户筛，
+     否则"另一个用户读到的是空栈"这条既有不变量会被从后门破掉。 */
+  it("归属别的用户的检查点对本引擎不可见，也按不下去", () => {
+    const { eng, ws } = boot();
+    fs.writeFileSync(path.join(ws, "a.txt"), "v2", "utf8");
+    eng._userKey = "u-me";
+    eng._shadowCommit("写入 a.txt", [{ path: "a.txt" }], "c-1");
+    expect(eng.undoSteps()).toHaveLength(1);
+    eng._userKey = "u-someone-else";
+    expect(eng.undoSteps()).toEqual([]);
+    const r = eng._undoLast();
+    expect(r.ok).toBe(false);
+    expect(fs.readFileSync(path.join(ws, "a.txt"), "utf8")).toBe("v2");
+  });
+});
+
 /* undo 工具的回执是模型判断"撤销到底做没做全"的唯一依据。
    shadow 那条回退路径除了把旧内容写回来，还会删掉那一步新建的文件 ——
    只报 restored 就等于删了文件却不吭声，界面上的数字也比真动过的少。 */
@@ -171,5 +282,19 @@ describe("undo 工具回执要报全动过的文件", () => {
     const out = await agentTools.undo(a, {});
     expect(out).toContain("有 2 个文件没能恢复");
     expect(a.cards[0].label).toBe("撤销失败");
+  });
+
+  /* "没得撤"有两种，说的话不一样：一种是这台引擎压根没有影子快照，
+     一种是快照里只剩初始全量快照/回退记录。旧文案一句"重启后检查点已清空"把两种糊在一起，
+     而后者其实只是"到底了"，不是"重启就全没了"。 */
+  it("没有影子快照 vs 已到退到底，两种空栈分开说", async () => {
+    const noRepo = undoAgent({ ok: false, reason: "empty" });
+    const out1 = await agentTools.undo(noRepo, {});
+    expect(out1).toContain("没有可用的影子快照");
+    expect(out1).not.toMatch(/重启后检查点已清空/);
+
+    const atBottom = undoAgent({ ok: false, reason: "影子仓里没有可回退的检查点（只剩初始全量快照或回退记录）" });
+    const out2 = await agentTools.undo(atBottom, {});
+    expect(out2).toContain("初始全量快照与回退记录都不算一步");
   });
 });

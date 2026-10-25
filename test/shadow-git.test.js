@@ -213,3 +213,79 @@ describe("restoreLast：只回退这个检查点动过的路径", () => {
     expect(read(ws, "a.txt")).toBe("v1");
   });
 });
+
+/* headCheckpoint：栈空时能不能给用户一个"再往回退一步"的入口，判据全在这一份里。
+   露错一条的代价不对称：把 init 全量快照当成一步暴露出去，用户点一下就把工作区抹回开机那一刻；
+   把 "undo …" 那条回退记录当成一步，点下去是"重放刚撤掉的改动"，与按钮语义正相反。 */
+describe("headCheckpoint：只把真检查点暴露成可回退的一步", () => {
+  function repo() {
+    mkTemp();
+    const { ws, dataRoot, files } = workspace("head");
+    write(ws, "a.txt", "v1");
+    const ready = shadow.ensureShadowRepo(dataRoot, ws);
+    return { ws, files, dir: ready.dir };
+  }
+
+  it("只有初始全量快照时不给入口（反向对照：这条必须为 null）", () => {
+    const { ws, dir } = repo();
+    expect(shadow.headCheckpoint(dir, ws)).toBeNull();
+  });
+
+  it("真检查点给出口：标签、归属会话、会动哪些文件都说得清", () => {
+    const { ws, dir } = repo();
+    write(ws, "a.txt", "v2");
+    write(ws, "new.txt", "created");
+    shadow.commit(dir, ws, "[conv:c-7] 写入 a.txt", ["a.txt", "new.txt"]);
+    const ck = shadow.headCheckpoint(dir, ws);
+    expect(ck).toBeTruthy();
+    expect(ck.convId).toBe("c-7");
+    expect(ck.label).toBe("写入 a.txt");
+    const byPath = {};
+    ck.files.forEach((f) => { byPath[f.path] = f.action; });
+    expect(byPath["a.txt"]).toBe("改回原样");
+    expect(byPath["new.txt"]).toBe("删掉这个新建的文件");
+  });
+
+  it("没有 [conv:] 前缀的老记录照样读得出标签，归属留空（不假装知道是谁的）", () => {
+    const { ws, dir } = repo();
+    write(ws, "a.txt", "v2");
+    shadow.commit(dir, ws, "checkpoint-1", ["a.txt"]);
+    const ck = shadow.headCheckpoint(dir, ws);
+    expect(ck.label).toBe("checkpoint-1");
+    expect(ck.convId).toBe("");
+  });
+
+  it("回退记录（undo …）不算「下一步可撤」", () => {
+    const { ws, dir } = repo();
+    write(ws, "a.txt", "v2");
+    shadow.commit(dir, ws, "原子编辑 1 个文件", ["a.txt"]);
+    shadow.commit(dir, ws, "undo 原子编辑 1 个文件", ["a.txt"]);
+    expect(shadow.headCheckpoint(dir, ws)).toBeNull();
+  });
+
+  /* 真身长这样：[conv:c-1] undo 写入 a.txt —— 前缀会挡住"只看 subject 开头"的写法，
+     漏判的后果是点一下变成"重做刚撤掉的那步"。 */
+  it("带 [conv:] 前缀的回退记录同样不算（前缀不能把判据瞎掉）", () => {
+    const { ws, dir } = repo();
+    write(ws, "a.txt", "v2");
+    shadow.commit(dir, ws, "[conv:c-1] 写入 a.txt", ["a.txt"]);
+    shadow.commit(dir, ws, "[conv:c-1] undo 写入 a.txt", ["a.txt"]);
+    expect(shadow.headCheckpoint(dir, ws)).toBeNull();
+    // 而它前面那条真检查点仍然读得出来（说明 null 是判出来的，不是读坏了）
+    const { execFileSync } = require("child_process");
+    execFileSync("git", ["-C", dir, "reset", "--soft", "HEAD~1"], { stdio: "pipe", windowsHide: true });
+    const ck = shadow.headCheckpoint(dir, ws);
+    expect(ck && ck.label).toBe("写入 a.txt");
+    expect(ck && ck.convId).toBe("c-1");
+  });
+
+  it("没改过任何文件的空检查点不给入口（点了也无事可做）", () => {
+    const { ws, dir } = repo();
+    write(ws, "a.txt", "v2");
+    shadow.commit(dir, ws, "写入 a.txt", ["a.txt"]);
+    // 再提交一次同样的内容：--allow-empty 会留下一条没有变更的 commit
+    shadow.commit(dir, ws, "重复提交", ["a.txt"]);
+    const ck = shadow.headCheckpoint(dir, ws);
+    expect(ck).toBeNull();
+  });
+});

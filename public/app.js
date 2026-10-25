@@ -1694,6 +1694,20 @@ function paintUndoBtns() {
     if (grp && !grp.classList.contains("open")) grp.classList.add("open");
   }
 }
+/* 两条撤销入口（卡片上的按钮、命令面板）共用这一截：列出会动哪些文件 → 确认 → POST。
+   top.fromShadow 是"重启后从本机影子快照里退回来的一步"，必须先说清来源：
+   它不属于本次运行的改动栈，退的是上一次服务进程写下的那一步。 */
+async function undoStepRequest(cid, top) {
+  const list = (top.files || []).map((f) => f.path + "（" + tr(f.action) + "）").join("、");
+  const pre = top.fromShadow ? t("undoShadowNote") : "";
+  if (!confirm(pre + t("undoConfirmMsg", { label: tr(top.label), list }))) return { cancelled: true };
+  return await fetch("/api/undo", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: cid }),
+  }).then((x) => x.json()).catch((e) => ({ ok: false, error: e.message }));
+}
+/* 回滚掉的个数 = 恢复的 + 删掉的：影子回退会把那一步新建的文件一并摘掉，
+   只数 restored 会让界面报的数比真动过的少。 */
+function undoTouched(r) { return (r.restored || []).length + (r.removed || []).length; }
 async function runUndo(card, btn) {
   const cid = convOf(card);
   const st = await fetch("/api/undo").then((x) => x.json()).catch(() => ({ ok: false, steps: [] }));
@@ -1701,20 +1715,15 @@ async function runUndo(card, btn) {
   if (!st.ok) { toast(t("apPaintUndoBtnstoastT125") + (st.error || t("apbuildCodeIndexC7"))); return; }
   if (!top) { toast(t("apPaintUndoBtnstoastT126")); paintUndoBtns(); return; }
   if (top.convId && top.convId !== cid) { toast(t("apPaintUndoBtnstoastT127")); return; }
-  const list = (top.files || []).map((f) => f.path + "（" + tr(f.action) + "）").join("、");
-  if (!confirm(t("undoConfirmMsg", { label: tr(top.label), list }))) return;
   btn.disabled = true;
-  const r = await fetch("/api/undo", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: cid }),
-  }).then((x) => x.json()).catch((e) => ({ ok: false, error: e.message }));
+  const r = await undoStepRequest(cid, top);
   btn.disabled = false;
+  if (r.cancelled) return;
   if (!r.ok) { toast(t("wbRootsGroupwbSavedT85") + (r.error || t("apbuildCodeIndexC7"))); return; }
   const tag = document.createElement("span");
   tag.className = "t-undone";
   tag.textContent = t("apPaintUndoBtnstextContentT29");
-  /* 数字要算上被删掉的新建文件：shadow 回退那条形同"这一步动过的文件全退回"，
-     只数 restored 会让界面报的个数比真动过的少一个。 */
-  const touched = (r.restored || []).length + (r.removed || []).length;
+  const touched = undoTouched(r);
   tag.title = t("undoDoneTip", { n: touched });
   const head = card.querySelector(".tool-head");
   if (head) head.appendChild(tag);
@@ -1723,6 +1732,21 @@ async function runUndo(card, btn) {
   if (i >= 0) undoCards.splice(i, 1);
   paintUndoBtns();
   toast(t("apPaintUndoBtnstoastT128") + r.label + t("aprunUndoC10") + touched + t("aprunUndoC11") + (r.left ? t("aprunUndoC12") + r.left + t("aprunUndoC13") : ""));
+}
+/* 命令面板那条入口是给"重启之后"用的：卡片上的按钮只挂在本次渲染出来的卡片上，
+   页面一刷就没得点了，而影子仓里的检查点还在。判据仍由服务端把关（跨会话拒绝、
+   初始全量快照不暴露），这里只负责"说清要动哪些文件 + 让人确认"。 */
+async function undoFromPalette() {
+  const cid = String(convId || "default");
+  const st = await fetch("/api/undo").then((x) => x.json()).catch(() => ({ ok: false, steps: [] }));
+  if (!st.ok) { toast(t("apPaintUndoBtnstoastT125") + (st.error || t("apbuildCodeIndexC7"))); return; }
+  const top = (st.steps || [])[0];
+  if (!top) { toast(t("apPaintUndoBtnstoastT126")); return; }
+  if (top.convId && top.convId !== cid) { toast(t("apPaintUndoBtnstoastT127")); return; }
+  const r = await undoStepRequest(cid, top);
+  if (r.cancelled) return;
+  if (!r.ok) { toast(t("wbRootsGroupwbSavedT85") + (r.error || t("apbuildCodeIndexC7"))); return; }
+  toast(t("apPaintUndoBtnstoastT128") + r.label + t("aprunUndoC10") + undoTouched(r) + t("aprunUndoC11") + (r.left ? t("aprunUndoC12") + r.left + t("aprunUndoC13") : ""));
 }
 function scrollChat(force) {
   // Sticky scroll：用户上翻查看历史时不强制拉回底部；force=true 时无条件滚到底（新消息/审批/选项卡）

@@ -178,6 +178,84 @@ describe("edit_files：归组键是「根 + 相对路径」", () => {
   });
 });
 
+/* 跨根改动的回执不许分阶段说谎：内存栈里的检查点带着自己那个 FileStore，
+   本进程内退得回来；影子快照只覆盖当前工作区，重启后这批退不回来。
+   写一句不分阶段的"/undo 可以撤销"，模型就照抄成对用户的承诺。 */
+describe("跨根写入的撤销边界要说准", () => {
+  function foreignAgent(pushed) {
+    const cur = memStore("/ws/a", {});
+    const other = memStore("/ws/b", {});
+    const a = agentOf(cur, {
+      roots: {
+        resolve: () => ({
+          ok: true, store: other, rel: "src/x.js",
+          root: { active: false, id: "rb", dir: "/ws/b", label: "B", writable: true },
+        }),
+      },
+      _pushCheckpoint: (snaps, label) => pushed.push({ snaps, label }),
+    });
+    return { a, other };
+  }
+
+  it("write_file 跨根：不再许诺无条件的 /undo，写清重启后退不回来", async () => {
+    const pushed = [];
+    const { a, other } = foreignAgent(pushed);
+    const out = await TOOLS.write_file(a, { path: "src/x.js", content: "NEW", root: "rb" });
+    expect(other.read("src/x.js")).toBe("NEW");
+    expect(pushed).toHaveLength(1);
+    expect(out).not.toContain("/undo 可以撤销");
+    expect(out).toContain("撤销只在本次服务运行期间有效");
+    expect(out).toContain("重启后这批退不回来");
+  });
+
+  it("delete_file 跨根：同样带边界", async () => {
+    const cur = memStore("/ws/a", {});
+    const other = memStore("/ws/b", { "src/x.js": "OLD" });
+    const a = agentOf(cur, {
+      roots: {
+        resolve: () => ({
+          ok: true, store: other, rel: "src/x.js",
+          root: { active: false, id: "rb", dir: "/ws/b", label: "B", writable: true },
+        }),
+      },
+    });
+    const out = await TOOLS.delete_file(a, { path: "src/x.js", root: "rb" });
+    expect(out).not.toContain("/undo 可以恢复");
+    expect(out).toContain("重启后这批退不回来");
+  });
+
+  it("edit_files 混合批次：点名哪些文件属于别的根，其余只说本进程内可回滚", async () => {
+    const cur = memStore("/ws/a", { "src/x.js": "OLD" });
+    const other = memStore("/ws/b", { "src/x.js": "OLD" });
+    const a = agentOf(cur, {
+      roots: {
+        resolve: ({ root }) => (root === "rb"
+          ? { ok: true, store: other, rel: "src/x.js", root: { active: false, id: "rb", dir: "/ws/b", label: "B", writable: true } }
+          : { ok: true, store: cur, rel: "src/x.js", root: { active: true, id: "ra", dir: "/ws/a", label: "A", writable: true } }),
+      },
+    });
+    const out = await TOOLS.edit_files(a, { ops: [
+      { path: "src/x.js", root: "ra", old_string: "OLD", new_string: "AAA" },
+      { path: "src/x.js", root: "rb", old_string: "OLD", new_string: "BBB" },
+    ] });
+    expect(out).toContain("本次服务运行期间");
+    expect(out).toContain("B:src/x.js 属于别的根");
+    expect(out).toContain("重启后这批退不回来");
+  });
+
+  it("edit_files 全在本工作区：不许凭空扯别的根", async () => {
+    const cur = memStore("/ws/a", { "src/x.js": "OLD" });
+    const a = agentOf(cur, {
+      roots: {
+        resolve: () => ({ ok: true, store: cur, rel: "src/x.js", root: { active: true, id: "ra", dir: "/ws/a", label: "A", writable: true } }),
+      },
+    });
+    const out = await TOOLS.edit_files(a, { ops: [{ path: "src/x.js", old_string: "OLD", new_string: "AAA" }] });
+    expect(out).toContain("本次服务运行期间");
+    expect(out).not.toContain("属于别的根");
+  });
+});
+
 describe("run_tests：与 run_command 同一条沙箱路径", () => {
   const saved = sandbox.wrap;
   afterEach(() => { sandbox.wrap = saved; });

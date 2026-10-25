@@ -565,7 +565,7 @@ app.post("/api/undo", (req, res) => {
       return res.json({ ok: false, error: "当前引擎不支持撤销（演示引擎没有写盘检查点）" });
     }
     const steps = eng.undoSteps();
-    if (!steps.length) return res.json({ ok: false, empty: true, error: "没有可撤销的改动了：撤销栈只记本机这台服务运行期间写过的文件" });
+    if (!steps.length) return res.json({ ok: false, empty: true, error: "没有可撤销的改动了：本次运行没写过文件，本机影子快照里也没有可回退的检查点（初始全量快照不算一步）" });
     const conv = String((req.body && req.body.convId) || "");
     /* 撤销是后进先出的，能撤的只有栈顶那一步。顶上的改动属于另一个会话时直接说明，
        而不是悄悄把别人的工作回滚掉 —— 那才是这个按钮最危险的误用面。 */
