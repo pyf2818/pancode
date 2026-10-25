@@ -1,46 +1,41 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1d2430"/>
-      <stop offset="0.55" stop-color="#11151e"/>
-      <stop offset="1" stop-color="#0a0d13"/>
+    <linearGradient id="bgA" x1="0.08" y1="0" x2="0.92" y2="1">
+      <stop offset="0" stop-color="#FCFEFD"/>
+      <stop offset="0.42" stop-color="#EEF8F5"/>
+      <stop offset="1" stop-color="#DFEDF3"/>
     </linearGradient>
-    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#45e0ff"/>
-      <stop offset="0.5" stop-color="#5b8cff"/>
-      <stop offset="1" stop-color="#a16bff"/>
+    <linearGradient id="markA" x1="0.15" y1="0.02" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#37C4A6"/>
+      <stop offset="0.5" stop-color="#3FA3DB"/>
+      <stop offset="1" stop-color="#6A7CD3"/>
     </linearGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.08"/>
-      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    <linearGradient id="glossA" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.26"/>
-      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0.05"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.04"/>
+    <!-- 底座边缘：浅色图标在浅色任务栏上会"融掉"，必须有明确的边界 -->
+    <linearGradient id="rimA" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.45" stop-color="#C3DCE2" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#8FB0BE" stop-opacity="0.95"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0.5" cy="0.47" r="0.5">
-      <stop offset="0" stop-color="#4a7dff" stop-opacity="0.34"/>
-      <stop offset="1" stop-color="#4a7dff" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="22"/>
-    </filter>
   </defs>
 
-  <!-- 深色玻璃圆角底 -->
-  <rect x="64" y="64" width="896" height="896" rx="210" ry="210" fill="url(#bg)"/>
-  <rect x="64" y="64" width="896" height="896" rx="210" ry="210" fill="url(#sheen)"/>
-  <rect x="66" y="66" width="892" height="892" rx="208" ry="208" fill="none" stroke="url(#edge)" stroke-width="4"/>
+  <rect x="52" y="52" width="920" height="920" rx="216" fill="url(#bgA)"/>
+  <rect x="52" y="52" width="920" height="920" rx="216" fill="url(#glossA)" opacity="0.5"/>
+  <rect x="54" y="54" width="916" height="916" rx="214" fill="none" stroke="url(#rimA)" stroke-width="8"/>
 
-  <!-- 中心光晕 -->
-  <circle cx="512" cy="488" r="320" fill="url(#glow)" filter="url(#soft)"/>
+  <!-- P：竖笔与碗部共用起点，碗部弧线不被竖笔穿出（上一版像 R） -->
+  <path d="M 376 720 L 376 318" fill="none" stroke="url(#markA)" stroke-width="46" stroke-linecap="round"/>
+  <path d="M 376 318 C 508 300 700 342 700 456 C 700 570 508 610 376 592"
+        fill="none" stroke="url(#markA)" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <!-- 盘：一道开口的圆环，开口朝右 -->
-  <path d="M 699.3 343.4 A 252 252 0 1 0 699.3 680.6"
-        fill="none" stroke="url(#mark)" stroke-width="64" stroke-linecap="round"/>
+  <!-- 代码箭头：右下，小而含蓄 -->
+  <path d="M 604 660 L 680 714 L 604 768"
+        fill="none" stroke="url(#markA)" stroke-width="38"
+        stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
 
-  <!-- 代码箭头：从盘心穿过开口指出去，尖端抵在开口内侧 -->
-  <path d="M 476 372 L 684 512 L 476 652"
-        fill="none" stroke="url(#mark)" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 一点光标 -->
+  <circle cx="758" cy="714" r="19" fill="url(#markA)" opacity="0.7"/>
 </svg>

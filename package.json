@@ -1,6 +1,6 @@
 {
   "name": "pancode",
-  "version": "3.7.0",
+  "version": "3.7.1",
   "description": "本地优先的 AI 编程工作台 —— Monaco 可写编辑器 + 集成终端 + 真实 LLM Agent 工具循环（OpenAI 兼容 / Anthropic 原生），无 Key 时演示引擎保底",
   "keywords": ["ai", "coding-agent", "llm", "monaco-editor", "electron", "developer-tools", "react", "mcp", "local-first"],
   "license": "MIT",
