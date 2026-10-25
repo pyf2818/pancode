@@ -203,7 +203,8 @@ const readRows = (page) => page.evaluate(() => {
     const searchBox = await page.locator("#skillSearch").boundingBox();
     section("⑥ 工具条与分类 chip 出现在屏上");
     ok("搜索框可见且有高度", !!searchBox && searchBox.height > 16, J(searchBox));
-    ok("排序开关 4 个，默认选中用量", (await page.locator("#skillSort button").count()) === 4 && s.sortOn === "usage", J(s.sortOn));
+    /* 排序按钮组已移除（只留搜索）：契约从"4 个开关"改为"DOM 不存在 + 列表按默认用量序" */
+    ok("排序开关已移除，工具条只留搜索", (await page.locator("#skillSort").count()) === 0, J((await page.locator(".skm-toolbar").innerHTML().catch(() => "")).slice(0, 120)));
     ok("分类 chip 渲染出来了（这条以前永远为 0）", s.chips.length >= 4, "chips=" + J(s.chips.map((c) => c.text)));
     ok("「全部」chip 上的数字 = 屏内行数（计数与列表同源）",
       s.chips[0] && s.chips[0].cat === "" && new RegExp("^全部 " + s.names.length + "$").test(s.chips[0].text), J(s.chips[0]) + " rows=" + s.names.length);
@@ -254,22 +255,13 @@ const readRows = (page) => page.evaluate(() => {
     s = await readRows(page);
     ok("清除筛选后行数回来了", s.names.includes("skm-alpha 前端") && (await page.inputValue("#skillSearch")) === "", J(s.names.slice(0, 4)));
 
-    section("⑩ 排序开关：用户创建那一组内部换序");
-    /* 内置组永远排在用户组之上（这是这一屏的信息架构），所以断言打在 data-src="market" 的那一段上；
-       先用量后评分，两次的期望首位不同——只测一次的话，"点了没反应"也能蒙过。 */
-    await page.click('#skillSort button[data-sort="usage"]');
-    await wait(320);
+    section("⑩ 默认排序（按用量）：用户创建那一组内部有序");
+    /* 排序按钮组移除后固定 usage 序，不再有切换交互可测。内置组永远排在用户组之上
+       （这是这一屏的信息架构），所以断言打在 data-src="market" 的那一段上；
+       评分数据是否真从磁盘走到顺序，由 ⑪ 的"点星落盘"覆盖。 */
     s = await readRows(page);
     ok("用量序：skm-zulu 重构 在 skm-mid 测试 之前",
       s.marketNames.indexOf("skm-zulu 重构") === 0 && s.marketNames.indexOf("skm-mid 测试") === 1, J(s.marketNames));
-    await page.click('#skillSort button[data-sort="rating"]');
-    await wait(320);
-    s = await readRows(page);
-    ok("评分序：评过 4 分的 skm-mid 测试 升到第一（分数从磁盘一路走到顺序）",
-      s.marketNames[0] === "skm-mid 测试" && s.marketNames.indexOf("skm-zulu 重构") > 0, J(s.marketNames));
-    ok("排序开关高亮跟着变", s.sortOn === "rating", J(s.sortOn));
-    await page.click('#skillSort button[data-sort="usage"]');
-    await wait(280);
 
     section("⑪ 详情弹窗里点星 → 落盘 → 重开还在");
     /* 操作区平时是 visibility:hidden（悬停才浮出），Playwright 把这种状态算不可见，
