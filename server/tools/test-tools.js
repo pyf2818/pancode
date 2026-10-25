@@ -5,6 +5,7 @@
    这一层只做三件事：读 package.json、起进程、把回执交回模型。
    ============================================================ */
 const TR = require("../test-runner");
+const sandbox = require("../sandbox");
 
 function readPkg(agent) {
   try {
@@ -56,7 +57,12 @@ module.exports = {
        超时的处理照 run_command 的老路：终止进程但把已有输出交回去，别让模型看到空结果就猜。 */
     const sec = Math.max(30, Math.min(1800, Math.round(Number(args.timeoutSec) || 600)));
     const { AI_TERM_TAB } = require("../terminal");
-    const r = await agent.term.run(AI_TERM_TAB, plan.command, null, { timeout: sec * 1000, strict: true, ai: true });
+    /* 与 run_command 同一条沙箱路径：run_tests 直接跑宿主 shell 时，
+       配了 docker/wsl 隔离的会话只要用 run_tests 就绕开了隔离。
+       argv 非空必须走无 shell 的精确 spawn（见 sandbox.wrap 头注释）。 */
+    const sb = sandbox.wrap(plan.command, { workspace: agent.files && agent.files.dir, cfg: agent.cfg });
+    if (sb.sandboxed) t.body("[沙箱·" + sb.backend + "] " + sb.note);
+    const r = await agent.term.run(AI_TERM_TAB, sb.display || sb.command, sb.argv || null, { timeout: sec * 1000, strict: true, ai: true });
     agent.state(false, "");
 
     if (r.blocked) {

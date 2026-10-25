@@ -93,6 +93,27 @@ function flattenGroups(groups) {
   return out;
 }
 
+/* 超长历史裁剪：从最新往回收完整轮次组，不把 tool_calls 与结果切开。
+   单组就超过上限时整组保留（宁超不切）。
+   以前调用点写的是 groups[i].length —— 那是 undefined，且 kept.flat() 留下的是
+   { items:[...] } 对象而不是消息，发给上游直接 400。这条路径只在 100 条以上才走到，
+   常规会话测不出来，所以把它收成纯函数单测。 */
+function trimHistoryGroups(history, max) {
+  const list = Array.isArray(history) ? history : [];
+  const cap = Math.max(1, Math.floor(Number(max) || 100));
+  if (list.length <= cap) return list;
+  const groups = groupHistoryByToolPairing(list);
+  const kept = [];
+  let total = 0;
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const n = groups[i].items.length;
+    if (total > 0 && total + n > cap) break;
+    kept.unshift(groups[i]);
+    total += n;
+  }
+  return flattenGroups(kept);
+}
+
 /* ============================================================
    历史配对修复（崩溃/中断恢复）
    典型事故：一条 assistant.tool_calls 已经落进对话存档，但它对应的
@@ -272,7 +293,7 @@ function subWriteTargets(name, args) {
 
 module.exports = {
   _sanitizeToolCall, _sanitizeHistory, estTextTokens, CJK_CHAR_RE,
-  groupHistoryByToolPairing, flattenGroups, toolOutcomeUnknownText, repairToolPairing,
+  groupHistoryByToolPairing, flattenGroups, trimHistoryGroups, toolOutcomeUnknownText, repairToolPairing,
   MICROCOMPACT_KEEP_RECENT_ROUNDS, MICROCOMPACT_MIN_TOKEN_SAVINGS, MICROCOMPACT_THRESHOLD_RATIO,
   MICROCOMPACT_THRESHOLD_BUFFER_TOKENS, MICROCOMPACT_CLEARED, MICROCOMPACTABLE_TOOLS,
   SPILL_MAX_FILE_CHARS, SPILL_MAX_FILES_PER_CONV,

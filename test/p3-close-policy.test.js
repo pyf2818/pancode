@@ -192,4 +192,14 @@ describe("electron/main.js 的接线：字段名错了，判据再对也没用",
   it("记住之后真的写偏好，且写的是这一次实际选的那条", () => {
     expect(src).toMatch(/if \(dec\.rememberPref\) \{\s*setDesktopPref\(dec\.rememberPref\)/);
   });
+
+  /* 后端与主进程同进程：同步模态会把正在流式的任务整段卡住。
+     这条路径没有自动化 UI 可点，只能钉源码里的对话框形态。 */
+  it("退出确认用异步对话框，且带重入闸", () => {
+    /* 只禁真调用：注释里点名这个 API 说明"为什么不用"是正当的 */
+    expect(src).not.toMatch(/showMessageBoxSync\s*\(/);
+    expect(src).toMatch(/async function quitWithTasks\(\)/);
+    expect(src).toMatch(/if \(quitting \|\| quitDialogOpen\) return;/);
+    expect(src).toMatch(/await dialog\.showMessageBox\(/);
+  });
 });

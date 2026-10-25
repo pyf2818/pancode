@@ -66,13 +66,19 @@ describe("入队闸门", () => {
     expect(note).toContain("EPERM");
   });
 
-  it("上游拒收过一次以后，本会话不再入队", () => {
+  it("上游拒收过一次以后，本引擎不再入队（回执要说清范围与恢复办法）", () => {
     const a = agent();
     a._visionRejected = true;
     const shot = mkShot("rej.jpeg", 1024);
     const v = a.offerVision({ abs: shot.abs, rel: shot.rel });
     expect(v.why).toBe("rejected");
     expect(a._visionFor("default")).toEqual([]);
+    /* 拒收记在引擎上，不在会话上：说"本次会话"会让人以为新开一个对话就好了，
+       而实际要换模型或重开开关（保存配置会重建引擎）才复位。 */
+    const note = vision.explain(v);
+    expect(note).toContain("本引擎");
+    expect(note).not.toMatch(/本次会话已停止/);
+    expect(note).toContain("重建引擎");
   });
 });
 
@@ -102,15 +108,29 @@ describe("像素随请求带一次", () => {
     expect(a._visionFor("default")).toEqual([]);
   });
 
-  it("一轮最多带 4 张，多的丢最早的（水位比张数金贵）", () => {
+  it("一轮最多带 4 张，被挤掉的那张要指名——不许让它以为四张都发出去了", () => {
     const a = agent();
+    let v;
     for (let i = 0; i < 6; i++) {
       const s = mkShot("s" + i + ".png", 512);
-      a.offerVision({ abs: s.abs, rel: s.rel, caption: "c" + i });
+      v = a.offerVision({ abs: s.abs, rel: s.rel, caption: "c" + i });
     }
     const list = a._visionFor("default");
     expect(list).toHaveLength(4);
     expect(list[0].rel).toBe("s2.png");
+    expect(v.max).toBe(4);
+    expect(v.dropped).toBe("s1.png");            // 第 6 张进来时挤掉的是 s1
+    const note = vision.explain(v);
+    expect(note).toContain("s1.png");
+    expect(note).toContain("重新截一次");
+    expect(a.offerVision({ abs: mkShot("s9.png", 512).abs, rel: "s9.png" }).dropped).toBe("s2.png");
+    /* 队列没满时不许凭空报"丢了哪张" */
+    const b = agent();
+    const first = mkShot("first.png", 512);
+    const v1 = b.offerVision({ abs: first.abs, rel: first.rel });
+    expect(v1.ok).toBe(true);
+    expect(v1.dropped).toBeNull();
+    expect(v1.count).toBe(1);
   });
 
   it("按会话分开排队：并行会话的截图不许串到别的请求里", () => {

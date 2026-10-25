@@ -333,12 +333,16 @@ const doUndo = (convId, token) => req("POST", "/api/undo", { convId }, token || 
 
     await ask("改文件");
     await ask("新建");
+    /* 固定 2.6s 只够等"用户气泡出现"，任务收尾/按钮交还都可能晚到一点。
+       这条探针盯的是"看得见才点得下去"，所以等到按钮真的可见再断言，别赌时序。 */
+    await page.locator(".t-undo").first().waitFor({ state: "visible", timeout: 20000 });
     ok("连着两步之后仍然只有一颗按钮（在最新那张卡上）", (await page.locator(".t-undo").count()) === 1);
     await page.locator(".t-undo").first().click();
     await wait(1400);
     ok("撤掉最新一步之后，按钮自动交还给上一张卡", (await page.locator(".t-undo").count()) === 1,
       "按钮数=" + (await page.locator(".t-undo").count()));
     ok("最新那一步（新建）确实被撤了", read("undo-new.txt") === null, "");
+    await page.locator(".t-undo").first().waitFor({ state: "visible", timeout: 20000 });
     await page.locator(".t-undo").first().click();
     await wait(1400);
     ok("再点一次回到上一步之前的内容（逐步回退）", read("undo-edit.txt") === "第一版\n", String(read("undo-edit.txt")));

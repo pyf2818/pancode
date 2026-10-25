@@ -17,6 +17,7 @@ const MAX_TEXT = 600;        // 单条上限：超过这个长度的内容该进
 const MAX_RENDER_CHARS = 1800;   // 注入给下游步骤的白板总字数上限
 const KINDS = ["finding", "blocker", "question", "note"];
 const KIND_CN = { finding: "结论", blocker: "走不通", question: "待答", note: "备注" };
+const { clipText } = require("./text-clip");
 
 class Blackboard {
   constructor(runId) {
@@ -29,15 +30,19 @@ class Blackboard {
     const body = String(text == null ? "" : text).trim();
     if (!body) return { ok: false, why: "empty" };
     const k = KINDS.includes(kind) ? kind : "note";
+    /* 截断按 text-clip 的口径：白板条目是拼进下游 prompt 的一段一段文本，
+       切口落在 emoji 半个代理上、或落在条目自己写的 ``` 围栏中间时，
+       下游看到的是一条坏字符 + 后面全部被吞进代码块。 */
+    const clipped = clipText(body, MAX_TEXT);
     this.items.push({
-      from: String(from || "").slice(0, 40),
+      from: clipText(from, 40),
       kind: k,
-      key: String(key || "").slice(0, 80),
-      text: body.slice(0, MAX_TEXT),
+      key: clipText(key, 80),
+      text: clipped,
       ts: Date.now(),
     });
     while (this.items.length > MAX_ENTRIES) this.items.shift();
-    return { ok: true, n: this.items.length, truncated: body.length > MAX_TEXT };
+    return { ok: true, n: this.items.length, truncated: clipped !== body };
   }
 
   /* exceptFrom：排除某一步自己写的条目。下游要看别人的结论，把自己刚写的那条再读一遍是纯浪费。 */

@@ -30,7 +30,7 @@ npm install
 npm start            # 网页版：http://localhost:8766
 ```
 
-要求 Node.js ≥ 18。编辑器内核经 CDN/本地 vendor 加载（需联网或已 vendored）。
+要求 **Node.js ≥ 24**（`agent-browser@0.39` 要求 ≥ 24；测试链的 vitest 5 要求 ≥ 22.12）。编辑器内核经 CDN/本地 vendor 加载（需联网或已 vendored）。
 
 ### 桌面版（Electron）
 
@@ -45,6 +45,8 @@ npm run dist         # 打包 Windows 安装程序（NSIS，可自选安装目�
 ### 配置模型（真实 LLM 引擎）
 
 点击右上角「模型设置」，填入任意 **OpenAI 兼容 API**（OpenAI / DeepSeek / Moonshot / 通义 / Ollama / vLLM…），Agent 立即获得完整工具集。
+
+**数据边界：** 应用是本地优先的（文件、对话、记忆都留在本机 `.pancode`），但接远程模型时，提示词、被选中的代码、工具结果与文件片段**会发送给你配置的服务商**；API Key 只存本地，不会回显到界面。代码不能出机器时，请把 base URL 指向本机运行时（Ollama / vLLM）。
 
 ```bash
 OPENAI_BASE_URL=https://api.deepseek.com/v1 \
@@ -184,14 +186,15 @@ OPENAI_MODEL=model         # LLM 模型名称
 ## 🧪 测试
 
 ```bash
-npm run test:unit       # vitest 单测（~1200 项，含沙箱/Anthropic 适配/net-guard/SSE 解析）
-npm run test:verify     # 57 个真实探针：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离 / 浏览器…
+npm run test:unit       # vitest 单测（~1280 项，含沙箱/Anthropic 适配/net-guard/SSE 解析）
+npm run test:verify     # 54 个真实探针：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离 / 浏览器…（仓库共 58 个探针脚本，桌面/界面类单独跑）
 node scripts/smoke-test.js        # 端到端：启动服务 → Agent 闭环 → 断言失败/修复/通过/Diff → 还原
-npm run test:nightly    # 真实模型夜间回归（read-echo / subagent / apply-edit / compaction；无 Key 自动跳过）
-npm test                        # 完整套件
+npm run test:nightly    # 真实模型夜间回归（read-echo / subagent / apply-edit / compaction）
+                        # 无 Key 只打印 SKIP 并 exit 0 —— SKIP 不算通过，别把它报成"夜间回归绿了"
+npm test                # 完整套件：单测 + 探针 + smoke + integration/patch/lsp/code-index
 ```
 
-CI（`.github/workflows/ci.yml`）：lint → 单测 → 57 探针 → smoke，Windows 单环境先稳住链路；`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过）。
+CI（`.github/workflows/ci.yml`）：lint → 单测 → 54 探针 → smoke，Windows 单环境先稳住链路；`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过）。
 
 ---
 

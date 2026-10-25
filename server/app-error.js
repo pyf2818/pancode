@@ -100,4 +100,41 @@ function msgIncludesAny(msg, words) {
   return words.some((w) => msg.includes(w));
 }
 
-module.exports = { AppError, classifyError, classifyLlmError };
+/* ============================================================
+   这条 4xx 是不是"上游明确说它不收图片"
+   ------------------------------------------------------------
+   为什么单独一把尺子：拒收判定决定的是一台引擎的长期行为 —— 判成"模型不带视觉"
+   就永久停止喂像素，直到换模型或重开开关（配置保存会重建引擎）才复位。
+   以前用一条宽正则（image|vision|...|invalid_request）来判，后果是：
+     · 模型名里带 vision 的 404、工具 schema 写错的 invalid_request_error，
+       都会被当成"这个模型不收图"，视觉被无声关掉，而真实错误被那句降级提示盖掉。
+   所以只认"图片/视觉/多模态/内容类型"与"不支持/只支持文本/无效值"同现的措辞。
+   ============================================================ */
+const VISION_AHEAD = "[^\\n]{0,80}";
+const VISION_SUBJECT = "(?:image_url|images?|vision|multimodal|multi-modal|modalit(?:y|ies)|content[- _]?type)";
+/* "不收图"的说法。刻意不含裸 invalid：那样"image 太大了 / image 是 invalid 的"
+   也会被读成"这个模型没有视觉"，而那是这一张图的问题，不该永久关掉整台引擎的喂图。 */
+const VISION_REJECT = "(?:not supported|unsupported|does not support|doesn'?t support"
+  + "|cannot (?:accept|process|handle)|only supports? text|text[- ]only|not enabled"
+  + "|only text[^\\n]{0,20}supported)";
+const VISION_REJECT_RE = new RegExp(
+  "(?:" + VISION_SUBJECT + VISION_AHEAD + VISION_REJECT + ")"
+  + "|(?:" + VISION_REJECT + VISION_AHEAD + VISION_SUBJECT + ")"
+  // OpenAI 对纯文本模型收 image_url 的原话："Invalid value: 'image_url'. Expected 'text'."
+  + "|(?:(?:invalid value|unknown variant|unexpected value)" + "[^\\n]{0,40}" + VISION_SUBJECT + ")",
+  "i");
+
+function isVisionRejection(err, msg) {
+  const text = typeof msg === "string" ? msg : (err && err.message ? err.message : String(err || ""));
+  return VISION_REJECT_RE.test(text);
+}
+
+/* 这条错误是否"与图有关"（决定是否值得摘掉像素重试一次）。
+   比 isVisionRejection 宽：允许"image dimensions exceed"这类既不永久也不该放弃一轮的措辞。 */
+const VISION_RELATED_RE = /(image|vision|multimodal|multi-modal|modalit|pixel)/i;
+function isVisionRelated(err, msg) {
+  const text = typeof msg === "string" ? msg : (err && err.message ? err.message : String(err || ""));
+  return VISION_RELATED_RE.test(text) || isVisionRejection(err, msg);
+}
+
+module.exports = { AppError, classifyError, classifyLlmError, isVisionRejection, isVisionRelated };

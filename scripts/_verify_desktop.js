@@ -75,10 +75,16 @@ async function boot(tag, port, cfgExtra, probeEnv) {
 
   const child = spawn(electronBin, ["."], {
     cwd: ROOT,
-    env: Object.assign({}, process.env, {
-      PORT: String(port), PANCODE_DATA_DIR: DATA_DIR, CURSORWEB_WORKSPACE: WS_DIR,
-      CURSORWEB_ENGINE: "demo", AGENT_FAST: "1", NODE_NO_WARNINGS: "1",
-    }, probeEnv || {}),
+    env: (() => {
+      const env = Object.assign({}, process.env, {
+        PORT: String(port), PANCODE_DATA_DIR: DATA_DIR, CURSORWEB_WORKSPACE: WS_DIR,
+        CURSORWEB_ENGINE: "demo", AGENT_FAST: "1", NODE_NO_WARNINGS: "1",
+      }, probeEnv || {});
+      /* 父 shell 若残留 ELECTRON_RUN_AS_NODE=1，Electron 会退化成纯 Node：app 为 undefined，
+         进程在 main.js 第 19 行就退出，表现为"后端 60s 没应答"。这跟桌面端无关，是调用环境的坑。 */
+      delete env.ELECTRON_RUN_AS_NODE;
+      return env;
+    })(),
     stdio: ["ignore", "pipe", "pipe"],
   });
   const inst = {
@@ -143,9 +149,11 @@ async function boot(tag, port, cfgExtra, probeEnv) {
   const crashes = (A.out.match(/(unhandledRejection|uncaughtException)[^\n]*/g) || []).slice(0, 2);
   ok("A：主进程这一路没有未捕获的异步异常", crashes.length === 0, crashes.join(" | "));
 
-  const reg = await post(8815, "/api/auth/register", { username: "_desk_" + Date.now(), password: "test1234" });
+  /* 桌面端启动时会静默走 /api/auth/auto 建立 local 身份；自助注册在已有用户后默认关闭
+     （首个账号之后必须显式开窗）。探针走同一条本机免密通道拿令牌，才和真实前端同账号。 */
+  const reg = await get(8815, "/api/auth/auto");
   const TOKEN = reg.json && reg.json.token;
-  ok("A：沙箱内可注册验证用户（账号只落在沙箱数据根）", !!TOKEN, JSON.stringify(reg.json).slice(0, 140));
+  ok("A：本机免密身份可用（令牌只落在沙箱数据根）", !!TOKEN, JSON.stringify(reg.json).slice(0, 140));
 
   /* 用 WS 派一个活：demo 引擎会跑一串工具，耗时足够跨过"关窗"这个时刻 */
   const WebSocket = require("ws");

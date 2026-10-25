@@ -1830,6 +1830,9 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .orch-summary.ok{background:#4ade801f;color:var(--ok);border:1px solid #4ade8040}
 .orch-summary.fail{background:#fb71851f;color:var(--err);border:1px solid #fb718540}
 .orch-summary .orch-sum-ico .ico{width:16px;height:16px}
+/* 自动补的串行边自占一行：它是"这几条边不是模型写的"这层说明，
+   混在结论那行里会被当成结论的一部分读掉 */
+.orch-summary .orch-sum-serial{flex:1 0 100%;font-weight:400;font-size:11.5px;opacity:.85;font-variant-numeric:tabular-nums}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* 消息节点快速跳转导航条：每个节点 = 一条用户输入；space-evenly 均匀分布，不随消息实际位置 */

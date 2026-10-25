@@ -10,6 +10,7 @@
 const fs = require("fs");
 const log = require("./logger");
 const path = require("path");
+const { clipText } = require("./text-clip");
 
 const TYPES = new Set(["preference", "lesson", "pattern", "decision", "error", "skill"]);
 const MAX_ENTRIES = 200;
@@ -177,7 +178,7 @@ class MemoryStore {
     if (near) {
       const seen = this._tokenizeText(near.content);
       const extra = clean.split(/[\s，。；：,;:、！？()\[\]{}「」"'`]+/).filter((w) => w && !seen.has(w));
-      near.content = (near.content + "；" + extra.join("；")).slice(0, 400);
+      near.content = clipText(near.content + "；" + extra.join("；"), 400);
       near.accessCount = (near.accessCount || 0) + 1;
       near.lastAccessAt = Date.now();
       const vs = (meta && meta.valueScore) || near.valueScore;
@@ -397,10 +398,10 @@ class MemoryStore {
       const tier = w >= 4 ? "高" : "中";
       const age = Math.floor((Date.now() - (e.lastAccessAt || e.ts)) / (1000 * 60 * 60 * 24));
       const ageStr = age === 0 ? "今天" : age + "天前";
-      return "- (" + tier + ") [" + e.type + "] " + (e.topic ? e.topic + "：" : "") + e.content.slice(0, 160) + " (" + ageStr + ")";
+      return "- (" + tier + ") [" + e.type + "] " + (e.topic ? e.topic + "：" : "") + clipText(e.content, 160) + " (" + ageStr + ")";
     });
     let out = lines.join("\n");
-    if (maxChars && out.length > maxChars) out = out.slice(0, maxChars) + "\n...";
+    if (maxChars && out.length > maxChars) out = clipText(out, maxChars) + "\n...";
     return out;
   }
 
@@ -431,8 +432,8 @@ class MemoryStore {
     const lines = [];
     let used = 0;
     for (const e of list) {
-      const topic = String(e.topic || "").replace(/\s+/g, " ").trim().slice(0, 18);
-      const hook = String(e.content || "").replace(/\s+/g, " ").trim().slice(0, IDX_HOOK_CHARS);
+      const topic = clipText(String(e.topic || "").replace(/\s+/g, " ").trim(), 18);
+      const hook = clipText(String(e.content || "").replace(/\s+/g, " ").trim(), IDX_HOOK_CHARS);
       const line = "- #" + e.id + " [" + e.type + "]" + (topic ? " " + topic + "：" : "") + hook;
       if (used + line.length > budget) break;
       used += line.length;

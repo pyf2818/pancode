@@ -31,6 +31,9 @@ const DEMO = process.env.PANCODE_NIGHTLY_DEMO === "1";
 if (!DEMO && (!NIGHTLY.baseURL || !NIGHTLY.apiKey || !NIGHTLY.model)) {
   console.log("[nightly] SKIP：未配置真实模型（PANCODE_NIGHTLY_BASE_URL/KEY/MODEL），exit 0。");
   console.log("[nightly] 配置后可每晚真跑：read-echo / subagent / apply-edit / compaction 四场景。");
+  /* 机器可读的结论行：CI 里 exit 0 只代表"没把流水线拖红"，不代表真实模型跑过了。
+     汇报时必须按这一行说，别把 SKIP 写成 PASS。 */
+  console.log("[nightly] RESULT: SKIP（未验证真实模型路径，不算通过）");
   process.exit(0);
 }
 
@@ -181,6 +184,9 @@ async function main() {
   }
 
   console.log("\n\x1b[1m[nightly] " + pass + " 通过 / " + fail + " 失败\x1b[0m");
+  console.log("[nightly] RESULT: " + (fail
+    ? "FAIL"
+    : (DEMO ? "DEMO-PASS（只验管线，不算真实模型通过）" : "PASS")));
   if (fails.length) fails.forEach((f) => console.log("  ✗ " + f));
   try { ws.close(); } catch (e) {}
   try { srv.kill(); } catch (e) {}

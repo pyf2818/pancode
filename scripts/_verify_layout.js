@@ -900,6 +900,44 @@ async function main() {
     ok("历史行标出改动归属与挡回次数", /改动 2 个文件/.test(orchUi2.t0) && /撞回 1 次/.test(orchUi2.t0), "t0=" + orchUi2.t0);
     ok("没改盘的步骤不编造归属数字", !/改动/.test(orchUi2.t1), "t1=" + orchUi2.t1);
 
+    /* 自动补的串行边要看得见（v3.7 审查遗留第 7 条）：
+       服务端把 serialized 落了档，但侧栏与回放都不消费 —— 注释里承诺的"回放时看得到这几条"只兑现一半。
+       两步被防撞车改成串行，与"模型本来就写了依赖"是两回事：前者是编排器替它决定的。 */
+    const autoSerialUi = await page.evaluate(async () => {
+      const mk = (id, autoSerial) => ({ id, title: id, ok: true, elapsed: 2, ts: Date.now(), conv: convId,
+        counts: { done: 2, fail: 0, total: 2 }, summary: "", autoSerial,
+        steps: [{ id: "s1", name: "甲", status: "done", layer: 0, changed: 0 }, { id: "s2", name: "乙", status: "done", layer: 0, changed: 0 }] });
+      const runs = [mk("有自动串行", 2), mk("全是模型写的", 0)];
+      const realFetch = window.fetch;
+      window.fetch = () => Promise.resolve(new Response(JSON.stringify({ ok: true, runs }), { headers: { "Content-Type": "application/json" } }));
+      try { await renderOrchHistory(); } finally { window.fetch = realFetch; }
+      const metas = [...document.querySelectorAll("#agOrchHistory .ag-orch-item")].map((x) => ({
+        title: (x.querySelector(".ag-orch-item-title") || {}).textContent || "",
+        meta: (x.querySelector(".ag-orch-item-meta") || {}).textContent || "",
+      }));
+      /* 点开回放：明细（谁等谁、为哪几个文件）只有整条记录里才有 */
+      const runFull = { id: "有自动串行", title: "有自动串行", ok: true, elapsed: 2, ts: Date.now(), summary: "2 步都完成",
+        serialized: [{ from: "s2", to: "s1", files: ["a.js", "b.js"] }],
+        steps: [{ id: "s1", name: "甲", status: "done", layer: 0 }, { id: "s2", name: "乙", status: "done", layer: 1, depends_on: ["s1"] }] };
+      window.fetch = () => Promise.resolve(new Response(JSON.stringify({ ok: true, run: runFull }), { headers: { "Content-Type": "application/json" } }));
+      try { await replayOrchRun("有自动串行", "有自动串行"); } finally { window.fetch = realFetch; }
+      const noteEl = document.querySelector("#orchSummary .orch-sum-serial");
+      const shown = getComputedStyle(document.getElementById("orchOverlay")).display;
+      const cs = noteEl ? getComputedStyle(noteEl) : null;
+      document.getElementById("orchClose").click();
+      const closed = getComputedStyle(document.getElementById("orchOverlay")).display;
+      return { metas, note: noteEl ? noteEl.textContent : "", shown, closed,
+        ownLine: !!cs && cs.flexBasis !== "auto" && parseFloat(cs.fontSize) < 13 };
+    });
+    const withAuto = autoSerialUi.metas.find((m) => m.title === "有自动串行") || {};
+    const noAuto = autoSerialUi.metas.find((m) => m.title === "全是模型写的") || {};
+    ok("侧栏历史标出「自动串行 N 处」", /自动串行 2 处/.test(withAuto.meta || ""), "meta=" + (withAuto.meta || ""));
+    ok("没有自动补边时不许凭空标（反向对照）", !/自动串行/.test(noAuto.meta || ""), "meta=" + (noAuto.meta || ""));
+    ok("回放里给出是哪一对步骤被改串行、为哪几个文件", /s2 ⇠ s1/.test(autoSerialUi.note) && /a\.js/.test(autoSerialUi.note), "note=" + autoSerialUi.note);
+    ok("回放的自动串行说明真的显形（浮层打开、字号小于结论、自占一行）",
+      autoSerialUi.shown !== "none" && autoSerialUi.ownLine === true, JSON.stringify(autoSerialUi).slice(0, 160));
+    ok("看完回放把浮层收掉，不影响后面的断言", autoSerialUi.closed === "none", "closed=" + autoSerialUi.closed);
+
     /* #45 续（P2-C1）：编排要有"图"的样子——谁等谁、谁和谁同批并行。
        这里走真实事件流（orch.start → step.done），断言泳道、边数、边跟着状态变色，
        并留一组反向对照：单批无依赖不许画成泳道（没依赖还画框列就是噪音）。 */

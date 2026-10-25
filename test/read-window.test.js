@@ -128,6 +128,41 @@ describe("symbol 取段", () => {
     expect(out).toContain("第 2 行出现过");
     expect(out).not.toContain("function real()");
   });
+
+  /* 引号状态以前每行重开：模板串本来就是跨行的，于是串里的 } 被当成配对，
+     块尾停在串中间，交出去的是半截函数 —— 模型照这半截写 old_string 必然对不上。 */
+  it("模板串跨行时，串里的花括号不参与配对", async () => {
+    const SRC = [
+      "function tpl() {",
+      "  const msg = `第一行 {",
+      "第二行 } 收尾`;",
+      "  if (msg) { return 1; }",
+      "}",
+      "function after() { return 2; }",
+    ].join("\n");
+    write("k.js", SRC);
+    agent._repoIndex = () => ({ files: [{ path: "k.js", symbols: [{ name: "tpl", kind: "function", line: 1 }] }] });
+    const out = await tools.read_file(agent, { path: "k.js", symbol: "tpl" });
+    expect(out).toContain("本次返回第 1–5 行");
+    expect(out.split("\n")[1]).toBe("function tpl() {");
+    expect(out).not.toContain("function after()");
+  });
+
+  /* 反过来：单/双引号不许跨行。一行里没闭合的引号（源文件本来就坏了）
+     若延续到下一行，后面整篇都被当字符串，块尾永远扫不到。 */
+  it("单引号不跨行：未闭合的引号不许把后面几行吃进字符串", async () => {
+    const SRC = [
+      "function q() {",
+      "  const bad = ';",
+      "  if (x) { return 1; }",
+      "}",
+    ].join("\n");
+    write("l.js", SRC);
+    agent._repoIndex = () => ({ files: [{ path: "l.js", symbols: [{ name: "q", kind: "function", line: 1 }] }] });
+    const out = await tools.read_file(agent, { path: "l.js", symbol: "q" });
+    expect(out).toContain("本次返回第 1–4 行");
+    expect(out).not.toContain("块尾没扫到");
+  });
 });
 
 describe("超过 1MB 整读闸的大文件", () => {
@@ -149,5 +184,25 @@ describe("超过 1MB 整读闸的大文件", () => {
     expect(out).toContain("本次返回第 20000–20001 行");
     // 第 1 行是 M0，所以第 20000 行是 M19999 —— 行号与内容必须这样对得上
     expect(out.split("\n")[1]).toBe("M19999");
+  });
+
+  /* 文本扫符号时以前用"这一窗给满 800 行了吗"判文件尾。
+     2MB 字符闸会让窗口提前收尾（行数不够但后面还有），于是闸后面那段永远扫不到 ——
+     而恰恰是这种大文件才没有索引、必须走文本兜底。判据必须落在 hasMore 上。 */
+  it("2MB 字符闸之后的符号仍能扫到（不许把截窗当文件尾）", async () => {
+    const pad = "y".repeat(3000);
+    const lines = [];
+    for (let i = 1; i <= 1200; i++) lines.push("const v" + i + " = \"" + pad + "\"; // " + i);
+    lines.push("export function deepSymbol(a) {");
+    lines.push("  return a + 1;");
+    lines.push("}");
+    const src = lines.join("\n");
+    expect(Buffer.byteLength(src)).toBeGreaterThan(2 * 1024 * 1024);
+    write("huge.js", src);
+    const out = await tools.read_file(agent, { path: "huge.js", symbol: "deepSymbol" });
+    expect(out).toContain("文本定位");
+    expect(out).toContain("本次返回第 1201–1203 行");
+    expect(out).toContain("return a + 1;");
+    expect(out).not.toContain("没找到定义行");
   });
 });

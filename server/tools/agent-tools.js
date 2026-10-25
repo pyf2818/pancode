@@ -12,9 +12,17 @@ module.exports = {
       t.done(false, "撤销失败", false);
       return "撤销失败：" + (r.reason || "未知错误");
     }
-    t.body("已撤销：" + r.label + "\n恢复文件：" + r.restored.join(", "));
-    t.done(true, "已撤销 " + r.restored.length + " 个文件", false);
-    return "已撤销操作「" + r.label + "」，恢复 " + r.restored.length + " 个文件：" + r.restored.join(", ");
+    /* shadow 回退那条路径除了"恢复旧内容"还会"删掉那一步新建的文件"。
+       只报 restored 等于删了文件却不吭声 —— 回执里的数字必须等于真的动了几个文件。 */
+    const restored = r.restored || [];
+    const removed = r.removed || [];
+    const bits = [];
+    if (restored.length) bits.push("恢复 " + restored.length + " 个文件：" + restored.join(", "));
+    if (removed.length) bits.push("删掉那一步新建的 " + removed.length + " 个文件：" + removed.join(", "));
+    const line = bits.join("；") || "没有文件需要还原";
+    t.body("已撤销：" + r.label + "\n" + line);
+    t.done(true, "已撤销 " + (restored.length + removed.length) + " 个文件", false);
+    return "已撤销操作「" + r.label + "」，" + line + "。";
   },
 
   agent: async (agent, args) => {

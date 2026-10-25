@@ -35,7 +35,7 @@ npm install
 npm start            # Web UI: http://localhost:8766
 ```
 
-Requires Node.js ≥ 18. No login screen — the server issues a loopback-only identity automatically.
+Requires **Node.js ≥ 24** (`agent-browser@0.39` requires ≥ 24; the test toolchain, vitest 5, requires ≥ 22.12). No login screen — the server issues a loopback-only identity automatically.
 
 ### Desktop (Electron)
 
@@ -47,6 +47,8 @@ npm run dist         # Windows installer (NSIS) → release/
 ### Configure a model
 
 Click **Model Settings** (top right) and point it at any OpenAI-compatible API (OpenAI / DeepSeek / Moonshot / Qwen / Ollama / vLLM…), or pick the native Anthropic protocol (`provider: "anthropic"`) for thinking deltas and prompt caching.
+
+**Data boundary:** the app is local-first (files, conversations and memory stay in `.pancode` on this machine), but a remote LLM means prompts, selected code, tool results and file snippets **are sent to the provider you configure**. The API key is stored locally and never rendered back to the UI. Point the base URL at a local runtime (Ollama / vLLM) if the code must not leave the machine.
 
 ```bash
 OPENAI_BASE_URL=https://api.deepseek.com/v1 \
@@ -90,14 +92,14 @@ Both windows stay in sync — conversations, terminal, state.
 ## 🧪 Tests
 
 ```bash
-npm run test:unit       # vitest, ~1,240 tests (sandbox, net-guard, SSE, Anthropic, sub-agents…)
-npm run test:verify     # 57 real probes against a live server (render, repo map, tools, agents, isolation…)
+npm run test:unit       # vitest, ~1,280 tests (sandbox, net-guard, SSE, Anthropic, sub-agents…)
+npm run test:verify     # 54 live-server probes (render, repo map, tools, agents, isolation…; 58 probe scripts in total, UI/desktop ones run separately)
 npm run smoke           # end-to-end loop with the demo engine
-npm run test:nightly    # real-LLM nightly regression (skips silently without a key)
-npm test                # full suite
+npm run test:nightly    # real-LLM nightly regression — no key means SKIP, which is NOT a pass
+npm test                # full suite: unit + probes + smoke + integration/patch/lsp/code-index
 ```
 
-CI runs lint → unit → 57 probes → smoke on Windows; a nightly workflow runs the real-LLM regression when `NIGHTLY_LLM_KEY` is configured.
+CI runs lint → unit → 54 probes → smoke on Windows; a nightly workflow runs the real-LLM regression when `NIGHTLY_LLM_KEY` is configured.
 
 ---
 

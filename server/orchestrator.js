@@ -29,6 +29,7 @@ const path = require("path");
 const wsKey = require("./ws-key");
 const safeWrite = require("./safe-write");
 const { Blackboard } = require("./blackboard");
+const { clipText } = require("./text-clip");
 
 const HIST_MAX = 50;
 /* 注入给下游的上游结论摘要长度：以前是整段 8000 字原文，
@@ -67,11 +68,14 @@ function histList() {
     id: r.id, title: r.title, ok: r.ok, elapsed: r.elapsed, ts: r.ts,
     conv: r.conv || "",
     counts: r.counts, summary: r.summary || "",
+    /* 自动补的串行边要在列表里就看得见（给条数，明细在整条记录里）：
+       以前只有 term.line 当场播一句，回放/隔天看历史时那几步看起来像真的并行过。 */
+    autoSerial: (r.serialized || []).length,
     steps: (r.steps || []).map((s) => ({
       id: s.id, name: s.name, status: s.status, layer: s.layer,
       agent_type: s.agent_type || "general",
-      task: String(s.task || "").slice(0, 160),
-      output: String(s.output || "").slice(0, 120),
+      task: clipText(s.task, 160),
+      output: clipText(s.output, 120),
       /* 列表端点是裁剪过的，但"这一步改了几个文件 / 撞了几次"必须跟着走：
          侧栏那几行要据此显示归属，点开详情才去拿整条记录太绕。 */
       changed: (s.changedFiles || []).length,
@@ -149,7 +153,7 @@ class Orchestrator {
     const head = "— " + (r.name || id) + "（" + id + "）· " + (r.status === "done" ? "完成" : "失败")
       + (files.length ? " · 改动 " + files.length + " 个文件：" + files.join(", ") : " · 未改盘")
       + ((r.conflicts || []).length ? " · 有 " + r.conflicts.length + " 次改盘被并行冲突挡回" : "") + " —";
-    return head + "\n" + String(r.output || "(无输出)").slice(0, DEP_OUTPUT_MAX);
+    return head + "\n" + clipText(String(r.output || "(无输出)"), DEP_OUTPUT_MAX);
   }
 
   /* 执行一个编排计划 */
@@ -303,12 +307,12 @@ class Orchestrator {
       if ((res.conflicts || []).length) bits.push("有 " + res.conflicts.length + " 次改盘被并行冲突挡回：" + res.conflicts.map((c) => c.path).slice(0, 6).join(", "));
       if ((res.unattributed || []).length) bits.push("另有 " + res.unattributed.length + " 个新文件无法归因（命令改盘）");
       return "- " + r.id + " " + r.name + "（" + bits.join(" · ") + "）\n  结论："
-        + String(r.output || "").replace(/\s+/g, " ").slice(0, STEP_NOTE_MAX)
+        + clipText(String(r.output || "").replace(/\s+/g, " "), STEP_NOTE_MAX)
         /* 白板条目也要交给父智能体：那是子智能体对工作区的判断（"这条路上不去"），
            只留在运行内的板上，父智能体收尾时看不见，等于查到了但没人用。 */
         + ((res.notes || []).length
-          ? "\n  白板上记的：" + res.notes.slice(0, 4).map((b) => "[" + b.kind + "] " + (b.key ? b.key + "：" : "") + b.text)
-            .join("；").slice(0, 600)
+          ? "\n  白板上记的：" + clipText(res.notes.slice(0, 4).map((b) => "[" + b.kind + "] " + (b.key ? b.key + "：" : "") + b.text)
+            .join("；"), 600)
           : "");
     }).join("\n");
 

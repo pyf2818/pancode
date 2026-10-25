@@ -39,6 +39,8 @@ const state = {
   openTabs: [],
   activeFile: null,
   dirty: new Set(),     // 有未保存编辑的文件
+  saveSeq: 0,           // 保存请求序号：ack 要能对上是哪一次内容落了盘
+  pendingSaves: {},     // path -> [{seq, content}] 已发出、还没收到 ack 的保存
   running: false,
   convRunning: {},       // 多会话并行：convId -> boolean（该会话是否正在运行）
   round: 0,
@@ -438,9 +440,11 @@ function bootMonaco() {
         const afterText = fullText.slice(model.getOffsetAt(sel.getEndPosition()));
         const filePath = uriToRelPath(model.uri);   // 见 utils.js：toString() 会给出 inmemory:/x.js，手拼 replace 匹配不上
         const lang = model.getLanguageId ? model.getLanguageId() : "plaintext";
-        showBox(sel, selectedText, beforeText, afterText, filePath, lang);
+        showBox(sel, selectedText, beforeText, afterText, filePath, lang, model);
       });
-      function showBox(sel, selectedText, beforeText, afterText, filePath, lang) {
+      /* model 必须由调用方传进来：它是上面快捷键回调里的局部变量，showBox 的词法作用域看不到。
+         接受时要用它判断"请求发出后目标文件有没有被换掉"。 */
+      function showBox(sel, selectedText, beforeText, afterText, filePath, lang, model) {
         if (box) { box.remove(); box = null; }
         box = document.createElement("div");
         box.id = "inlineEditBox";
@@ -490,7 +494,17 @@ function bootMonaco() {
         });
         acceptBtn.addEventListener("click", () => {
           if (!modifiedText) return;
-          editor.executeEdits("inline-edit", [{ range: sel, text: modifiedText }]);
+          /* 发请求时捕获的 model / 选区可能已经过期：切了文件、或选区文字被改动。
+             这时宁可拒绝并说清楚，也不能把结果写进另一个 model 或错位区间。 */
+          if (!model || model.isDisposed() || editor.getModel() !== model) {
+            title.textContent = t("ieTargetChanged");
+            return;
+          }
+          if (model.getValueInRange(sel) !== selectedText) {
+            title.textContent = t("ieTargetChanged");
+            return;
+          }
+          editor.executeEdits("inline-edit", [{ range: sel, text: modifiedText, forceMoveMarkers: true }]);
           closeBox();
         });
         rejectBtn.addEventListener("click", closeBox);
@@ -621,7 +635,12 @@ function saveActiveFile() {
   const p = state.activeFile;
   if (!p || !models[p] || !state.dirty.has(p)) return;
   if (state.files[p] && state.files[p].binary) return; // 二进制文件永不保存
-  send({ type: "file.save", path: p, content: models[p].getValue() });
+  /* 记下这一次到底发了什么：ack 回来时磁盘上的是**这份**内容，不是"此刻编辑器里的内容"。
+     用户在等 ack 的几百毫秒里继续打字时，前者才是真话。 */
+  const content = models[p].getValue();
+  const seq = ++state.saveSeq;
+  (state.pendingSaves[p] = state.pendingSaves[p] || []).push({ seq, content });
+  send({ type: "file.save", path: p, content, seq });
 }
 
 /* ---------- 后端接口指纹自检 ----------
@@ -1183,6 +1202,10 @@ function togglePreview(force) {
 
 function openFile(path, revealLine) {
   if (!state.files[path]) return;
+  /* 切文件时收起内联编辑框：它绑定的是上一个文件的 model 与选区，
+     留在屏幕上点「接受」就会把改动写进另一个文件。 */
+  const _ieBox = document.getElementById("inlineEditBox");
+  if (_ieBox) _ieBox.remove();
   if (!state.openTabs.includes(path)) state.openTabs.push(path);
   state.activeFile = path;
   const isBin = !!state.files[path].binary;
@@ -1665,6 +1688,10 @@ function paintUndoBtns() {
     b.innerHTML = ico("reset");
     b.onclick = (e) => { e.stopPropagation(); runUndo(card, b); };
     head.appendChild(b);
+    /* 按钮交还给上一张卡时，那张卡可能在上一个已收起的轮组里：撤销本来就是
+       逐步回退，按钮看得见才有意义。只展开按钮真正落进去的那一组，别的组不动。 */
+    const grp = card.closest(".round-grp");
+    if (grp && !grp.classList.contains("open")) grp.classList.add("open");
   }
 }
 async function runUndo(card, btn) {
@@ -1685,14 +1712,17 @@ async function runUndo(card, btn) {
   const tag = document.createElement("span");
   tag.className = "t-undone";
   tag.textContent = t("apPaintUndoBtnstextContentT29");
-  tag.title = t("undoDoneTip", { n: (r.restored || []).length });
+  /* 数字要算上被删掉的新建文件：shadow 回退那条形同"这一步动过的文件全退回"，
+     只数 restored 会让界面报的个数比真动过的少一个。 */
+  const touched = (r.restored || []).length + (r.removed || []).length;
+  tag.title = t("undoDoneTip", { n: touched });
   const head = card.querySelector(".tool-head");
   if (head) head.appendChild(tag);
   card.classList.add("undone");
   const i = undoCards.indexOf(card);
   if (i >= 0) undoCards.splice(i, 1);
   paintUndoBtns();
-  toast(t("apPaintUndoBtnstoastT128") + r.label + t("aprunUndoC10") + (r.restored || []).length + t("aprunUndoC11") + (r.left ? t("aprunUndoC12") + r.left + t("aprunUndoC13") : ""));
+  toast(t("apPaintUndoBtnstoastT128") + r.label + t("aprunUndoC10") + touched + t("aprunUndoC11") + (r.left ? t("aprunUndoC12") + r.left + t("aprunUndoC13") : ""));
 }
 function scrollChat(force) {
   // Sticky scroll：用户上翻查看历史时不强制拉回底部；force=true 时无条件滚到底（新消息/审批/选项卡）
@@ -1839,13 +1869,17 @@ function chatFlow(pane) {
    现在按 Agent 轮次分组：每组头部一行摘要（R3 · 动词 目标 · N 步 · 时长），
    新一轮开始时自动折叠上一轮，当前轮保持展开；点击头部可重新展开。
    组的归属状态完全从 DOM 推导（最后一组 + data-round），会话切换/恢复零额外状态。 */
-function finalizeRoundGrp(grp) {
+function finalizeRoundGrp(grp, opts) {
   grp.classList.remove("live");
   const body = grp.querySelector(".rg-body");
   /* 含截图的轮组不自动折叠：截图是"用户想立刻看到的证据"，tool.image 特意不收进
      .tool-body（折叠卡里 display:none）就是为了它常显——轮组折叠会把这层设计整个
      推翻（shotui 探针抓的就是这个）。头部仍可手动收起。 */
-  if (!body.querySelector(".tool-shots")) grp.classList.remove("open");
+  /* 收尾时含「撤销这一步」的轮组也不折叠：撤销是任务跑完之后才要按的动作，
+     折起来等于把入口藏了（undo 探针量的是"按钮完不完整可见"）。下一轮开始时
+     这里不带 opts，旧组照常收起，所以不会越积越多。 */
+  const keepUndo = !!(opts && opts.keepUndo) && !!body.querySelector(".t-undo");
+  if (!body.querySelector(".tool-shots") && !keepUndo) grp.classList.remove("open");
   const txt = (sel) => { const n = body.querySelector(sel); return n ? String(n.textContent || "").trim() : ""; };
   const label = (txt(".tool-card .t-name") + (txt(".tool-card .t-target") ? " " + txt(".tool-card .t-target") : ""))
     || txt(".think-block .tk-label");
@@ -1894,7 +1928,7 @@ function finalizeOpenRoundGrp(cvid) {
   const pane = (cvid && convPanes[cvid]) || chatPane();
   const openGrps = pane.querySelectorAll(".round-grp.open");
   const last = openGrps.length ? openGrps[openGrps.length - 1] : null;
-  if (last) finalizeRoundGrp(last);
+  if (last) finalizeRoundGrp(last, { keepUndo: true });
 }
 
 /* 长会话折叠：直接子消息超过阈值时，把最早的批次收入折叠容器（可展开），降低 DOM 渲染压力。
@@ -2472,7 +2506,9 @@ async function shotBlobUrl(name) {
 function handleEvent(ev) {
   /* 多会话并行：聊天 DOM 类消息按 convId 写入对应会话的 pane（后台会话实时可见），
      其余消息（文件/终端/计划/编排等全局 UI）直接分发 */
-  const CHAT_DOM_TYPES = new Set(["user.msg", "think.start", "think.delta", "think.end", "msg.start", "msg.delta", "msg.end", "tool.start", "tool.body", "tool.image", "tool.end", "tool.ask_choice", "agent.error"]);
+  /* tool.pending 也属于会话内 DOM：后台会话弹审批卡时，卡片必须落进它自己的 pane，
+     否则会出现在当前正在看的另一条会话里，批准的是谁的事都说不清。 */
+  const CHAT_DOM_TYPES = new Set(["user.msg", "think.start", "think.delta", "think.end", "msg.start", "msg.delta", "msg.end", "tool.start", "tool.body", "tool.image", "tool.end", "tool.pending", "tool.ask_choice", "agent.error"]);
   if (CHAT_DOM_TYPES.has(ev.type)) {
     withConv(ev.convId || convId, () => handleEventInner(ev));
     return;
@@ -2558,8 +2594,21 @@ function handleEventInner(ev) {
     case "op.error": termLine('<span class="tl-err">[操作失败] ' + esc(ev.userHint || ev.error) + "</span>"); break;
     case "agent.error": showAgentError(ev); break;
     case "file.saved": {
-      state.dirty.delete(ev.path);
-      if (state.files[ev.path] && models[ev.path]) state.files[ev.path].content = models[ev.path].getValue();
+      /* 只认这次 ack 对应的那份内容。以前无条件把"此刻编辑器里的内容"当成磁盘内容，
+         于是保存 A 之后继续敲出的 B 被当成已落盘：脏点消失、关页也不提醒，B 实际从未存过。 */
+      const q = state.pendingSaves[ev.path] || [];
+      const idx = ev.seq != null ? q.findIndex((x) => x.seq === ev.seq) : (q.length ? 0 : -1);
+      let acked = null;
+      if (idx >= 0) {
+        const done = q.splice(0, idx + 1);
+        acked = done[done.length - 1].content;
+      }
+      if (q.length) state.pendingSaves[ev.path] = q; else delete state.pendingSaves[ev.path];
+      if (state.files[ev.path] && acked != null) state.files[ev.path].content = acked;
+      /* 脏不脏看「编辑器现值 vs 刚确认落盘的内容」，不是看"有没有 ack" */
+      if (models[ev.path] && state.files[ev.path] && models[ev.path].getValue() === state.files[ev.path].content) {
+        state.dirty.delete(ev.path);
+      }
       renderTabs(); renderTree(); renderChanges();
       if (previewOn && isPreviewable(ev.path)) renderPreview();
       termLine('<span class="tl-info">[已保存] ' + esc(ev.path) + "</span>");
@@ -3647,6 +3696,9 @@ async function renderOrchHistory() {
         '<span class="ag-orch-item-title">' + esc((h.title || t("orchFallbackTitle")).slice(0, 40)) + '</span></div>' +
         '<div class="ag-orch-item-meta">' + meta + (h.elapsed ? " · " + h.elapsed + "s" : "") +
         " · " + t("orchStepsN", { n: c.total || 0 }) + (batches > 1 ? " · " + t("orchBatchesN", { n: batches }) : "") +
+        /* 自动改过串行就必须标出来：三步两批看起来像"并行走完很省时间"，
+           实际那两步是被撞车边按住的，成本与失败面完全不同。 */
+        (h.autoSerial ? " · " + t("orchAutoSerialN", { n: h.autoSerial }) : "") +
         (c.fail ? '<b class="ag-orch-fail"> · ' + t("orchFailN", { n: c.fail }) + '</b>' : "") + "</div>" +
         fromConv +
         '<div class="ag-orch-steps">' + stepRows + "</div>" + more;
@@ -3678,7 +3730,12 @@ async function replayOrchRun(runId, title) {
     const sum = $("orchSummary");
     sum.style.display = "";
     sum.className = "orch-summary " + (run.ok ? "ok" : "fail");
-    sum.innerHTML = '<span class="orch-sum-ico">' + ico(run.ok ? "check" : "error") + "</span>" + esc(run.summary || "");
+    /* 依赖图上的边只说"谁等谁"，说不出这几条是编排器自己补的还是模型声明的。
+       留档里的 serialized 就是那一层：回放时必须看得见，否则用户以为这两步真的并行过。 */
+    const auto = (run.serialized || []).map((e) => (e.from || "?") + " ⇠ " + (e.to || "?")
+      + ((e.files && e.files.length) ? "（" + e.files.join("、") + "）" : "")).join("；");
+    sum.innerHTML = '<span class="orch-sum-ico">' + ico(run.ok ? "check" : "error") + "</span>" + esc(run.summary || "")
+      + (auto ? '<span class="orch-sum-serial">' + esc(t("orchAutoSerialNote", { list: auto })) + "</span>" : "");
     overlay.style.display = "";
     replaceIcons();
     requestAnimationFrame(() => drawOrchEdges($("orchSteps")));

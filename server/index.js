@@ -575,8 +575,11 @@ app.post("/api/undo", (req, res) => {
     const top = steps[0];
     const r = eng._undoLast();
     if (!r || !r.ok) return res.json({ ok: false, error: (r && r.reason) || "撤销失败" });
-    writeAudit("undo", "撤销 " + (r.label || top.label) + " → " + (r.restored || []).join("、"));
-    res.json({ ok: true, label: r.label || top.label, restored: r.restored || [], left: eng.undoSteps().length });
+    /* removed 那半截也要出去：shadow 回退会删掉那一步新建的文件，
+       只报 restored 的话，界面说的数字比真的动过的文件少。 */
+    writeAudit("undo", "撤销 " + (r.label || top.label) + " → "
+      + (r.restored || []).concat((r.removed || []).map((p) => "删 " + p)).join("、"));
+    res.json({ ok: true, label: r.label || top.label, restored: r.restored || [], removed: r.removed || [], left: eng.undoSteps().length });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 /* 服务日志环（P0-A1）：内存里最近 log.ringMax 条结构化日志，诊断面板与排障共用一个入口。
@@ -2760,7 +2763,7 @@ wss.on("connection", (ws) => {
           codeIndex.queueFileUpdate(WS_DIR, m.path);
           uEng.fileChanged(m.path);
           uEng.pushChanges(false);
-          broadcast({ type: "file.saved", path: m.path });
+          broadcast({ type: "file.saved", path: m.path, seq: m.seq });
         }, ws, m.type);
         break;
       case "file.create":
@@ -2901,12 +2904,12 @@ wss.on("connection", (ws) => {
         safe(() => {
           const convId = m.convId || uEng._currentConv;
           const paths = Array.isArray(m.paths) ? m.paths : [];
-          const { applied, conflicts } = typeof uEng.applyPatch === "function"
-            ? uEng.applyPatch(convId, paths, m.hunks) : { applied: [], conflicts: [] };
-          if (applied.length || conflicts.length) {
+          const { applied, conflicts, failed } = typeof uEng.applyPatch === "function"
+            ? uEng.applyPatch(convId, paths, m.hunks) : { applied: [], conflicts: [], failed: [] };
+          if (applied.length || conflicts.length || (failed && failed.length)) {
             // 增量同步：只发 applied 路径，避免大工作区全量读盘
             snapshotFilesIncremental(applied).then((files2) => broadcast({ type: "fs.sync", files: files2, incremental: true }));
-            broadcast({ type: "patch.applied", paths: applied, convId, conflicts }, msgKey);
+            broadcast({ type: "patch.applied", paths: applied, convId, conflicts, failed: failed || [] }, msgKey);
           } else {
             broadcast({ type: "patch.applied", paths: [], convId, empty: true }, msgKey);
           }

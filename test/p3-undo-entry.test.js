@@ -9,6 +9,7 @@
 const path = require("path");
 const { LlmAgent } = require("../server/agent-llm");
 const { AgentBase } = require("../server/agent-base");
+const agentTools = require("../server/tools/agent-tools");
 
 /* 只读栈、不碰盘 → 拿原型造一个最小实例就够，不必 boot 一个真引擎 */
 function viewOf(stack, wsDir) {
@@ -128,5 +129,47 @@ describe("路径来源", () => {
     const eng = viewOf([CK("跨根写入", [E("x.js", true, "D:/other/repo")])], "C:/ws/mine");
     const s = eng.undoSteps()[0];
     expect(s.files[0].root).toBe(path.basename("D:/other/repo"));
+  });
+});
+
+/* undo 工具的回执是模型判断"撤销到底做没做全"的唯一依据。
+   shadow 那条回退路径除了把旧内容写回来，还会删掉那一步新建的文件 ——
+   只报 restored 就等于删了文件却不吭声，界面上的数字也比真动过的少。 */
+describe("undo 工具回执要报全动过的文件", () => {
+  function undoAgent(ret) {
+    const cards = [];
+    return {
+      cards,
+      tool: () => {
+        const c = { bodyText: "", label: "" };
+        cards.push(c);
+        return { body: (x) => { c.bodyText = String(x); }, done: (ok, label) => { c.label = label; } };
+      },
+      _undoLast: () => ret,
+    };
+  }
+
+  it("恢复 + 删除两类都写出来，计数是两者之和", async () => {
+    const a = undoAgent({ ok: true, label: "shadow-git HEAD~1", restored: ["src/a.js", "src/b.js"], removed: ["src/new.js"] });
+    const out = await agentTools.undo(a, {});
+    expect(out).toContain("恢复 2 个文件：src/a.js, src/b.js");
+    expect(out).toContain("删掉那一步新建的 1 个文件：src/new.js");
+    expect(a.cards[0].label).toBe("已撤销 3 个文件");
+    expect(a.cards[0].bodyText).toContain("src/new.js");
+  });
+
+  it("内存栈那条路径没有删除项，措辞与以前一致", async () => {
+    const a = undoAgent({ ok: true, label: "写入 a.js", restored: ["a.js"] });
+    const out = await agentTools.undo(a, {});
+    expect(out).toContain("恢复 1 个文件：a.js");
+    expect(out).not.toContain("删掉那一步新建的");
+    expect(a.cards[0].label).toBe("已撤销 1 个文件");
+  });
+
+  it("部分回退失败时不许报成功（reason 原样带回去）", async () => {
+    const a = undoAgent({ ok: false, reason: "shadow-git: 有 2 个文件没能恢复", restored: ["a.js"], removed: [] });
+    const out = await agentTools.undo(a, {});
+    expect(out).toContain("有 2 个文件没能恢复");
+    expect(a.cards[0].label).toBe("撤销失败");
   });
 });

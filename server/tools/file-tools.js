@@ -5,7 +5,7 @@ const codeIndex = require("../code-index");
 const repoMap = require("../repo-map");
 const { getActiveManager } = require("../lsp-bridge");
 const { computeDiffLines, fmtDiag } = require("./util");
-const { applyEditsToString } = require("../patch");
+const { applyEditsToString, specsFromArgs } = require("../patch");
 
 /* 路径归属交给 root-store 判：不带 root 的相对路径就是当前工作区，与单根时代逐字一致。
    ctx 里没有 roots（假 agent / 老路径）就退回 agent.files —— 这条改造不许打断任何既有调用。 */
@@ -45,23 +45,26 @@ const BRACE_EXTS = new Set(["js", "mjs", "cjs", "jsx", "ts", "tsx", "java", "go"
 
 /* 从符号行起做花括号配对，跳过字符串/模板串/行注释/块注释里的花括号。
    返回块尾在 lines 里的下标（含），扫不到配对回 -1。
-   已知不精确：正则字面量里的花括号（如 /{2,3}/）会被当括号数一次。
+   引号状态必须跨行：模板串本来就是跨行的，以前 q 声明在行循环里，
+   于是每一行都当"不在串里"重新开始 —— `…{\n}…` 这种多行模板里的花括号被数进配对，
+   块尾会停在模板内部的第一行，交出去的是半截函数。
+   单/双引号不允许跨行（JS 里未闭合就是语法错误），行尾复位，
+   免得一处坏引号把后面整篇当字符串吃掉。
+   已知不精确：正则字面量里的花括号（如 /{2,3}/）会被当括号数一次；
+   模板串里嵌模板串时，第一个内层反引号会被当成外层串的结束。
    这类写法在函数签名行极少见，且真出问题时后果只是"块尾早停一行"——
    回执会带上总行数与续读指引，模型能发现少给了。 */
 function braceBlockEnd(lines, startIdx) {
-  let depth = 0, opened = false, inBlock = false;
+  let depth = 0, opened = false, inBlock = false, q = "";
   const max = Math.min(lines.length - 1, startIdx + SYMBOL_SCAN_LINES);
   for (let i = startIdx; i <= max; i++) {
     const s = lines[i];
-    let q = "";
     for (let j = 0; j < s.length; j++) {
       const c = s[j], c2 = s[j + 1];
       if (inBlock) { if (c === "*" && c2 === "/") { inBlock = false; j++; } continue; }
       if (q) {
         if (c === "\\") { j++; continue; }
-        // 单/双引号不跨行，模板串跨
-        if (c === q && q !== "`") q = "";
-        else if (c === q) q = "";
+        if (c === q) q = "";
         continue;
       }
       if (c === "/" && c2 === "*") { inBlock = true; j++; continue; }
@@ -70,6 +73,7 @@ function braceBlockEnd(lines, startIdx) {
       if (c === "{") { depth++; opened = true; continue; }
       if (c === "}") { depth--; if (opened && depth <= 0) return i; }
     }
+    if (q === "'" || q === '"') q = "";   // 单/双引号不跨行，反引号留着
   }
   return -1;
 }
@@ -137,9 +141,16 @@ function scanSymbolLine(store, rel, name) {
       if (defRe.test(text)) return { line: lineNo, via: "text" };
       if (anyRe.test(text) && mentions.length < 6) mentions.push(lineNo);
     }
-    scanned += win.lines.length;
-    if (win.lines.length < SCAN_CHUNK_LINES) return { line: 0, mentions, scanned };   // 到文件尾了
-    start = win.startLine + win.lines.length;
+    /* 续扫的起点：窗口末尾的下一行。字符闸撞在窗口第一行时 lines 是空的、endLine 回 0，
+       所以前进量至少一行 —— 否则 start 不动，这里会原地打转。 */
+    const next = Math.max(start + 1, win.endLine + 1);
+    scanned += Math.max(win.lines.length, next - start);
+    /* 到没到底只认 hasMore，不认"这一窗给满 800 行了吗"：
+       2MB 字符闸会让窗口提前收尾（行数少于请求值），但后面还有内容。
+       以前用 lines.length < SCAN_CHUNK_LINES 判文件尾，>2MB 的文件在第一窗就被当成读完了，
+       闸后面那个符号永远找不到 —— 而恰恰是大文件才走文本兜底。 */
+    if (!win.hasMore) return { line: 0, mentions, scanned };
+    start = next;
     if (scanned >= SCAN_MAX_LINES) return { line: 0, mentions, scanned, capped: true };
   }
 }
@@ -273,8 +284,9 @@ module.exports = {
       const unconfirmed = endLocal < 0 && (BRACE_EXTS.has(ext) || ext === "py")
         ? "块尾没扫到" + (win.charCapped ? "（窗口被 2MB 字符闸截断）" : "（花括号/缩进没配对，可能是跨行写法）")
         : (!BRACE_EXTS.has(ext) && ext !== "py" ? "「" + (ext || "无扩展名") + "」不在块尾识别范围，按整段窗口给出" : "");
-      const give = endLocal >= 0 ? endLocal : Math.min(win.lines.length - 1, local + SYMBOL_MAX_LINES - 1);
-      const clipped = Math.min(give, local + SYMBOL_MAX_LINES - 1);
+      /* 块尾：扫到了就用它，没扫到就给满窗口；两种情况都不越过单次行数上限与窗口末行。 */
+      const clipped = Math.min(endLocal >= 0 ? endLocal : win.lines.length - 1,
+        win.lines.length - 1, local + SYMBOL_MAX_LINES - 1);
       const body = win.lines.slice(local, clipped + 1).join("\n");
       const from = win.startLine + local;
       const to = win.startLine + clipped;
@@ -396,6 +408,35 @@ module.exports = {
 
   apply_edit: async (agent, args) => {
     const t = agent.tool("edit", "暂存改动", args.path || "多文件");
+    /* 暂存之前先把这次会碰到的**每一个**路径过一遍授权与规则。
+       apply_edit 以前完全不走 locate/_gate：cross-root 时把 B 项目的相对路径
+       当成当前工作区的同名文件改掉；auto 档更是绕过 deny 规则直接落盘。
+       审阅模式仍然以「评审面板」作为人工确认，不额外弹一次审批卡。 */
+    const specs = specsFromArgs(args);
+    if (!specs) {
+      t.done(false, "参数无效", false);
+      return "编辑未应用：apply_edit 需要提供 path + edits（或 old_string/new_string），或 patch 文本块。";
+    }
+    for (const spec of specs) {
+      if (!spec || !spec.path) continue;
+      const res = locate(agent, { root: args.root, path: spec.path }, true);
+      if (!res.ok) {
+        t.done(false, "编辑未应用", false);
+        return "编辑未应用：" + res.error;
+      }
+      if (!res.root.active) {
+        const who = res.root.label || path.basename(res.root.dir || "");
+        t.done(false, "编辑未应用", false);
+        return "编辑未应用：apply_edit 只改当前工作区；「" + spec.path + "」属于已授权的 " + who +
+          "（" + res.root.dir + "）。请改用 edit_files（按 root 精确指定）改这个根里的文件。";
+      }
+    }
+    const policy = typeof agent._approvalDecision === "function"
+      ? agent._approvalDecision("apply_edit", args) : { action: "allow" };
+    if (policy.action === "block") {
+      t.done(false, "被拒绝规则拦截", false);
+      return "apply_edit 被拒绝规则拦截，未暂存任何改动：" + (policy.reason || "deny 规则");
+    }
     const res = agent.patch.stage(agent._convIdNow(), args);
     if (!res.ok) {
       t.done(false, "编辑未应用", false);
@@ -408,8 +449,13 @@ module.exports = {
     const permMode = (agent.cfg.permissions || {}).mode || "ask";
     if (permMode === "auto") {
       const paths = files.map((f) => f.path);
-      const { applied, conflicts } = agent.applyPatch(agent._convIdNow(), paths);
+      const { applied, conflicts, failed } = agent.applyPatch(agent._convIdNow(), paths);
       t.body(paths.join("\n"));
+      if (failed && failed.length) {
+        t.done(false, "写入失败 " + failed.length + " 个文件", false);
+        return "写入失败：" + failed.map((f) => f.path + "（" + f.error + "）").join("；") +
+          "。这些改动仍留在审阅队列里，没有丢失；修复写盘问题后重试。";
+      }
       if (conflicts.length) {
         t.done(true, "已应用 " + applied.length + " 个文件，" + conflicts.length + " 个冲突跳过", false);
         return "已写入 " + applied.length + " 个文件改动；冲突跳过：" + conflicts.join(", ") + "（文件已被其他会话修改，请重新执行 apply_edit）。";
@@ -519,9 +565,11 @@ module.exports = {
       t.done(false, "参数无效", false);
       return "错误: edit_files 需要 ops 参数（数组），每项 {path, old_string, new_string} 或 {path, edits:[{old_string,new_string}...]}。";
     }
-    /* 展开成 per-file edits: fileEdits = [ { path, edits: [{old_string,new_string}], isNew } ]
-       同一文件多次出现则合并到同一组（避免同一文件被两次写盘）。 */
-    const byPath = new Map();
+    /* 展开成 per-file edits，并按「根 + 根内相对路径」归组。
+       以前只按 op.path 当键：A、B 两个授权根下都有 src/x.js 时，
+       两条 op 会被认成同一个文件，后者覆盖前者 —— B 项目的改动静默消失。
+       归属必须在合并之前算出来，键才有唯一性。 */
+    const byKey = new Map();
     for (let i = 0; i < ops.length; i++) {
       const op = ops[i];
       if (!op || typeof op.path !== "string" || !op.path) {
@@ -541,24 +589,25 @@ module.exports = {
         t.done(false, "缺少编辑内容", false);
         return "错误: ops[" + i + "]（" + op.path + "）既没有 edits 数组，也没有 old_string/new_string。";
       }
-      if (byPath.has(op.path)) byPath.get(op.path).edits = byPath.get(op.path).edits.concat(fileEdits);
-      else byPath.set(op.path, { path: op.path, root: op.root, edits: fileEdits });
-    }
-    const files = Array.from(byPath.values());
-
-    /* 先判门（授权）：任何一个文件没有权限就整体拒绝，不写任何东西 */
-    for (const f of files) {
-      const res = locate(agent, { path: f.path, root: f.root }, true);
+      const res = locate(agent, { path: op.path, root: op.root }, true);
       if (!res.ok) {
-        const t = agent.tool("edit", "原子编辑被拒", f.path);
+        const t = agent.tool("edit", "原子编辑被拒", op.path);
         t.done(false, "没有授权", false);
-        return "错误: " + res.error + "（" + f.path + " 没有写权限，整个 edit_files 调用已拒绝，未写入任何文件）";
+        return "错误: " + res.error + "（" + op.path + " 没有写权限，整个 edit_files 调用已拒绝，未写入任何文件）";
       }
-      f.store = res.root.active ? agent.files : res.store;
-      f.rel = res.rel;
-      f.shown = showPath({ path: f.path, root: f.root }, res);
-      f.isNew = !f.store.exists(f.rel);
+      const key = res.root.id + "\0" + res.rel;
+      if (byKey.has(key)) byKey.get(key).edits = byKey.get(key).edits.concat(fileEdits);
+      else {
+        byKey.set(key, {
+          path: op.path, root: op.root, edits: fileEdits,
+          store: res.root.active ? agent.files : res.store,
+          rel: res.rel,
+          shown: showPath({ path: op.path, root: op.root }, res),
+        });
+      }
     }
+    const files = Array.from(byKey.values());
+    for (const f of files) f.isNew = !f.store.exists(f.rel);
 
     /* 再走 gate：按每个文件的 isNew 决定风险级别；任何一个被 gate 拦截/用户拒绝就整体回滚 */
     for (const f of files) {

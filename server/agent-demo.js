@@ -153,7 +153,13 @@ class DemoAgent extends AgentBase {
 
     t = this.tool("edit", "编辑文件", "src/utils.js — 新增 sortByPriority");
     await sleep(750);
-    const _b1 = await this.base("src/utils.js"); this.files.write("src/utils.js", _b1 + SORT_BUGGY);
+    /* 干净的演示工作区里 utils.js 是自己铺的，不是 git 基线的一部分：
+       拿 this.base() 当底稿会把 clamp 整份抹掉（非 git 沙箱里基线是空串），
+       随后「clamp 边界钳制可用」那条测试必然失败。已有 sortByPriority 的
+       重复运行也不再追加，否则同文件里会声明两次 PRIORITY_ORDER。 */
+    const _cur1 = this.files.exists("src/utils.js") ? this.files.read("src/utils.js") : await this.base("src/utils.js");
+    const _next1 = /function\s+sortByPriority/.test(_cur1) ? _cur1 : _cur1 + SORT_BUGGY;
+    this.files.write("src/utils.js", _next1);
     this.fileChanged("src/utils.js");
     t.body("+ const PRIORITY_ORDER = { low: 0, normal: 1, high: 2 };\n" +
            "+ export function sortByPriority(todos) {\n" +
@@ -164,7 +170,9 @@ class DemoAgent extends AgentBase {
 
     t = this.tool("edit", "编辑文件", "tests/todo.test.js — 补充排序测试");
     await sleep(700);
-    const _b2 = await this.base("tests/todo.test.js"); this.files.write("tests/todo.test.js", _b2 + TEST_EXTRA);
+    const _cur2 = this.files.exists("tests/todo.test.js") ? this.files.read("tests/todo.test.js") : await this.base("tests/todo.test.js");
+    const _next2 = _cur2.includes("sortByPriority 高优先级排在最前") ? _cur2 : _cur2 + TEST_EXTRA;
+    this.files.write("tests/todo.test.js", _next2);
     this.fileChanged("tests/todo.test.js");
     t.body('+ assert("sortByPriority 高优先级排在最前", ...)');
     t.done(true, "+5 −0");
@@ -175,6 +183,7 @@ class DemoAgent extends AgentBase {
     this.round++;
     t = this.tool("terminal", "运行终端", "node tests/run-tests.js");
     const r1 = await this.term.run(AI_TERM_TAB, "node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
+    let lastCode = r1.code;
     t.body(r1.out.trim() + "\n\n(exit code " + r1.code + ")");
     if (r1.code === 0) {
       t.done(true, "全部通过");
@@ -206,12 +215,19 @@ class DemoAgent extends AgentBase {
       this.state(true, "AI 重新验证中");
       t = this.tool("terminal", "运行终端", "node tests/run-tests.js（复测）");
       const r2 = await this.term.run(AI_TERM_TAB, "node tests/run-tests.js", [process.execPath, "tests/run-tests.js"]);
+      lastCode = r2.code;
       t.body(r2.out.trim() + "\n\n(exit code " + r2.code + ")");
       t.done(r2.code === 0, r2.code === 0 ? "5/5 通过" : "仍有失败");
     }
 
     const changes = await this.pushChanges(false);
-    await this.say("**任务完成。** 全部测试通过（真实执行，非模拟）。\n\n**做了什么：**\n1. 修复了 `filterTodos` 中 active/done 条件反转的 bug\n2. 新增 `sortByPriority`，筛选结果按 high > normal > low 排序\n3. 补充了排序回归测试\n4. 期间测试抓到一个排序方向错误，已自主修复并复测通过\n\n共改动 " + changes.length + " 个文件，点击下方任意文件可查看 Diff：");
+    /* 结论只认真实的退出码：复测仍失败时绝不说"全部通过"——
+       演示引擎是没配 Key 时的默认体验，这里撒谎等于让用户第一次接触就学到"它说的话不可信"。 */
+    if (lastCode === 0) {
+      await this.say("**任务完成。** 全部测试通过（真实执行，非模拟）。\n\n**做了什么：**\n1. 修复了 `filterTodos` 中 active/done 条件反转的 bug\n2. 新增 `sortByPriority`，筛选结果按 high > normal > low 排序\n3. 补充了排序回归测试\n4. 期间测试抓到一个排序方向错误，已自主修复并复测通过\n\n共改动 " + changes.length + " 个文件，点击下方任意文件可查看 Diff：");
+    } else {
+      await this.say("**还没完成。** 复测仍然失败（exit code " + lastCode + "），真实输出就在终端里。\n\n已改动 " + changes.length + " 个文件，但测试没有全绿之前我不会把它说成通过。把终端里的失败项发我，我继续修。");
+    }
     this.pushChanges(true);
   }
 

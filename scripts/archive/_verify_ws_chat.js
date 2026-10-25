@@ -18,7 +18,8 @@ async function getToken() {
   let token;
   try { token = await getToken(); }
   catch (e) { console.error("FAIL: " + e.message + "（需先 npm start 后运行本脚本）"); process.exit(1); }
-  const ws = new WebSocket("ws://127.0.0.1:" + PORT + "/?token=" + encodeURIComponent(token));
+  /* 服务端已不收 ?token=（query 会进访问日志/历史），令牌改走 Sec-WebSocket-Protocol */
+  const ws = new WebSocket("ws://127.0.0.1:" + PORT + "/", ["bearer." + encodeURIComponent(token)]);
   const seen = { types: {}, error: null, toolCalls: 0, gotReset: false, gotDone: false, content: "" };
   const log = [];
 

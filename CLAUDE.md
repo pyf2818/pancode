@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 pancode 是基于 Monaco Editor 的 Web AI 编程工作台。服务端为 Node.js + Express + WebSocket，前端为 Monaco + 原生 JS（无前端框架）。支持任意本地文件夹作为工作区，Agent 通过 OpenAI 兼容协议进行真实工具调用循环。
 
+运行时要求 **Node.js ≥ 24**（`agent-browser@0.39.1` 的 engines 是 `>=24.0.0`；vitest 5 要求 `^22.12 || ^24 || >=26`）。`npm test` 现在先跑 `test:unit` 再跑探针链；`test:nightly` 没配 Key 时打印 SKIP 并 exit 0，SKIP 不等于通过，别写进"回归全绿"。
+
 ## 常用命令
 
 ```bash

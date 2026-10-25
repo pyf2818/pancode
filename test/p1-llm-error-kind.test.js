@@ -8,7 +8,7 @@
    真实调用里 llm.js 抛的是 `"LLM 请求失败 HTTP 429: …"`，429 不在串首，
    所以用例都以完整消息文本喂进去，与 catch 到的 e.message 一致。
    ============================================================ */
-const { classifyLlmError } = require("../server/app-error.js");
+const { classifyLlmError, isVisionRejection, isVisionRelated } = require("../server/app-error.js");
 
 const K = (msg, status) => {
   const e = new Error(msg);
@@ -56,5 +56,50 @@ describe("classifyLlmError", () => {
     expect(classifyLlmError(K("HTTP 401 Unauthorized: invalid api key"), "HTTP 401 Unauthorized: invalid api key")).toBe("key");
     expect(classifyLlmError(K("HTTP 404 model not found"), "HTTP 404 model not found")).toBe("model");
     expect(classifyLlmError(K("HTTP 429 {\"error\":{\"code\":\"RateLimitExceeded.EndpointRPMExceeded\"}}"), "HTTP 429 {\"error\":{\"code\":\"RateLimitExceeded.EndpointRPMExceeded\"}}")).toBe("quota");
+  });
+});
+
+/* ============================================================
+   视觉拒收判定：决定的是"这台引擎以后还不喂像素"
+   ————————————————————————————————————————————
+   判错的代价不对称，所以单独一把尺子：
+   · 漏判 → 带图请求失败一次，用户看得见真实错误；
+   · 误判 → 视觉被关到引擎重建为止，而且那句"模型不带视觉"把真正的错误盖掉了。
+     以前用的宽正则里有一条 invalid_request，等于"任何 400 都算模型不带视觉"。
+   用例都取各家上游的原话，不自己编措辞。
+   ============================================================ */
+describe("isVisionRejection（永久停喂像素的唯一入口）", () => {
+  it("上游明说不收图片 → 判成视觉拒收", () => {
+    const yes = [
+      "HTTP 400 invalid_request_error: image content type is not supported by this model",
+      "HTTP 400 This model does not support image inputs",
+      "HTTP 400 Invalid value: 'image_url'. Expected 'text'.",
+      "HTTP 400 messages.0.content.0.type: image is not supported",
+      "HTTP 400 this model is text-only and cannot accept vision inputs",
+      "HTTP 400 Unsupported content type. Only text is supported.",
+      "HTTP 400 multimodal not enabled for this deployment",
+    ];
+    for (const msg of yes) {
+      expect(isVisionRejection(K(msg, 400), msg) && classifyLlmError(K(msg, 400), msg) === "unknown").toBe(true);
+    }
+  });
+
+  it("与图片无关的 400 不算视觉拒收（修复前 invalid_request 一条通吃）", () => {
+    expect(isVisionRejection("HTTP 400 invalid_request_error: tools[0].function.name is required")).toBe(false);
+    expect(isVisionRejection("HTTP 404 model vision-test not found")).toBe(false);   // 模型名里带 vision
+    expect(isVisionRejection("HTTP 400 image is too large, resize it")).toBe(false); // 是这张图的问题，不是没视觉
+    expect(isVisionRejection("HTTP 400 the image_url base64 payload is invalid")).toBe(false);
+  });
+
+  it("上下文超限的措辞里提到图片，走压缩那条路而不是关视觉", () => {
+    const msg = "HTTP 400 image tokens push you over the maximum context length";
+    expect(classifyLlmError(K(msg, 400), msg)).toBe("context");
+    expect(isVisionRejection(K(msg, 400), msg)).toBe(false);
+  });
+
+  it("isVisionRelated 比永久判定宽：与图沾边的失败都值得摘掉像素重试一次", () => {
+    expect(isVisionRelated("HTTP 400 image is too large, resize it")).toBe(true);
+    expect(isVisionRelated("HTTP 400 unsupported content type")).toBe(true);
+    expect(isVisionRelated("HTTP 400 invalid_request_error: tools[0].function.name is required")).toBe(false);
   });
 });

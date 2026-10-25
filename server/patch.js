@@ -219,6 +219,21 @@ function parsePatchText(text) {
   return files;
 }
 
+/* 参数 → [{ path, edits }]。stage 与权限预检必须用同一份解析结果：
+   否则 patch 文本里写着 B 文件、权限只看了 args.path，就会漏判。 */
+function specsFromArgs(args) {
+  if (args && args.patch && String(args.patch).trim()) return parsePatchText(args.patch);
+  if (args && args.path) {
+    let edits = [];
+    if (Array.isArray(args.edits)) edits = args.edits;
+    else if (args.old_string !== undefined || args.new_string !== undefined) {
+      edits = [{ old_string: args.old_string || "", new_string: args.new_string || "" }];
+    }
+    return [{ path: args.path, edits }];
+  }
+  return null;
+}
+
 /* 基于 FileStore 的暂存/应用引擎（生命周期跟随 Agent） */
 class PatchEngine {
   constructor(fileStore) {
@@ -229,17 +244,8 @@ class PatchEngine {
   /* 解析参数并暂存改动；不落盘。
      返回 { ok, staged?, error?, errors? } */
   stage(convId, args) {
-    let specs = [];   // [{path, edits}]
-    if (args.patch && String(args.patch).trim()) {
-      specs = parsePatchText(args.patch);
-    } else if (args.path) {
-      let edits = [];
-      if (Array.isArray(args.edits)) edits = args.edits;
-      else if (args.old_string !== undefined || args.new_string !== undefined) {
-        edits = [{ old_string: args.old_string || "", new_string: args.new_string || "" }];
-      }
-      specs = [{ path: args.path, edits }];
-    } else {
+    const specs = specsFromArgs(args);
+    if (!specs) {
       return { ok: false, error: "apply_edit 需要提供 path + edits（或 old_string/new_string），或 patch 文本块" };
     }
 
@@ -294,6 +300,7 @@ class PatchEngine {
     const target = (paths && paths.length) ? paths : list.map((x) => x.path);
     const applied = [];
     const conflicts = [];
+    const failed = [];      // 写盘失败：留在 pending，绝不能当"已应用"吞掉
     const remain = [];
     for (const s of list) {
       if (!target.includes(s.path)) { remain.push(s); continue; }
@@ -322,16 +329,16 @@ class PatchEngine {
         // 基于当前文件内容（而非过期快照）重新计算 modified
         const { modified } = applyEditsToString(current, chosen);
         try { this.files.write(s.path, modified); applied.push(s.path); }
-        catch (e) { /* 写失败不阻塞其它文件 */ }
+        catch (e) { failed.push({ path: s.path, error: e.message }); remain.push(s); }
       } else {
         // 新建文件或文件已被删除：用原快照逻辑
         const { modified } = applyEditsToString(s.original, chosen);
         try { this.files.write(s.path, modified); applied.push(s.path); }
-        catch (e) { /* 写失败不阻塞其它文件 */ }
+        catch (e) { failed.push({ path: s.path, error: e.message }); remain.push(s); }
       }
     }
     this.pending[convId] = remain;
-    return { applied, conflicts };
+    return { applied, conflicts, failed };
   }
 
   /* 拒绝。paths 为空 = 拒绝全部 */
@@ -343,4 +350,4 @@ class PatchEngine {
   }
 }
 
-module.exports = { applyEditsToString, parsePatchText, diffStat, fuzzyFindBlock, PatchEngine };
+module.exports = { applyEditsToString, parsePatchText, specsFromArgs, diffStat, fuzzyFindBlock, PatchEngine };

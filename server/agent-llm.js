@@ -53,18 +53,19 @@ const { PlanStore } = require("./plan-store");
 const { WorkflowStore, fillGoal } = require("./workflow-store");
 const { Orchestrator } = require("./orchestrator");
 const safeWrite = require("./safe-write");
+const shadowGit = require("./shadow-git");
 const COST = require("./cost");                 // P1-B4：token → 金额的唯一口径
 const usageStore = require("./usage-store");    // 同上：按天/模型落盘的账本
 const decisionLog = require("./decision-log");  // P3-D1：决策链（为什么放行/被拒/选了哪个方案）
 const { PatchEngine, parsePatchText } = require("./patch");
 const { TOOL_HANDLERS } = require("./tools");
 const rulesLib = require("./rules");
-const { classifyLlmError } = require("./app-error");
+const { classifyLlmError, isVisionRejection, isVisionRelated } = require("./app-error");
 const watchdog = require("./run-watchdog");
 
 const {
   _sanitizeToolCall, _sanitizeHistory, estTextTokens, CJK_CHAR_RE,
-  groupHistoryByToolPairing, flattenGroups, toolOutcomeUnknownText, repairToolPairing,
+  groupHistoryByToolPairing, flattenGroups, trimHistoryGroups, toolOutcomeUnknownText, repairToolPairing,
   MICROCOMPACT_KEEP_RECENT_ROUNDS, MICROCOMPACT_MIN_TOKEN_SAVINGS, MICROCOMPACT_THRESHOLD_RATIO,
   MICROCOMPACT_THRESHOLD_BUFFER_TOKENS, MICROCOMPACT_CLEARED, MICROCOMPACTABLE_TOOLS,
   SPILL_MAX_FILE_CHARS, SPILL_MAX_FILES_PER_CONV,
@@ -1477,39 +1478,13 @@ class LlmAgent extends AgentBase {
     this._shadowRepoReady = false;
     const _filesDir = this.files && this.files.dir;
     if (_filesDir) {
+      /* 分片键用规范化全路径（同名项目曾共用一份仓，第二家把 core.worktree 改走后，
+         第一家的 undo 会落进别人的目录）；用前还要验 core.worktree 身份。 */
       const cfgRoot0 = require("./config").ROOT;
-      const shadowDir0 = path.join(cfgRoot0, ".pancode", "shadow-git", path.basename(_filesDir));
-      this._shadowGitDir = shadowDir0;
-      try {
-        // execFileSync：直接 spawn，不经 shell —— Windows 路径含空格/引号也安全，
-        // 且完全避开 cmd.exe 对 `--git-dir=...` 这类"带=号参数"的解析坑。
-        const { execFileSync: _sgExec } = require("child_process");
-        fs.mkdirSync(shadowDir0, { recursive: true });
-        // 检测是否已初始化过（带 --work-tree 时 git 会按"非 bare + worktree"校验，能正常读日志）
-        try {
-          _sgExec("git", ["--git-dir", shadowDir0, "--work-tree", _filesDir, "rev-parse", "HEAD"], { stdio: "pipe" });
-          this._shadowRepoReady = true;
-        } catch (e) {
-          // 标准 bare + worktree trick：
-          // 1. 在 shadowDir 里 git init --bare（shadowDir 直接就是 .git 目录本身，不碰工作区的 .git）
-          // 2. core.bare=false + core.worktree 指回工作区，让它当"影子仓"跟踪工作区文件
-          // 工作区自己是不是 git 仓库都无所谓，shadow 仓是完全独立的。
-          _sgExec("git", ["init", "--bare", "--quiet", shadowDir0], { stdio: "pipe" });
-          try {
-            _sgExec("git", ["-C", shadowDir0, "config", "core.bare", "false"], { stdio: "pipe" });
-            _sgExec("git", ["-C", shadowDir0, "config", "core.worktree", _filesDir], { stdio: "pipe" });
-            _sgExec("git", ["-C", shadowDir0, "config", "user.name", "pancode"], { stdio: "pipe" });
-            _sgExec("git", ["-C", shadowDir0, "config", "user.email", "pancode@local"], { stdio: "pipe" });
-            _sgExec("git", ["-C", shadowDir0, "config", "core.excludesFile", path.join(shadowDir0, "info", "exclude")], { stdio: "pipe" });
-            _sgExec("git", ["--git-dir", shadowDir0, "--work-tree", _filesDir, "add", "-A"], { stdio: "pipe" });
-            _sgExec("git", ["--git-dir", shadowDir0, "--work-tree", _filesDir, "commit", "-m", "pancode shadow init", "--allow-empty", "--quiet"], { stdio: "pipe" });
-          } catch (e2) { /* init 失败不阻塞 agent */ }
-          this._shadowRepoReady = true;
-        }
-      } catch (e) {
-        log.tag("agent").warn("shadow-git 初始化失败，undo 持久化不可用: " + e.message);
-        this._shadowRepoReady = false;
-      }
+      const ready = shadowGit.ensureShadowRepo(cfgRoot0, _filesDir);
+      this._shadowGitDir = ready.dir;
+      this._shadowRepoReady = !!ready.ok;
+      if (!ready.ok) log.tag("agent").warn("shadow-git 不可用，undo 持久化降级为内存栈: " + ready.reason);
     }
 
     /* Phase 2：4 大子系统初始化。分片键只认 ws-key，且优先按实际挂载的工作区根（files.dir）算——
@@ -1855,7 +1830,7 @@ ${taskSummary}
      hunkSelections = { path: [hunkIndex,...] } 时仅应用选中的片段（逐 hunk 部分应用）。 */
   applyPatch(convId, paths, hunkSelections) {
     const snaps = (paths || []).map((p) => this._snapshotBefore(p));   // 落盘前快照（⑧ /undo）
-    const { applied, conflicts } = this.patch.apply(convId, paths, hunkSelections);
+    const { applied, conflicts, failed } = this.patch.apply(convId, paths, hunkSelections);
     if (applied.length) {
       this._pushCheckpoint(snaps, "应用补丁 " + applied.length + " 文件");
       for (const p of applied) {
@@ -1865,7 +1840,11 @@ ${taskSummary}
       }
       this.pushChanges(false);               // 更新 SCM / 状态栏改动数
     }
-    return { applied, conflicts };
+    /* 写盘失败必须让人看见：文件还留在审阅队列里，但用户以为已经接受过了 */
+    for (const f of failed || []) {
+      this.emit({ type: "term.line", text: "[补丁写入失败] " + f.path + "：" + f.error, cls: "tl-err" });
+    }
+    return { applied, conflicts, failed: failed || [] };
   }
 
   /* 用户在审阅面板「拒绝」暂存改动 */
@@ -1893,7 +1872,7 @@ ${taskSummary}
     const ctx = convContext.getStore();
     this._undoStack.push({ label: label || "改动", entries, at: Date.now(), convId: (ctx && ctx.convId) || "" });
     if (this._undoStack.length > 50) this._undoStack.shift();   // 限制栈深，避免无限增长
-    this._shadowCommit(label);   // P-H2：同步落到 shadow git，跨会话可恢复
+    this._shadowCommit(label, entries);   // P-H2：同步落到 shadow git，跨会话可恢复
   }
 
   /* 撤销栈的对外视图（/api/undo 与聊天里的撤销按钮共用这一份）。
@@ -1944,40 +1923,45 @@ ${taskSummary}
         /* 改动面板列的是当前工作区的 git 差异：纯跨根的撤销对它没有任何影响，
            却会白跑一遍全量 diff（还要读每个改动文件的全文）。 */
         if (touchedActive) this.pushChanges(false);
-        this._shadowCommit("undo " + ck.label);
+        this._shadowCommit("undo " + ck.label, ck.entries);
         return { ok: true, restored: ck.entries.map((e) => e.path), label: ck.label };
       } catch (err) {
         this._undoStack.push(ck);   // 还原失败，退还检查点以便重试
         return { ok: false, reason: "restore-failed:" + (err && err.message || "未知错误") };
       }
     }
-    /* P-H2 fallback：内存栈为空时（重启后 / 跨会话），用 shadow git 回退一个 commit */
+    /* P-H2 fallback：内存栈为空时（重启后 / 跨会话），用 shadow git 回退一个 commit。
+       只恢复这个 commit 动过的路径：旧实现 reset --hard + clean -fd 会把工作区里
+       所有未提交改动和未跟踪文件一起抹掉，那是删工作，不是撤销一步。 */
     if (this._shadowRepoReady) {
-      try {
-        const { execFileSync } = require("child_process");
-        const args = ["--git-dir", this._shadowGitDir, "--work-tree", this.files.dir];
-        // 检查 HEAD~1 存在
-        execFileSync("git", [...args, "rev-parse", "HEAD~1"], { stdio: "pipe" });
-        execFileSync("git", [...args, "reset", "--hard", "HEAD~1", "--quiet"], { stdio: "pipe" });
-        execFileSync("git", [...args, "clean", "-fd", "--quiet"], { stdio: "pipe" });
-        this.pushChanges(false);
-        this.emit({ type: "term.line", text: "[撤销] 已通过 shadow-git 回退到上一个检查点", cls: "tl-info" });
-        return { ok: true, restored: [], label: "shadow-git HEAD~1" };
-      } catch (e) {
-        return { ok: false, reason: "shadow-git: " + (e.message || "无更早的检查点") };
+      const r = shadowGit.restoreLast(this._shadowGitDir, this.files.dir, this.files);
+      /* 部分回退也要把已经变了的文件推给前端：失败的是其中几个，
+         另外几个确实已经回到原样了，界面不能停留在旧内容上。 */
+      const touched = (r.restored || []).concat(r.removed || []);
+      for (const p of touched) {
+        codeIndex.queueFileUpdate(this.files.dir, p);
+        this.fileChanged(p);
       }
+      if (touched.length) this.pushChanges(false);
+      if (!r.ok) return { ok: false, reason: "shadow-git: " + (r.reason || "回退失败"), restored: r.restored, removed: r.removed };
+      this.emit({ type: "term.line",
+        text: "[撤销] 已回退上一个检查点：" + r.restored.length + " 个文件恢复" + (r.removed.length ? "、" + r.removed.length + " 个新建文件移除" : ""),
+        cls: "tl-info" });
+      return { ok: true, restored: r.restored, removed: r.removed, label: "shadow-git HEAD~1" };
     }
     return { ok: false, reason: "empty" };
   }
 
-  /* P-H2：shadow git commit（fire-and-forget，不阻塞 agent 主循环） */
-  _shadowCommit(label) {
+  /* P-H2：shadow git commit（fire-and-forget，不阻塞 agent 主循环）。
+     只记本次检查点真正写过的当前工作区文件：全量快照会把用户自己的未提交改动
+     一起卷进来，跨会话撤销时就会把它们当"agent 新建"删掉。跨根条目不在本仓里。 */
+  _shadowCommit(label, entries) {
     if (!this._shadowRepoReady) return;
     try {
-      const { execFileSync } = require("child_process");
-      const args = ["--git-dir", this._shadowGitDir, "--work-tree", this.files.dir];
-      execFileSync("git", [...args, "add", "-A"], { stdio: "pipe", timeout: 15000 });
-      execFileSync("git", [...args, "commit", "-m", String(label || "checkpoint"), "--allow-empty", "--quiet"], { stdio: "pipe", timeout: 15000 });
+      const paths = Array.isArray(entries)
+        ? entries.filter((e) => e && !e.store && e.path).map((e) => e.path)
+        : undefined;
+      shadowGit.commit(this._shadowGitDir, this.files.dir, label, paths);
     } catch (e) { /* shadow commit 失败不影响主流程 */ }
   }
 
@@ -3999,11 +3983,16 @@ ${taskSummary}
     const conv = this._convIdNow();
     this._visionPending = this._visionPending || {};
     const list = this._visionPending[conv] || (this._visionPending[conv] = []);
-    while (list.length >= VISION_MAX_PER_ROUND) list.shift();
+    /* 满员时挤掉最旧那张 —— 但要把"哪张没了"带回回执：
+       否则模型以为自己截了三张都交给了上游，实际只有最近四张，
+       它会拿着一张从没发出去的图下结论。 */
+    let dropped = null;
+    while (list.length >= VISION_MAX_PER_ROUND) dropped = list.shift();
     let mime = "image/png";
     try { mime = require("./computer/shots").mimeOf(abs); } catch (e) { /* 拿不到就按 png */ }
-    list.push({ abs, rel: (info && info.rel) || path.basename(abs), caption: (info && info.caption) || "截图", mime });
-    return { ok: true, count: list.length };
+    const rec = { abs, rel: (info && info.rel) || path.basename(abs), caption: (info && info.caption) || "截图", mime };
+    list.push(rec);
+    return { ok: true, count: list.length, max: VISION_MAX_PER_ROUND, dropped: dropped ? dropped.rel : null };
   }
 
   /* 本轮要带的像素。_visionRejected 置位后永远回空 —— 上游已经拒过一次就别再撞。 */
@@ -4451,21 +4440,7 @@ ${taskSummary}
       this.emit({ type: "context.usage", used: this._ctxUsed(history), budget: this._ctxLimit(), est: !(this._lastPrompt && this._lastPromptArr === history) });
 
       // 控制上下文长度：最多保留最近 100 条（压缩后通常远低于此）
-      if (history.length > 100) {
-        /* 裸 slice(-100) 会把带 tool_calls 的 assistant 与它的 tool 结果拦腰切开，
-           产出孤儿 tool 消息 —— 上游直接 400（全文件其余路径都按轮次组切，这里曾是漏网）。
-           从最新往回收轮次组，直到不超 100 条；单组超 100 的极端情况整组保留（宁超不切）。 */
-        const groups = groupHistoryByToolPairing(history);
-        const kept = [];
-        let total = 0;
-        for (let i = groups.length - 1; i >= 0; i--) {
-          const n = groups[i].length;
-          if (total > 0 && total + n > 100) break;
-          kept.unshift(groups[i]);
-          total += n;
-        }
-        history = kept.flat();
-      }
+      history = trimHistoryGroups(history, 100);
 
       // Phase 2：智能上下文检索（替代全量注入）
       const smartCtx = this.contextRetriever.buildSmartContext(clean, { files: this.files });
@@ -4617,17 +4592,22 @@ ${taskSummary}
               }
               llmErr = e;
               const kindNow = classifyLlmError(e, e.message);
-              /* 上游因为这轮带了图片而拒收（最常见的是 vision 开了但模型本身不带视觉）：
-                 摘掉像素立刻重试一次，并把本会话的喂图关掉。
-                 不这么做的话，一个 400 会把整轮任务判死——而用户看到的只是"它又挂了"。 */
-              if (!visionStripped && this._visionFor(convId).length
-                  && /image|multimodal|vision|modalit|unsupported[^\n]{0,40}content|content[^\n]{0,40}unsupported|invalid_request/i.test(String((e && e.message) || ""))) {
+              /* 上游因为这轮带了图片而拒收：摘掉像素立刻重试一次，别把整轮任务判死。
+                 但"以后都不再喂像素"只在它明说不收图片时才做（isVisionRejection）。
+                 以前那条宽正则把任何写着 invalid_request 的 400 都算成"模型不带视觉"，
+                 于是一次工具 schema 写错就把视觉关到引擎重建为止，而真正的错误被那句降级提示盖住。
+                 kind 必须是 unknown：404 的模型名里带 "vision" 不该被读成视觉拒收。 */
+              const errMsg = String((e && e.message) || "");
+              if (!visionStripped && this._visionFor(convId).length && kindNow === "unknown" && isVisionRelated(e, errMsg)) {
                 visionStripped = true;
-                this._visionRejected = true;
+                const permanent = isVisionRejection(e, errMsg);
+                if (permanent) this._visionRejected = true;
                 this._clearVision(convId);
                 messages = rebuildMessages();
-                this.emit({ type: "term.line", text: "[视觉] 上游拒收了图片，本次会话不再把像素交给模型（改回只读无障碍树）。要真用视觉，请换成支持图片的模型再打开 vision 开关。", cls: "tl-warn" });
-                this._traceEvent("vision.reject", { message: String((e && e.message) || "").slice(0, 200) });
+                this.emit({ type: "term.line", cls: "tl-warn", text: permanent
+                  ? "[视觉] 上游明说这个模型不收图片，本引擎此后不再把像素交给它（改回只读无障碍树）。要恢复：换成支持图片的模型，或在「设置 → 模型」重开 vision 开关 —— 保存配置会重建引擎，拒收记录随之清掉。"
+                  : "[视觉] 这一轮带图的请求被拒了：" + errMsg.slice(0, 160) + " —— 已摘掉像素重试一次。视觉开关没动，如果重试仍失败，上面这条错误会照常报出来。" });
+                this._traceEvent("vision.reject", { permanent, kind: kindNow, message: errMsg.slice(0, 200) });
                 continue;
               }
               // 上游因上下文超限返回 4xx（"maximum context length" 等）：强制压缩历史后立即重试，
@@ -4863,6 +4843,9 @@ ${taskSummary}
       await this.say("LLM 调用出错（" + kind + "）：" + (err && err.message || err) + "\n\n" + hint + ((kind === "quota" || kind === "network" || kind === "context") ? "\n\n可在对话框下方点击「重试」重新发起。" : ""));
     } finally {
         clearInterval(_wd);
+        /* 待发像素不许越过任务边界：中断 / 轮次耗尽时那张图登记了却没随任何请求发出去，
+           留在队列里就会附到该会话下一次完全无关的请求上 —— 用户看到的是"它突然开始评论一张旧截图"。 */
+        try { this._clearVision(convId); } catch (e) { /* 没有待发队列的引擎形态 */ }
         try { this._emitArtifacts(convId); } catch (e) { /* 产物聚合失败不影响任务收尾 */ } // W6：中断/异常也聚合已写产物
         // 保存局部 history 到 conversations Map
         this.conversations.set(convId, { history, round, ts: Date.now(), changes: this.convChanges[convId] || [] });

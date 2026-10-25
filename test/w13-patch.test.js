@@ -162,3 +162,61 @@ describe("PatchEngine 全链路 — stage(模糊) → apply 乐观锁", () => {
     expect(files["d.js"]).toContain("return 42;");
   });
 });
+
+describe("apply 写盘失败：不许当成已应用吞掉", () => {
+  /* 内存桩：指定路径写盘抛错，模拟只读文件 / 盘满 / 占用 */
+  function flakyStore(files, badPath) {
+    const base = mockFileStore(files);
+    return Object.assign({}, base, {
+      write: (p, c) => {
+        if (p === badPath) throw new Error("EACCES: permission denied");
+        files[p] = c;
+      },
+    });
+  }
+
+  it("坏文件记入 failed、留在审阅队列；同批的好文件照常落盘", () => {
+    const files = { "good.js": "export const a = 1;\n", "bad.js": "export const b = 1;\n" };
+    const eng = new PatchEngine(flakyStore(files, "bad.js"));
+    expect(eng.stage("c1", { path: "good.js", edits: [{ old_string: "a = 1", new_string: "a = 2" }] }).ok).toBe(true);
+    expect(eng.stage("c1", { path: "bad.js", edits: [{ old_string: "b = 1", new_string: "b = 2" }] }).ok).toBe(true);
+
+    const ap = eng.apply("c1", ["good.js", "bad.js"]);
+    expect(ap.applied).toEqual(["good.js"]);
+    expect(ap.failed).toEqual([{ path: "bad.js", error: "EACCES: permission denied" }]);
+    expect(ap.conflicts).toEqual([]);
+    expect(files["good.js"]).toContain("a = 2");
+    expect(files["bad.js"]).toContain("b = 1");
+    /* 没写成功的还在队列里，用户还能重试；写成功的才移除 */
+    expect(eng.list("c1").map((s) => s.path)).toEqual(["bad.js"]);
+  });
+});
+
+describe("specsFromArgs — 工具层与引擎层共用同一套参数归一化", () => {
+  const { specsFromArgs } = require("../server/patch");
+
+  it("path + edits 数组", () => {
+    const s = specsFromArgs({ path: "a.js", edits: [{ old_string: "x", new_string: "y" }] });
+    expect(s).toHaveLength(1);
+    expect(s[0].path).toBe("a.js");
+    expect(s[0].edits[0].old_string).toBe("x");
+  });
+
+  it("path + old_string/new_string 简写", () => {
+    const s = specsFromArgs({ path: "a.js", old_string: "x", new_string: "y" });
+    expect(s).toHaveLength(1);
+    expect(s[0].edits).toEqual([{ old_string: "x", new_string: "y" }]);
+  });
+
+  it("patch 文本块（Aider SEARCH/REPLACE）", () => {
+    const text = "src/a.js\n<<<<<<< SEARCH\nconst x = 1;\n=======\nconst x = 2;\n>>>>>>> REPLACE";
+    const s = specsFromArgs({ patch: text });
+    expect(s).toHaveLength(1);
+    expect(s[0].path).toBe("src/a.js");
+  });
+
+  it("什么都没有 → null，由调用方给出明确参数错误", () => {
+    expect(specsFromArgs({})).toBeNull();
+    expect(specsFromArgs(null)).toBeNull();
+  });
+});

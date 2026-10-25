@@ -5,6 +5,7 @@
      写类结果一律不动；收益不足 256 token 整体回滚；二次运行幂等
    ============================================================ */
 const { LlmAgent } = require("../server/agent-llm");
+const { trimHistoryGroups, groupHistoryByToolPairing } = require("../server/agent-helpers");
 
 const CLEARED = "[旧工具结果已清理]";
 
@@ -617,5 +618,67 @@ describe("compactHistory — 摘要模板与断路器（P1-B6）", () => {
     expect(a._compactStopped.cMicro).toBeFalsy();
     const led1 = ledgersIn(out1);
     expect(led1.length).toBeLessThanOrEqual(1);                          // 两条台账 = 旧的那条没被剥离
+  });
+});
+
+/* ============================================================
+   超长历史裁剪：这条路径只在 100 条以上才走到，普通会话测不出来。
+   旧实现把 { items } 组对象本身塞回历史（groups[i].length 恒 undefined），
+   上游收到非消息对象直接 400；且 tool_calls 与结果可能被拦腰切开。
+   ============================================================ */
+describe("trimHistoryGroups — 长历史裁剪保留完整轮次组", () => {
+  const msg = (role, content) => ({ role, content: content || "" });
+  const call = (id) => ({ role: "assistant", content: "", tool_calls: [{ id, type: "function", function: { name: "read_file", arguments: "{}" } }] });
+  const toolMsg = (id) => ({ role: "tool", tool_call_id: id, content: "ok" });
+
+  it("普通消息超限时只留最近的，且返回的每一条都是消息而不是分组对象", () => {
+    const h = [];
+    for (let i = 0; i < 60; i++) { h.push(msg("user", "u" + i)); h.push(msg("assistant", "a" + i)); }
+    const out = trimHistoryGroups(h, 100);
+    expect(out.length).toBeLessThanOrEqual(100);
+    expect(out.every((m) => m && typeof m === "object" && typeof m.role === "string")).toBe(true);
+    expect(out.some((m) => m && m.items)).toBe(false);
+    expect(out[out.length - 1].content).toBe("a59");
+  });
+
+  it("tool_calls 与它的结果同进同出，裁剪后没有孤儿 tool 消息", () => {
+    /* 一条 assistant 并行发两个调用、紧跟两条结果 —— 这是合法的配对形态，
+       组必须完整地进来或完整地出去。 */
+    const pair = (a, b) => ({ role: "assistant", content: "", tool_calls: [
+      { id: a, type: "function", function: { name: "read_file", arguments: "{}" } },
+      { id: b, type: "function", function: { name: "read_file", arguments: "{}" } },
+    ] });
+    const h = [];
+    for (let i = 0; i < 40; i++) {
+      h.push(msg("user", "u" + i));
+      h.push(pair("c" + i, "c" + i + "b"));
+      h.push(toolMsg("c" + i));
+      h.push(toolMsg("c" + i + "b"));
+    }
+    const out = trimHistoryGroups(h, 100);
+    expect(out.length).toBeLessThanOrEqual(100);
+    const announced = new Set();
+    for (const m of out) {
+      if (m.role === "assistant" && Array.isArray(m.tool_calls)) for (const t of m.tool_calls) announced.add(t.id);
+      if (m.role === "tool") expect(announced.has(m.tool_call_id)).toBe(true);
+    }
+    expect(out[out.length - 1].tool_call_id).toBe("c39b");
+  });
+
+  it("单组就超过上限时整组保留（宁超不切）", () => {
+    /* 一次并行 120 个调用 + 120 条结果 = 一个 121 条的轮次组 */
+    const ids = Array.from({ length: 120 }, (_, i) => "big" + i);
+    const h = [{
+      role: "assistant", content: "",
+      tool_calls: ids.map((id) => ({ id, type: "function", function: { name: "read_file", arguments: "{}" } })),
+    }].concat(ids.map(toolMsg));
+    const out = trimHistoryGroups(h, 100);
+    expect(out.length).toBe(121);
+    expect(groupHistoryByToolPairing(out).length).toBe(1);
+  });
+
+  it("未超限时原数组原样返回（不白拷贝）", () => {
+    const h = [msg("user", "a"), msg("assistant", "b")];
+    expect(trimHistoryGroups(h, 100)).toBe(h);
   });
 });

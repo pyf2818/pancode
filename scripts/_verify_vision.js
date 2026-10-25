@@ -11,7 +11,10 @@
    1) for_model 的下一轮请求里确实有 image_url 部件；
    2) 再下一轮没有 —— 同一张图反复上传等于每轮多付 1.5k token；
    3) 对话历史里搜不到 base64 —— 图片不能落进 .pancode 的会话文件。
-   外加降级：上游因图片 400 时必须摘掉像素重试一次并关掉本会话喂图，而不是让整轮任务挂掉。
+   外加两条降级与两条"不许说谎"：
+   · 上游明说不收图片时摘掉像素重试一次并关掉本引擎喂图，而不是让整轮任务挂掉；
+   · 与图片无关的 4xx（404 模型名里带 vision）不许被当成视觉拒收——既不多发一次，也不关掉喂图；
+   · 任务在"图登记了却没发出去"时收口，待发队列必须清空，不许漏到下一次无关请求。
    用法：node scripts/_verify_vision.js
 */
 "use strict";
@@ -200,6 +203,29 @@ async function run(name, extraLlm, script) {
   const saidNew = C.evts.some((e) => String(e.text || "").includes("改用文本快照了"));
   ok("⑥ 任务继续跑到了结束（不是以报错收场）", doneEvts || saidNew,
     "agent.done=" + doneEvts + " 最终回答=" + saidNew);
+
+  /* ⑦ 与图片无关的 4xx 不许被读成"这个模型不带视觉"。
+     以前那条宽正则里挂着 invalid_request，模型名里的 "vision" 也算命中：
+     一次 404 就把整台引擎的喂图关到重启，而那句降级提示把真实错误盖住了。 */
+  const D = await run("再截一张", { vision: true }, [
+    { toolCalls: [{ id: "f1", name: "browser_screenshot", arguments: JSON.stringify({ for_model: true, name: "误判测试" }) }] },
+    { throw: "HTTP 404 model vision-test not found" },
+  ]);
+  ok("⑦ 404 就是 404：没有为了图片摘像素再多发一次请求", reqs.length === 2,
+    "请求 " + reqs.length + " 次 " + JSON.stringify(reqs.map((r) => r.hasImage)));
+  ok("⑦ 带图那次确实发了（否则谈不上被拒）", reqs[1] && reqs[1].hasImage, JSON.stringify(reqs.map((r) => r.hasImage)));
+  ok("⑦ 视觉没有被永久关掉", D._visionRejected !== true, "rejected=" + D._visionRejected);
+  ok("⑦ 真实错误原样报出来，没被降级提示顶掉", /\[LLM 引擎异常\][^\n]*404/.test(termLines(D)), termLines(D).slice(0, 200));
+  ok("⑦ 终端里不许出现「这个模型不收图片」那句降级提示", !/明说这个模型不收图片/.test(termLines(D)), termLines(D).slice(0, 200));
+
+  /* ⑧ 截了图但任务在这一轮就收口（轮次耗尽）：待发像素不许越过任务边界。
+     留着它，下一次毫无关系的请求会平白附上这张旧图 —— 用户看到的是"它突然开始评论一张旧截图"。 */
+  const E = await run("截一张就好", { vision: true, maxToolRounds: 1 }, [
+    { toolCalls: [{ id: "g1", name: "browser_screenshot", arguments: JSON.stringify({ for_model: true, name: "只登记不发出" }) }] },
+  ]);
+  ok("⑧ 那一张真的登记过（回执说会随下一次请求交出去）", /会随下一次请求交给你/.test(histText(E)), histText(E).slice(0, 160));
+  ok("⑧ 任务收口后待发队列是空的", (E._visionFor("default") || []).length === 0,
+    "残留 " + (E._visionFor("default") || []).map((x) => x.rel).join(","));
 
   if (fail) { console.error("\nFAIL " + fail + " 项:\n - " + fails.join("\n - ")); SANDBOX.cleanup(); process.exit(1); }
   console.log("\nPASS: 视觉链路 " + pass + " 项全过（像素带一次、不进历史、CLI 旗标实测、拒收能降级）");

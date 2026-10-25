@@ -413,18 +413,34 @@ function refreshTray() {
   } catch (e) { /* 托盘刷新失败不影响后端 */ }
 }
 
-/* 「退出并终止所有任务」：还有任务在跑时先确认，别让人一键把干到一半的活悄悄掐了 */
-function quitWithTasks() {
+/* 「退出并终止所有任务」：还有任务在跑时先确认，别让人一键把干到一半的活悄悄掐了。
+   对话框必须用异步版：后端与主进程同进程，showMessageBoxSync 会把主循环连同
+   正在流式的任务整段卡住，直到用户点掉对话框。加一个重入闸，连点两次也只弹一张。 */
+let quitDialogOpen = false;
+async function quitWithTasks() {
+  if (quitting || quitDialogOpen) return;
   const n = taskWatch.countRunning(lastRows);
   if (n > 0) {
-    const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
-      type: "warning",
-      buttons: ["仍要退出", "继续等它跑完"],
-      defaultId: 1,
-      cancelId: 1,
-      message: "还有 " + n + " 个任务在跑",
-      detail: "退出会中断这些任务，并终止后端与它起的全部子进程。",
-    });
+    quitDialogOpen = true;
+    let choice = 1;
+    try {
+      const box = {
+        type: "warning",
+        buttons: ["仍要退出", "继续等它跑完"],
+        defaultId: 1,
+        cancelId: 1,
+        message: "还有 " + n + " 个任务在跑",
+        detail: "退出会中断这些任务，并终止后端与它起的全部子进程。",
+      };
+      const res = win && !win.isDestroyed()
+        ? await dialog.showMessageBox(win, box)
+        : await dialog.showMessageBox(box);
+      choice = res && res.response;
+    } catch (e) {
+      choice = 1;   // 对话框本身失败时不替用户做"退出"的决定
+    } finally {
+      quitDialogOpen = false;
+    }
     if (choice !== 0) return;
   }
   quitting = true;
