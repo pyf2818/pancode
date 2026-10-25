@@ -736,7 +736,9 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 /* W22 · 多会话网格视图：#chatStream 切成 CSS grid，每格独立滚动。
    非 pane 的直接子节点（任务进度胶囊等）跨满整行，不挤进某一格；
    绝对定位的滚动按钮/导航条不受 grid 影响。 */
-#chatStream.grid-on{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:10px;overflow:hidden;padding:10px;align-content:start}
+#chatStream.grid-on{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));grid-auto-rows:minmax(220px,1fr);gap:10px;overflow:hidden;padding:10px;align-content:start}
+/* W28 终审:行高必须有界 —— auto 行会被内容撑开,height:100% 永远等于内容高,
+   格子的 overflow-y:auto 永不触发,"每格独立滚动"名存实亡 */
 #chatStream.grid-on>*:not(.conv-pane){grid-column:1/-1}
 #chatStream.grid-on .conv-pane{flex:none;min-height:220px;max-height:none;height:100%;overflow-y:auto;border:1px solid var(--border);border-radius:9px;background:var(--bg2);padding:8px}
 #chatStream.grid-on .conv-pane.grid-active{border-color:var(--accent-hi);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent-hi) 35%,transparent)}
@@ -1621,7 +1623,6 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .msg-copy .ico{width:13px;height:13px}
 /* W27 · 用户气泡上的「重跑」：紧贴复制按钮左侧，同款悬停显现 */
 .msg-rerun{position:absolute;top:4px;right:32px;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border:none;background:var(--bg4);color:var(--text-dim);border-radius:5px;cursor:pointer;opacity:0;transition:opacity .15s,background .15s;padding:0;z-index:2}
-.msg-user{position:relative}
 .msg-user:hover .msg-rerun{opacity:1}
 .msg-rerun:hover{background:var(--warn);color:#fff}
 .msg-rerun .ico{width:13px;height:13px}

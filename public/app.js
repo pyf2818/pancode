@@ -1886,18 +1886,22 @@ function appendChatBlock(el, round) {
   foldOldMessages();
 }
 
-/* 任务收尾：给最后一个仍展开的轮组填摘要并收起（否则它永远挂着呼吸点、摘要空白）。
-   在 handleEvent 的事件上下文里调用 —— chatFlow(chatPane()) 已绑定到对应会话的 pane。 */
-function finalizeOpenRoundGrp() {
-  const openGrps = chatPane().querySelectorAll(".round-grp.open");
+/* 任务收尾：给指定会话最后一个仍展开的轮组填摘要并收起（否则它永远挂着呼吸点、摘要空白）。
+   W28 终审:agent.done 不走 withConv（不在 CHAT_DOM_TYPES 里）,这里若用 chatPane()
+   会永远绑到前台活跃 pane —— 后台会话收尾时收错前台的组、自己的组永远不收。
+   显式按 convId 找 pane,调用点把 ev.convId 传进来。 */
+function finalizeOpenRoundGrp(cvid) {
+  const pane = (cvid && convPanes[cvid]) || chatPane();
+  const openGrps = pane.querySelectorAll(".round-grp.open");
   const last = openGrps.length ? openGrps[openGrps.length - 1] : null;
   if (last) finalizeRoundGrp(last);
 }
 
-/* 长会话折叠：直接子消息超过阈值时，把最早的批次收入折叠容器（可展开），降低 DOM 渲染压力 */
+/* 长会话折叠：直接子消息超过阈值时，把最早的批次收入折叠容器（可展开），降低 DOM 渲染压力。
+   W28:接受 pane 覆盖 —— 网格里对后台会话删消息后要按**那个** pane 重算，chatPane() 会跑错。 */
 const FOLD_THRESHOLD = 60, FOLD_BATCH = 30;
-function foldOldMessages() {
-  const pane = chatPane();
+function foldOldMessages(paneOverride) {
+  const pane = paneOverride || chatPane();
   const direct = pane.querySelectorAll(":scope > .msg-user, :scope > .msg-ai, :scope > .step-flow");
   if (direct.length <= FOLD_THRESHOLD) return;
   let container = pane.querySelector(":scope > .fold-old");
@@ -1940,15 +1944,25 @@ chatStream.addEventListener("click", (e) => {
     if (state.convRunning[cvid]) { toast(t("rerunBusyTip")); return; }
     const userMsgs = [...pane.querySelectorAll(".msg-user")];
     const backIndex = userMsgs.length - 1 - userMsgs.indexOf(bubble);   // 从最新数（0 = 最后一条）
-    if (backIndex < 0) return;
-    const text = (bubble.querySelector(".msg-copy") ? [...bubble.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("") : bubble.textContent) || "";
-    let node = bubble;
-    while (node) {
-      const next = node.nextElementSibling;
-      node.remove();
-      node = next;
+    /* W28 终审:纯 Skill 气泡(只挂 chip 没打字)没有可重发的正文 —— 服务端会静默
+       丢弃,客户端却已删 DOM 报成功。空文本直接拒绝,不动 DOM。 */
+    const text = ([...bubble.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("")).trim();
+    if (!text) { toast(t("rerunEmptyTip")); return; }
+    /* 删除范围必须跨容器:bubble 可能在 .fold-old-body 里(展开折叠区后可点),
+       只在同级删 nextElementSibling 会在容器边界截断,把"较新的后续消息"残留在
+       时间线上,与服务端已截断的历史拼成错乱画面。向上逐级删"祖先容器在 pane 里的
+       后续兄弟",到 pane 层为止。 */
+    let n = bubble;
+    while (n) { const nx = n.nextElementSibling; n.remove(); n = nx; }
+    let anc = bubble.parentNode;
+    while (anc && anc !== pane) {
+      let s = anc.nextElementSibling;
+      while (s) { const nx = s.nextElementSibling; s.remove(); s = nx; }
+      anc = anc.parentNode;
     }
-    send({ type: "rewind", convId: cvid, backIndex, text: text.trim() });
+    send({ type: "rewind", convId: cvid, backIndex, text });
+    buildMsgNav();
+    foldOldMessages(pane);
     toast(t("rerunStartedTip"));
   }
 });
@@ -2789,7 +2803,7 @@ function handleEventInner(ev) {
       if (!ev.convId || ev.convId === convId) {
         answerBlock = null; thinkCount = 0; lastThink = null; refreshCtx();
       }
-      finalizeOpenRoundGrp();   // W22：任务收尾给最后的轮组填摘要（呼吸点停掉）
+      finalizeOpenRoundGrp(doneConvId);   // W22：按会话收尾轮组（后台会话也各收各的）
       renderConvList();
       break;
     }
@@ -4391,7 +4405,7 @@ let gridMode = localStorage.getItem(GRID_KEY) === "1";
 
 /* 统一挂载入口：单视图 = 仅活跃 pane；网格 = 有内容的会话并排挂载并刷新各格头部 */
 function applyLayout() {
-  if (!gridMode || typeof chatPane !== "function") {
+  if (!gridMode) {
     chatStream.classList.remove("grid-on");
     mountPane(convId);
     return;
@@ -4419,8 +4433,9 @@ function applyLayout() {
     const p = convPanes[id];
     return !!(id === convId || (p && p.querySelector(".msg-user, .tool-card, .round-grp")));
   };
-  const ids = hydrated.filter((id) => hasContent(id)).slice(0, GRID_MAX);
+  const ids = hydrated.filter((id) => hasContent(id));
   if (convId && ids.indexOf(convId) < 0) ids.unshift(convId);
+  ids.length = Math.min(ids.length, GRID_MAX);   // W28 终审:截断放 unshift 之后,否则活跃会话会把列表顶成 7 格
   for (const child of Array.from(chatStream.children)) {
     if (child.classList && child.classList.contains("conv-pane") && ids.indexOf(child.dataset.convId) < 0) {
       chatStream.removeChild(child);
@@ -4433,9 +4448,11 @@ function applyLayout() {
       head = document.createElement("div");
       head.className = "gp-head";
       head.innerHTML = '<span class="gp-dot"></span><span class="gp-title"></span><span class="gp-focus">' + ico("target") + "</span>";
-      head.onclick = () => openConv(id);
       ctx.pane.insertBefore(head, ctx.pane.firstChild);
     }
+    /* W28 终审:onclick 必须每次重赋 —— gp-head 会随 pane 被序列化进快照,
+       刷新恢复的 head 是无监听的死元素,复用分支不重绑的话"点头部聚焦"永久失联 */
+    head.onclick = () => openConv(id);
     head.querySelector(".gp-title").textContent = titles[id] || t("convUntitled");
     ctx.pane.classList.toggle("grid-active", id === convId);
     ctx.pane.classList.toggle("grid-running", !!state.convRunning[id]);
@@ -4697,7 +4714,8 @@ window.doLogout = async function () {
 };
 
 /* W25 个人模式静默身份：GET /api/auth/auto 向本机服务领身份（服务端保证仅
-   TCP 回环可达；多账号时返回 multiUser，这里回退登录弹窗）。
+   TCP 回环可达；账号无论几个都会签发最近创建的那个，服务端拒绝仅剩网络/异常路径，
+   这里一律回退登录弹窗兜底）。
    成功路径与 submitAuth 同款赋值：token 落 localStorage（等同"记住我"），
    下次启动 checkAuth 直接通过，不再有任何弹窗。 */
 async function autoLogin() {

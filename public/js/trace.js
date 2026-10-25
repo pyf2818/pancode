@@ -100,16 +100,19 @@ async function loadTraceHistory(convId) {
     list.scrollTop = list.scrollHeight;
   } catch (e) { /* 静默：历史缺失不应影响实时面板 */ }
 }
-/* W26 空态行：列表为空时放一句说明。clearTrace / 初始 / 换语言三处都会调。 */
+/* W26 空态行：列表没有任何真实行时显示一句说明。clearTrace / 初始 / 换语言三处都会调；
+   已有 .trace-empty 时更新文案（W28 终审:旧守卫 children.length 让切语言永远刷不了文案）。 */
 function paintTraceEmpty() {
   const list = $("traceList"); if (!list) return;
-  if (list.children.length) return;
-  const hint = document.createElement("div");
-  hint.className = "trace-empty";
+  if (list.querySelector(".trace-row")) return;   // 有真实 trace 行 = 不需要空态
+  let hint = list.querySelector(".trace-empty");
+  if (!hint) {
+    hint = document.createElement("div");
+    hint.className = "trace-empty";
+    list.appendChild(hint);
+  }
   hint.textContent = t("traceEmptyHint");
-  list.appendChild(hint);
 }
 /* 「N 事件」是界面文案不是计数值：换语言后要立刻跟着改，否则英文界面钉着中文 */
 if (typeof onLang === "function") onLang(() => { setTraceText("agTraceCount", t("nEvents", { n: traceState.seq })); paintTraceEmpty(); });
 paintTraceEmpty();   // 初始（reload 后 restoreConv 不走 clearTrace，这里兜住）
-if (typeof onLang === "function") onLang(() => setTraceText("agTraceCount", t("nEvents", { n: traceState.seq })));
