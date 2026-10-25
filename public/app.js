@@ -1089,7 +1089,13 @@ function applyPreviewZoom() {
    预览 iframe 已改为 sandbox="allow-scripts"（去掉 allow-same-origin，杜绝预览内脚本
    反咬父页面 pancode），iframe 因此是不透明源，无法再直读 contentDocument/scrollHeight。
    改用 postMessage 跨源桥同步滚动位置，且不回退任何 UX。 */
-const PREVIEW_BRIDGE = '<script>(function(){var P=function(){try{parent.postMessage({__pcPs:window.scrollY,__pcSh:(document.body?document.body.scrollHeight:0)},"*")}catch(e){}};window.addEventListener("scroll",function(){requestAnimationFrame(P)},{passive:true});window.addEventListener("resize",function(){requestAnimationFrame(P)},{passive:true});window.addEventListener("message",function(e){var d=e.data;if(d&&d.__pcPt!=null){try{window.scrollTo(0,d.__pcPt)}catch(e){}}});if(document.readyState!=="loading")P();else window.addEventListener("DOMContentLoaded",P);})();<\/script>';
+/* 预览页 → 父页面上报滚动状态。
+   __pcPs = 当前滚动位置（像素）
+   __pcSh = 内容总高度（像素）
+   __pcCh = 可视高度（像素）—— 新增：父页面要靠它算出"预览可滚高度"
+   （__pcSh - __pcCh）才能把比例映射到编辑器。之前只有 __pcSh，
+   父页面无从知道预览能滚多远，只能拿像素硬搬，于是错位。 */
+const PREVIEW_BRIDGE = '<script>(function(){var P=function(){try{parent.postMessage({__pcPs:window.scrollY,__pcSh:(document.body?document.body.scrollHeight:0),__pcCh:(document.documentElement?document.documentElement.clientHeight:0)},"*")}catch(e){}};window.addEventListener("scroll",function(){requestAnimationFrame(P)},{passive:true});window.addEventListener("resize",function(){requestAnimationFrame(P)},{passive:true});window.addEventListener("message",function(e){var d=e.data;if(d&&d.__pcPt!=null){try{window.scrollTo(0,d.__pcPt)}catch(e){}}});if(document.readyState!=="loading")P();else window.addEventListener("DOMContentLoaded",P);})();<\/script>';
 function injectPreviewBridge(html) {
   const i = html.toLowerCase().lastIndexOf("</body>");
   if (i >= 0) return html.slice(0, i) + PREVIEW_BRIDGE + html.slice(i);
@@ -1121,12 +1127,57 @@ function rewriteResourcePaths(html, filePath) {
 }
 
 let _previewScrollRAF = null, _pvSh = 1000, _pvSyncing = false, _pvMsgAttached = false;
+/* 预览可滚动高度（内容高 - 可视高）。bridge 现在会上报 __pcCh，
+   有了它才能算出预览能滚多远 —— 之前只有内容高度，比例无从算起。 */
+let _pvCh = 600;
+/* 两个方向的同步标记：_pvSyncing 护 editor→preview，_pvSyncingBack 护 preview→editor。
+   之前只有前者，于是预览滚动 → editor.setScrollTop → onDidScrollChange →
+   再算一次比例回滚预览，形成回环：用户滚一下，预览被甩到最底部。 */
+let _pvSyncingBack = false;
+/* 预览的滚动比例（0~1）与"重绘后待恢复"标记。
+   记比例而不是像素：srcdoc 重载后内容高度会变，像素对不上，比例才对得上。 */
+let _pvRatio = 0, _pvRestorePending = false;
 function _onPreviewMessage(e) {
   const d = e.data;
   if (!d || d.__pcPs == null) return;
-  if (d.__pcSh && d.__pcSh > 0) _pvSh = d.__pcSh; // 缓存预览页可滚动高度（跨源无法直读）
-  if (_pvSyncing) return; // 本次由 editor->preview 触发，忽略回声避免回环
-  if (previewOn && editor) { try { editor.setScrollTop(d.__pcPs); } catch (_) {} }
+  if (d.__pcSh && d.__pcSh > 0) _pvSh = d.__pcSh; // 缓存预览页内容高度（跨源无法直读）
+  if (d.__pcCh && d.__pcCh > 0) _pvCh = d.__pcCh; // 缓存预览页可视高度
+  if (_pvSyncing) return;      // 本次由 editor->preview 触发，忽略回声避免回环
+  if (_pvSyncingBack) return;  // 本次由 preview->editor 触发，同样忽略
+  /* 重绘后的恢复：新文档加载完会照例上报一次初始状态（__pcPs=0 + 新高度）。
+     这时把之前记下的比例按新高度还原回去，用户的滚动位置就保住了。
+     这一条上报不参与比例更新 —— 它是新文档的初始状态，不是用户的滚动。 */
+  if (_pvRestorePending) {
+    _pvRestorePending = false;
+    const pvMax = Math.max(0, _pvSh - _pvCh);
+    if (pvMax > 0) {
+      try {
+        const fr = $("hpFrame");
+        if (fr && fr.contentWindow) {
+          _pvSyncing = true;
+          fr.contentWindow.postMessage({ __pcPt: Math.round(_pvRatio * pvMax) }, "*");
+          requestAnimationFrame(() => { _pvSyncing = false; });
+        }
+      } catch (_) {}
+    }
+    return;
+  }
+  /* 预览滚动 → 编辑器：按**比例**映射，不是像素。
+     预览是渲染结果、编辑器是源码，两者滚动高度不同（源码往往更短），
+     把预览的像素位置直接当编辑器的像素位置搬，必然错位 ——
+     极端时编辑器的可滚高度为 0，位置一去不回，编辑器被顶到底。 */
+  const pvMaxNow = Math.max(0, _pvSh - _pvCh);
+  if (pvMaxNow > 0) _pvRatio = Math.min(1, Math.max(0, d.__pcPs / pvMaxNow));
+  try {
+    const pvMax = pvMaxNow;
+    const edMax = Math.max(0, editor.getScrollHeight() - editor.getContainerDomNode().clientHeight);
+    if (pvMax <= 0 || edMax <= 0) return;   // 任一侧不可滚 → 没有可映射的比例
+    const ratio = Math.min(1, Math.max(0, d.__pcPs / pvMax));
+    _pvSyncingBack = true;
+    editor.setScrollTop(ratio * edMax);
+    // 下一帧解除保护：onDidScrollChange 是异步派发的
+    requestAnimationFrame(() => { requestAnimationFrame(() => { _pvSyncingBack = false; }); });
+  } catch (_) {}
 }
 function _ensurePreviewMsg() {
   if (_pvMsgAttached) return;
@@ -1141,8 +1192,12 @@ function _schedulePreviewScrollSync() {
     const frame = $("hpFrame");
     if (!frame || !frame.contentWindow) return;
     try {
-      const ratio = editor.getScrollTop() / Math.max(1, editor.getScrollHeight() - editor.getContainerDomNode().clientHeight);
-      const target = ratio * _pvSh;
+      /* 分母是编辑器**实际可滚高度**。原来用 Math.max(1, …) 兜底：
+       编辑器不可滚时 ratio = scrollTop / 1 = scrollTop，target 被放大几千倍，
+       预览直接被甩到底部（实测 300 → 14703）。不可滚时比例就该是 0。 */
+      const edMax = Math.max(0, editor.getScrollHeight() - editor.getContainerDomNode().clientHeight);
+      const ratio = edMax > 0 ? Math.min(1, Math.max(0, editor.getScrollTop() / edMax)) : 0;
+      const target = ratio * Math.max(0, _pvSh - _pvCh);
       _pvSyncing = true;
       frame.contentWindow.postMessage({ __pcPt: target }, "*");
       requestAnimationFrame(() => { _pvSyncing = false; }); // 下一帧解除回环保护
@@ -1162,6 +1217,9 @@ function renderPreview() {
   const path = state.activeFile;
   const frame = $("hpFrame");
   if (!previewOn || !path || !isPreviewable(path) || !models[path]) return;
+  /* srcdoc 一改，iframe 整个重载 → scrollTop 归零，用户正在看的那段就没了。
+     先把当前比例存下并置"待恢复"，新文档首次上报时再还原回去。 */
+  _pvRestorePending = true;
   const val = models[path].getValue();
   if (extOf(path) === "html" || extOf(path) === "htm") {
     const rewritten = rewriteResourcePaths(val, path);
