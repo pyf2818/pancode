@@ -237,23 +237,26 @@ if (_sessSweep && _sessSweep.unref) _sessSweep.unref();
 /* ---------- 本机自动身份（个人模式，W25） ----------
    pancode 是个人本机产品，注册/登录门槛是多余的；但 userToken 闸门本身必须保留
    （它挡着 DNS rebinding / 恶意网页直接调 API —— 见 index.js 的鉴权注释）。
-   折中：由"仅本机回环可达"的 /api/auth/auto 静默发身份——
+   由"仅本机回环可达"的 /api/auth/auto 静默发身份——
      · 没有任何用户 → 创建 local 用户（密码随机且不外泄，谁也无法"登录"它），签发 token
-     · 恰好一个用户 → 直接给它签发 token（免密；单账号即机主，这是个人模式的本意）
-     · 多个用户     → 拒绝（multiUser），前端回退登录弹窗 —— 多账号语义下免密等于冒充。
+     · 已有用户（无论几个） → 取最近创建的一个签发 token（免密）
+   为什么多账号也不拒绝：这层信任模型和 /api/bootstrap 同一档 —— 能连上 TCP 回环的
+   本机进程本来就无条件拿得到 AUTH_TOKEN，"替用户在多个账号里挑一个"在这里没有
+   被冒充的对象。实测 4 个存量账号（探针遗留）曾把用户锁回登录框，拒绝分支已删。
    调用方（index.js）负责再验一次 TCP 层 remoteAddress。 */
 async function autoIdentity() {
   const users = loadUsers();
   const names = Object.keys(users);
-  if (names.length > 1) return { ok: false, multiUser: true };
-  let username = names[0];
-  const created = !username;
+  let username;
+  const created = !names.length;
   if (created) {
     username = "local";
     const salt = genSalt();
     const hash = await hashPassword(genToken() + genToken(), salt);
     users[username] = { salt, hash, ts: Date.now() };
     await saveUsers(users);
+  } else {
+    username = names.sort((a, b) => (Number(users[b].ts) || 0) - (Number(users[a].ts) || 0))[0];
   }
   const token = newSession(username);
   await writeSessions();
