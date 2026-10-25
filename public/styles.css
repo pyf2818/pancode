@@ -736,11 +736,24 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 /* W22 · 多会话网格视图：#chatStream 切成 CSS grid，每格独立滚动。
    非 pane 的直接子节点（任务进度胶囊等）跨满整行，不挤进某一格；
    绝对定位的滚动按钮/导航条不受 grid 影响。 */
-#chatStream.grid-on{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));grid-auto-rows:minmax(220px,1fr);gap:10px;overflow:hidden;padding:10px;align-content:start}
+/* 列数由 JS 按实际 pane 数写入 --grid-cols（1~GRID_MAX）。
+   不再用 auto-fit：auto-fit 按容器宽度铺满列数，与 pane 数脱钩 ——
+   1 个 pane 时右边空一大块（实测 801px 容器铺 2 列，右侧空 385px），
+   窄容器时又挤成 1 列。
+   默认值写在这里（而不是只靠 var() 的 fallback）：JS 写不进去时也有 1 列可用，
+   且 css-tokens 回归会校验「引用的 token 必须定义过」。 */
+#chatStream{--grid-cols:1}
+#chatStream.grid-on{display:grid;grid-template-columns:repeat(var(--grid-cols),minmax(0,1fr));grid-auto-rows:minmax(0,1fr);gap:10px;overflow:hidden;padding:44px 10px 10px;align-content:stretch;min-height:0}
 /* W28 终审:行高必须有界 —— auto 行会被内容撑开,height:100% 永远等于内容高,
-   格子的 overflow-y:auto 永不触发,"每格独立滚动"名存实亡 */
-#chatStream.grid-on>*:not(.conv-pane){grid-column:1/-1}
-#chatStream.grid-on .conv-pane{flex:none;min-height:220px;max-height:none;height:100%;overflow-y:auto;border:1px solid var(--border);border-radius:9px;background:var(--bg2);padding:8px}
+   格子的 overflow-y:auto 永不触发,"每格独立滚动"名存实亡。
+   改:行高 minmax(0,1fr) —— 网格区平分可用高度，格子等高、底部不留白；
+   每格靠 overflow-y:auto 独立滚动，min-height:0 防止内容把它顶破。 */
+/* 网格模式下胶囊脱离网格流:它是 grid 子节点时会被当成一整行
+   (grid-column:1/-1),而 27px 高的元素占着 220px 的行 ——
+   顶部凭空空出 190px（实测 y=223 才开始画）。改为绝对定位浮在顶部，
+   网格 padding-top 44px 给它让位。 */
+#chatStream.grid-on>*:not(.conv-pane){position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:var(--z-pop)}
+#chatStream.grid-on .conv-pane{flex:none;min-height:0;max-height:100%;height:100%;overflow-y:auto;border:1px solid var(--border);border-radius:9px;background:var(--bg2);padding:8px}
 #chatStream.grid-on .conv-pane.grid-active{border-color:var(--accent-hi);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent-hi) 35%,transparent)}
 #chatStream.grid-on .conv-pane.grid-running{border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
 .conv-pane>.gp-head{display:none}

@@ -4491,12 +4491,54 @@ function openConv(id) {
    状态全部可从 DOM 与 loadConvList 推导，切换/刷新零额外恢复逻辑。 */
 const GRID_KEY = "cw-grid-mode";
 const GRID_MAX = 6;
+const GRID_MIN_COL = 300;    // 一列再窄字就挤成竖条 —— 宁可少放一列，不留空白
+const GRID_GAP = 10;         // 与 CSS 的 gap 保持一致
 let gridMode = localStorage.getItem(GRID_KEY) === "1";
+
+/* 网格模式下的右栏让位。
+   实测：1080 视口 + 右栏 430px → 中间只剩 371px，网格只能排 1 列，
+   多个会话格子竖着挤、每个仅 152px 高，内容被压扁（残缺 + 挤兑）。
+   网格视图的用途是同时看多个会话，右栏是次要信息 —— 让位给它。
+   规则：
+     · 只在「宽度排不下 2 列」时收（够宽还收就是骚扰）；
+     · 退出网格时不擅自展开（用户可能本来就想收着）；
+     · 手动展开过的不再自动收（用 autoCollapsed 标记区分）。
+   返回值：是否刚刚收起了右栏 —— 收起会改变可用宽度，调用方需要
+   在下一帧重算列数（收起前算的是旧宽度，那一列是白收）。 */
+function syncRightPanelForGrid() {
+  const agR = $("agRight");
+  if (!agR) return false;
+  if (!gridMode) {
+    if (agR.dataset.autoCollapsed === "1") {
+      agR.classList.remove("collapsed");
+      delete agR.dataset.autoCollapsed;
+      localStorage.setItem("cw-ag-right-collapsed", "0");
+    }
+    return false;
+  }
+  /* 判据是「放得下两列吗」：两列需要 2×300 + gap = 610px。
+     之前误写成 GRID_MIN_COL + GRID_GAP（310px），于是 371px 的容器
+     被判成「够宽」→ 右栏不收，格子照样挤成 1 列（实测 3 个格子各 152px 高）。 */
+  const w = (chatStream.clientWidth || 0) - 20;          // 20 = 左右 padding
+  const needTwoCols = w >= GRID_MIN_COL * 2 + GRID_GAP;   // 放得下两列就不必收
+  if (needTwoCols) return false;
+  if (agR.classList.contains("collapsed")) return false;   // 本来就收着，不动
+  agR.classList.add("collapsed");
+  agR.dataset.autoCollapsed = "1";
+  localStorage.setItem("cw-ag-right-collapsed", "1");
+  return true;
+}
 
 /* 统一挂载入口：单视图 = 仅活跃 pane；网格 = 有内容的会话并排挂载并刷新各格头部 */
 function applyLayout() {
+  /* 右栏收起会改变可用宽度 → 收起后必须用新宽度重算列数，
+     否则按旧宽度（371px）算出 1 列，白收一次。 */
+  if (syncRightPanelForGrid()) {
+    setTimeout(() => { if (gridMode) applyLayout(); }, 60);
+  }
   if (!gridMode) {
     chatStream.classList.remove("grid-on");
+    chatStream.style.removeProperty("--grid-cols");
     mountPane(convId);
     return;
   }
@@ -4526,6 +4568,13 @@ function applyLayout() {
   const ids = hydrated.filter((id) => hasContent(id));
   if (convId && ids.indexOf(convId) < 0) ids.unshift(convId);
   ids.length = Math.min(ids.length, GRID_MAX);   // W28 终审:截断放 unshift 之后,否则活跃会话会把列表顶成 7 格
+  /* 列数 = pane 数与「宽度能放下的列数」取小。
+     CSS 的 auto-fit 按容器宽度铺列数，与 pane 数脱钩：1 个 pane 时右边空一大块，
+     窄容器时又挤成 1 列。这里按实际内容算，格子数与内容数永远对得上。 */
+  const avail = Math.max(0, (chatStream.clientWidth || 0) - 20);   // 20 = 左右 padding
+  const fitByWidth = avail <= 0 ? 1 : Math.floor((avail + GRID_GAP) / (GRID_MIN_COL + GRID_GAP));
+  const cols = Math.max(1, Math.min(ids.length, fitByWidth || 1));
+  chatStream.style.setProperty("--grid-cols", String(cols));
   for (const child of Array.from(chatStream.children)) {
     if (child.classList && child.classList.contains("conv-pane") && ids.indexOf(child.dataset.convId) < 0) {
       chatStream.removeChild(child);
@@ -4550,6 +4599,18 @@ function applyLayout() {
   });
   replaceIcons();
 }
+
+/* 窗口尺寸变了，列数得跟着重算 —— 列数是按「可用宽度 ÷ 最小列宽」算出来的，
+   拖宽窗口后原本 1 列能放 2 列，不重算就一直挤着。
+   只在网格模式下挂，且节流：拖动窗口时 resize 事件能连发几十次。 */
+let _gridResizeTimer = null;
+window.addEventListener("resize", () => {
+  if (!gridMode) return;
+  clearTimeout(_gridResizeTimer);
+  _gridResizeTimer = setTimeout(() => {
+    if (gridMode) applyLayout();
+  }, 160);
+});
 
 function deleteConv(id) {
   const list = loadConvList().filter((x) => x.id !== id);
@@ -4665,6 +4726,8 @@ $("agExport").onclick = exportConversation;
       localStorage.setItem(GRID_KEY, gridMode ? "1" : "0");
       gv.classList.toggle("on", gridMode);
       applyLayout();
+      /* 切到网格后容器宽度变了（可能收了右栏），列数要按新宽度重算 */
+      setTimeout(() => { if (gridMode) applyLayout(); }, 60);
       scrollChat();
     };
   }
