@@ -45,11 +45,17 @@ function copyInto(from, to) {
 const outDir = freshOutDir();
 log("• 打包中间目录（工作区外，避开文件监听句柄）: " + outDir);
 
+/* 打包进程同样不能带 ELECTRON_RUN_AS_NODE：electron-builder 内部会起 Electron
+   做 asar 整合，那一步若被当成纯 Node 跑就会出怪问题。
+   这个变量在部分工具链环境里是默认存在的，属于必须主动清掉的污染。 */
+const buildEnv = Object.assign({}, process.env);
+delete buildEnv.ELECTRON_RUN_AS_NODE;
+
 const r = spawnSync(process.execPath, [
   path.join(REPO, "node_modules", "electron-builder", "cli.js"),
   "--win", "nsis",
   "-c.directories.output=" + outDir,
-], { cwd: REPO, stdio: "inherit", windowsHide: true });
+], { cwd: REPO, stdio: "inherit", windowsHide: true, env: buildEnv });
 
 if (r.status !== 0) {
   log("\n✗ electron-builder 退出码 " + (r.status == null ? "?" : r.status) + "（中间产物留在 " + outDir + "）");

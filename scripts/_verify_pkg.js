@@ -45,6 +45,22 @@ function ok(name, cond, detail) {
 function section(t) { console.log("\n\x1b[1m" + t + "\x1b[0m"); }
 
 /* ---------------- asar 头部解析（只读，不落任何文件） ---------------- */
+
+/* ============================================================
+   ELECTRON_RUN_AS_NODE 必须摘掉，否则验包必假失败
+   ------------------------------------------------------------
+   这个变量存在时，Electron 会把自己当普通 Node 跑：不起 Chromium、
+   不进 app 生命周期，require("electron") 拿到的是路径字符串而不是 app 对象，
+   electron/main.js 第一行 app.setAppUserModelId(...) 就 TypeError，进程秒退。
+   症状极具迷惑性：包内内容检查全过（包是对的），但"exe 能起来"永远失败。
+   注意设成空字符串没用 —— Electron 只看变量**是否存在**。
+   ============================================================ */
+function electronEnv(extra) {
+  const env = Object.assign({}, process.env, extra || {});
+  delete env.ELECTRON_RUN_AS_NODE;
+  return env;
+}
+
 function readArchive(archive) {
   const fd = fs.openSync(archive, "r");
   const head = Buffer.alloc(8);
@@ -89,7 +105,7 @@ function readArchive(archive) {
   section("A 产物跑得起来（真起打包后的 exe）");
   const child = spawn(EXE, [], {
     cwd: UNPACKED,
-    env: Object.assign({}, process.env, {
+    env: electronEnv({
       PANCODE_DATA_DIR: dataDir,            // 沙箱数据根：绝不碰真实用户数据
       CURSORWEB_WORKSPACE: wsDir,
       PORT: String(PORT),
@@ -222,7 +238,7 @@ function readArchive(archive) {
   const PORT2 = PORT + 1;
   const child2 = spawn(EXE, [], {
     cwd: UNPACKED,
-    env: Object.assign({}, process.env, {
+    env: electronEnv({
       PANCODE_DATA_DIR: data2, CURSORWEB_WORKSPACE: ws2, PORT: String(PORT2),
       PANCODE_PROBE_CLOSE_MS: "5000",     // 到点等价于用户点红叉：偏好已写死 quit，不该弹框
       NODE_NO_WARNINGS: "1",
