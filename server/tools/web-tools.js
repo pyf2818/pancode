@@ -49,11 +49,12 @@ module.exports = {
         return "已拒绝抓取：" + pol.reason + "（net.allowDomains/blockDomains 由用户配置，不在范围内的地址请先与用户确认。）";
       }
       /* 走守卫而不是裸 fetch：web_fetch 的 URL 由模型自己决定，等于把"能连到本机任何端口"
-         的能力交给了模型。守卫查解析后的 IP、逐跳复检重定向，并把正文包成显式的不可信数据块。 */
+         的能力交给了模型。守卫查解析后的 IP、逐跳复检重定向（含域名策略逐跳复查），
+         并把正文包成显式的不可信数据块。 */
       const guarded = await netGuard.fetchGuarded(args.url, {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
         signal: AbortSignal.timeout(20000),
-      }, {});
+      }, { net: (agent.cfg && agent.cfg.net) || {} });
       const r = guarded.res;
       if (!r.ok) {
         t.done(false, "HTTP " + r.status);

@@ -73,10 +73,33 @@ function err(t, r) {
     + (r.timedOut ? "（这一步超时了，浏览器可能仍在原状态；先 browser_snapshot 看清现状，不要盲目重试同一步）" : "");
 }
 
+/* W28 终审:所有"模型决定去哪"的浏览器入口共用这一道门 —— 修复前只有
+   browser_navigate 有检查,browser_open / browser_tabs new(url) / browser_read(url)
+   全部裸奔,域名策略一句话就绕过。返回 null = 放行;返回字符串 = 拒绝文案。 */
+async function assertNavAllowed(agent, rawUrl, t) {
+  const url = String(rawUrl || "");
+  const m = url.match(/https?:\/\/[^\s"']+/);
+  if (!m) return null;   // 非 http(s) 目标(about:blank / 纯 JS 动作)不在此管
+  let host = "";
+  try { host = new URL(m[0]).hostname; } catch (e) { return "导航目标不是合法 URL：" + m[0]; }
+  const pol = netGuard.policyAllows(host, (agent.cfg && agent.cfg.net) || {});
+  if (!pol.ok) {
+    if (t) { t.done(false, "出网策略拦截"); }
+    return "已拒绝导航：" + pol.reason + "（不在用户配置的出网范围内的地址，先与用户确认。）";
+  }
+  try { await netGuard.checkUrl(m[0], {}); }
+  catch (e) {
+    if (t) { t.done(false, "目标被拦"); }
+    return "已拒绝导航：" + (e && e.message) + "（浏览器不该访问本机/内网地址，与 web_fetch 同一条底线。）";
+  }
+  return null;
+}
 
 module.exports = {
   browser_open: async (agent, args) => {
     const t = agent.tool("tool", "浏览器·打开", args.url);
+    const deny = await assertNavAllowed(agent, args.url, t);
+    if (deny) return deny;
     const r = await run(agent, ["open", String(args.url)]);
     if (!r.ok) return err(t, r);
     const line = where(r.data) || "已启动浏览器";
@@ -87,23 +110,8 @@ module.exports = {
 
   browser_navigate: async (agent, args) => {
     const t = agent.tool("tool", "浏览器·导航", args.action);
-    /* W23 出网收口：goto 的目标由模型决定，与 web_fetch 同一套判据 ——
-       先过域名策略，再过 SSRF 守卫（字面量私网/元数据/localhost 直接拒）。 */
-    const navUrl = String(args.action || "").match(/https?:\/\/[^\s"']+/);
-    if (navUrl) {
-      let host = "";
-      try { host = new URL(navUrl[0]).hostname; } catch (e) {}
-      const pol = netGuard.policyAllows(host, (agent.cfg && agent.cfg.net) || {});
-      if (!pol.ok) {
-        t.done(false, "出网策略拦截");
-        return "已拒绝导航：" + pol.reason + "（不在用户配置的出网范围内的地址，先与用户确认。）";
-      }
-      try { await netGuard.checkUrl(navUrl[0], {}); }
-      catch (e) {
-        t.done(false, "目标被拦");
-        return "已拒绝导航：" + (e && e.message) + "（浏览器不该访问本机/内网地址，与 web_fetch 同一条底线。）";
-      }
-    }
+    const deny = await assertNavAllowed(agent, args.action, t);
+    if (deny) return deny;
     const r = await run(agent, [args.action]);
     if (!r.ok) return err(t, r);
     t.body(where(r.data) || args.action);
@@ -201,6 +209,7 @@ module.exports = {
 
   browser_read: async (agent, args) => {
     const t = agent.tool("tool", "浏览器·取内容", args.ref || args.url || "当前页正文");
+    if (args.url) { const deny = await assertNavAllowed(agent, args.url, t); if (deny) return deny; }
     let cmd;
     try { cmd = args.ref ? ["get", "text", ref(args.ref)] : (args.url ? ["read", String(args.url)] : ["read"]); }
     catch (e) { t.done(false, "参数不对"); return "browser_read 参数不对：" + e.message; }
@@ -325,7 +334,10 @@ module.exports = {
     const t = agent.tool("tool", "浏览器·标签页", action);
     let cmd;
     if (action === "list") cmd = ["tab"];
-    else if (action === "new") cmd = ["tab", "new"].concat(args.label ? ["--label", String(args.label)] : [], args.url ? [String(args.url)] : []);
+    else if (action === "new") {
+      if (args.url) { const deny = await assertNavAllowed(agent, args.url, t); if (deny) return deny; }
+      cmd = ["tab", "new"].concat(args.label ? ["--label", String(args.label)] : [], args.url ? [String(args.url)] : []);
+    }
     else if (action === "switch") cmd = ["tab", String(args.tab)];
     else if (action === "close") cmd = ["tab", "close"].concat(args.tab ? [String(args.tab)] : []);
     else { t.done(false, "动作不认识"); return "browser_tabs 的 action 只支持 list / new / switch / close，收到：" + action; }

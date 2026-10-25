@@ -469,7 +469,7 @@ const NO_AUTH = new Set([
   "/api/auth/register", // 注册（首次建账号）
   "/api/auth/login",    // 登录
   "/api/auth/status",   // 查询登录态（前端启动判定）
-  "/api/auth/auto",     // W25 个人模式：本机自动身份（路由内再验 remoteAddress；多账号时拒绝）
+  "/api/auth/auto",     // W25 个人模式：本机自动身份（路由内再验 remoteAddress；多账号取最近创建的签发）
   "/api/preview/docx",  // 仅预览渲染辅助，不泄露源码正文
   "/api/index/status",  // 本地代码索引状态查询（本地优先工具，与 health 同级）
   "/api/index/build",   // 本地代码索引构建
@@ -663,8 +663,8 @@ app.get("/api/auth/status", (req, res) => {
 /* W25 个人模式：本机自动身份。个人本机产品不该有登录门槛，但 token 闸门要留着 ——
    这里按"谁够得着 TCP 回环就发给谁"静默发身份（与 /api/bootstrap 同口径，只认
    remoteAddress，任何伪造头都无效；服务本身也只绑 127.0.0.1）。
-   多账号（users.json 里 >1 个用户）时拒绝，前端回退登录弹窗 —— 免密发给"其中一个"
-   等于替用户选了人。已有账号不受影响：单账号直接免登，多账号照旧。 */
+   账号无论几个都取最近创建的一个签发 —— 信任模型与 bootstrap 同档，回环内没有
+   "被冒充"的对象（W28 终审修正：曾对多账号拒绝，把存量用户锁回登录框）。 */
 app.get("/api/auth/auto", async (req, res) => {
   if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(String((req.socket && req.socket.remoteAddress) || ""))) {
     return res.status(403).json({ ok: false, error: "仅本机可领取自动身份" });
@@ -2634,7 +2634,7 @@ wss.on("connection", (ws) => {
          "改一下我刚才的指令重新来"不再需要新开会话或把上下文越滚越长。 */
       case "rewind": {
         const txt = typeof m.text === "string" ? m.text.slice(0, 8000) : "";
-        const backIndex = Math.max(0, Math.min(200, Number(m.backIndex) || 0));
+        const backIndex = Math.max(0, Math.min(2000, Number(m.backIndex) || 0));
         if (txt.trim() && typeof uEng.rewindAndRun === "function") {
           Promise.resolve(uEng.rewindAndRun(txt, { convId: m.convId, backIndex }))
             .catch((e) => {

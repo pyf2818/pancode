@@ -48,8 +48,10 @@ class ProcessLayer {
     this.procs = new Map();     // name -> ManagedProcess
   }
 
-  /* 启动长驻进程；重名先停旧进程。返回 { ok, pid } 或 { ok:false, error } */
-  start(name, command, audit) {
+  /* 启动长驻进程；重名先停旧进程。返回 { ok, pid } 或 { ok:false, error }。
+     W28:argv 非空时走无 shell 精确 spawn(沙箱后端 docker/wsl 的包装结果)——
+     命令串若整体交给 cmd.exe /c,元字符会在宿主层拆开,容器内命令逃逸。 */
+  start(name, command, audit, argv) {
     name = String(name || "").trim();
     command = String(command || "").trim();
     if (!name || !command) return { ok: false, error: "name 与 command 必填" };
@@ -67,9 +69,11 @@ class ProcessLayer {
     }
     if (this.procs.has(name)) { try { this.stop(name); } catch (e) {} }
     // Windows：显式 cmd.exe /c 替代 shell:true，规避 cmd 窗口闪现
-    const child = process.platform === "win32"
-      ? spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], { cwd: this.dir, env: _sanitizeEnv(), windowsHide: true })
-      : spawn(command, { cwd: this.dir, shell: true, env: _sanitizeEnv(), windowsHide: true });
+    const child = Array.isArray(argv) && argv.length
+      ? spawn(argv[0], argv.slice(1), { cwd: this.dir, env: _sanitizeEnv(), windowsHide: true })
+      : process.platform === "win32"
+        ? spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], { cwd: this.dir, env: _sanitizeEnv(), windowsHide: true })
+        : spawn(command, { cwd: this.dir, shell: true, env: _sanitizeEnv(), windowsHide: true });
     const mp = new ManagedProcess(name, command, child.pid, child, this.emit);
     this.procs.set(name, mp);
     if (this.auditDir) this._audit(command);

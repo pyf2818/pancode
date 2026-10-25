@@ -91,8 +91,14 @@ function wslPathOf(winPath, runWslpath) {
   return guess;
 }
 
-/* 把一条命令包进生效后端。返回 { command, backend, sandboxed, note }。
-   policy 后端原样返回 —— 这个函数永远不抛错：沙箱是加固件，不能变成新的故障点。 */
+/* 把一条命令包进生效后端。返回 { display, argv, command, backend, sandboxed, note }：
+     · argv 非空时执行方必须走无 shell 的精确 spawn（terminal.run 的 argv 路径）——
+       W28 审查发现：包装串曾作为整体交给 cmd.exe /c 执行，单引号在 cmd 里不生效，
+       `&&`/`|`/`%VAR%` 会在宿主 cmd 层拆开/展开，容器内命令逃逸到宿主机（P1）。
+       argv 数组交给 spawn 后没有任何元字符解释层，挂载与命令都是字面参数。
+     · command/display 是给人看的字符串（终端回显/审计/黑名单检查仍基于文本）。
+   policy 后端 argv=null、command 原样 —— 这个函数永远不抛错：沙箱是加固件，
+   不能变成新的故障点。 */
 function wrap(command, opts) {
   const o = opts || {};
   const cfg = o.cfg || {};
@@ -102,28 +108,35 @@ function wrap(command, opts) {
   catch (e) { resolved = { backend: "policy", reason: "后端解析异常退回 policy：" + e.message }; }
   const note = resolved.reason;
   if (resolved.backend === "policy" || !o.workspace) {
-    return { command: String(command), backend: "policy", sandboxed: false, note };
+    return { command: String(command), display: String(command), argv: null, backend: "policy", sandboxed: false, note };
   }
   try {
     if (resolved.backend === "docker") {
       const image = String(sc.image || DEFAULT_IMAGE);
       const net = sc.network === true ? [] : ["--network", "none"];
-      const cmd = "docker run --rm -i" +
-        " -v " + shQuote(dockerPath(o.workspace) + ":/ws") +
-        " -w /ws " + net.join(" ") + " " + image + " sh -c " + shQuote(String(command));
-      return { command: cmd, backend: "docker", sandboxed: true, note: note + "（镜像 " + image + (sc.network === true ? "，网络放开" : "，网络关闭") + "）" };
+      const dp = dockerPath(o.workspace);
+      const argv = ["docker", "run", "--rm", "-i", "-v", dp + ":/ws", "-w", "/ws", ...net, image, "sh", "-c", String(command)];
+      const display = "docker run --rm -i -v " + shQuote(dp + ":/ws") + " -w /ws " + net.join(" ") + " " + image + " sh -c " + shQuote(String(command));
+      return { command: display, display, argv, backend: "docker", sandboxed: true, note: note + "（镜像 " + image + (sc.network === true ? "，网络放开" : "，网络关闭") + "）" };
     }
     if (resolved.backend === "wsl") {
       const wpath = wslPathOf(o.workspace, o.liveWslpath !== false);
-      /* 内层用双引号包路径（外层已单引号），避免 shQuote 嵌套转义把命令弄成天书 */
-      const cmd = "wsl.exe -e sh -c " + shQuote('cd "' + (wpath || ".") + '" && ' + String(command));
-      return { command: cmd, backend: "wsl", sandboxed: true, note: note + "（工作区映射 " + wpath + "）" };
+      /* UNC 路径映射不出来：宁退 policy 也不让命令静默跑在 WSL 家目录（W28 审查） */
+      if (!wpath) {
+        return { command: String(command), display: String(command), argv: null, backend: "policy", sandboxed: false, note: "wsl 无法映射该工作区路径（UNC?），退回 policy" };
+      }
+      /* 内层是 wsl 里的 sh -c 单个字符串参数：路径用 shQuote 包（工作区目录名含 $/反引号
+         时不会被展开/替换），整串经 argv 交给 wsl.exe，不经过任何 cmd 解析。 */
+      const inner = "cd " + shQuote(wpath) + " && " + String(command);
+      const argv = ["wsl.exe", "-e", "sh", "-c", inner];
+      const display = "wsl.exe -e sh -c " + shQuote(inner);
+      return { command: display, display, argv, backend: "wsl", sandboxed: true, note: note + "（工作区映射 " + wpath + "）" };
     }
   } catch (e) {
     log.tag("sandbox").warn("沙箱包装失败，按 policy 执行：" + e.message);
-    return { command: String(command), backend: "policy", sandboxed: false, note: "沙箱包装异常退回 policy：" + e.message };
+    return { command: String(command), display: String(command), argv: null, backend: "policy", sandboxed: false, note: "沙箱包装异常退回 policy：" + e.message };
   }
-  return { command: String(command), backend: "policy", sandboxed: false, note };
+  return { command: String(command), display: String(command), argv: null, backend: "policy", sandboxed: false, note };
 }
 
 module.exports = { resolveBackend, wrap, wslPathOf, shQuote, detectDocker, detectWsl, DEFAULT_IMAGE };

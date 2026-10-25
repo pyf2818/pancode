@@ -214,14 +214,15 @@ function requestPinned(urlStr, init, pinned, allowPrivate) {
       headers,
       lookup(hostname, opts, cb) {
         /* Node ≥ 18 的连接层以 { all: true } 调 lookup：回调必须给数组（单值形式
-           会被当成"每个候选都 undefined"→ Invalid IP address）。两种形状都兼容。 */
-        const done = (ip, family) => {
-          const f = family || (net.isIPv6(ip) ? 6 : 4);
-          if (opts && opts.all) cb(null, [{ address: ip, family: f }]);
-          else cb(null, ip, f);
+           会被当成"每个候选都 undefined"→ Invalid IP address）。两种形状都兼容。
+           W28 终审:pinned 全量交给回调,保留 Node autoSelectFamily 的 v4/v6 回退 ——
+           修复前只交 pinned[0],IPv6 首选而本机无 v6 出口时连接失败不回落。 */
+        const done = (list) => {
+          if (opts && opts.all) cb(null, list.map((x) => ({ address: x, family: net.isIPv6(x) ? 6 : 4 })));
+          else cb(null, list[0], net.isIPv6(list[0]) ? 6 : 4);
         };
         if (pinned && pinned.length) {
-          return done(pinned[0]);
+          return done(pinned);
         }
         dns.promises.lookup(hostname, { all: true }).then((addrs) => {
           if (!allowPrivate) {
@@ -231,7 +232,7 @@ function requestPinned(urlStr, init, pinned, allowPrivate) {
               }
             }
           }
-          done(addrs[0].address, addrs[0].family);
+          done(addrs.map((a) => a.address));
         }).catch(cb);
       },
     };
@@ -262,12 +263,20 @@ function requestPinned(urlStr, init, pinned, allowPrivate) {
   });
 }
 
+/* 手动跟重定向并逐跳复检。返回最终的 Response 与落点 URL。
+   MAX_REDIRECT 是硬上限 —— 不设上限的话 A↔B 可以把单次工具调用挂到超时。
+   W28:opts.net（net.allowDomains/blockDomains）逐跳复查 —— 修复前只在 web-tools
+   首跳前查一次，302 到黑名单域就绕过了整套域名策略（审查 P1-2）。 */
 async function fetchGuarded(rawUrl, init, opts) {
   const o = opts || {};
   let current = String(rawUrl);
   let redirects = 0;
   for (;;) {
     const checked = await checkUrl(current, o);
+    if (o.net) {
+      const pol = policyAllows(checked.url.hostname, o.net);
+      if (!pol.ok) throw new NetGuardError("出网策略拦截（第 " + (redirects + 1) + " 跳）：" + pol.reason, "POLICY_BLOCKED", current);
+    }
     let r;
     r = await requestPinned(checked.url.toString(), init, checked.ips, !!o.allowPrivate);
     const loc = r.headers.get("location");
@@ -312,7 +321,8 @@ function wrapUntrusted(text, sourceUrl) {
 function hostMatchesList(host, list) {
   const h = String(host || "").toLowerCase().replace(/\.$/, "");
   return (Array.isArray(list) ? list : []).some((p) => {
-    const s = String(p || "").toLowerCase().trim().replace(/^\*\./, "");
+    /* W28 终审:pattern 侧同样剥尾点 —— 用户写 "example.com." 这条规则曾永不命中、静默失效 */
+    const s = String(p || "").toLowerCase().trim().replace(/^\*\./, "").replace(/\.$/, "");
     if (!s) return false;
     return h === s || h.endsWith("." + s);
   });

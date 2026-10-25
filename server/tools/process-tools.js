@@ -30,7 +30,10 @@ module.exports = {
     const sec = Math.max(15, Math.min(7200, Math.round(Number(args.timeout) || defSec)));
     const sb = wrapCmd(agent, args.command);
     if (sb.sandboxed) t.body("[沙箱·" + sb.backend + "] " + sb.note);
-    const r = await agent.term.run(AI_TERM_TAB, sb.command, null, { timeout: sec * 1000, strict: true, ai: true });
+    /* W28:沙箱后端(docker/wsl)返回 argv 数组,必须走 term.run 的无 shell 精确执行路径 ——
+       包装串若整体交给 cmd.exe /c,单引号不生效、&& 会在宿主 cmd 层拆开(沙箱逃逸)。
+       黑名单检查在 term.run 内部基于 display 文本,仍然有效。 */
+    const r = await agent.term.run(AI_TERM_TAB, sb.display || sb.command, sb.argv || null, { timeout: sec * 1000, strict: true, ai: true });
     if (r.blocked) {
       t.body("命令被安全沙箱拦截：" + args.command);
       t.done(false, "已拦截", false);
@@ -62,7 +65,9 @@ module.exports = {
     const t = agent.tool("terminal", "后台启动进程", "[" + args.name + "] " + args.command);
     const sb = wrapCmd(agent, args.command);
     if (sb.sandboxed) t.body("[沙箱·" + sb.backend + "] " + sb.note);
-    const r = agent.procs.start(args.name, sb.command);
+    /* 与 run_command 同口径:沙箱后端走 argv 无 shell 精确 spawn;
+       黑名单检查基于 display 文本,在 procs.start 内部照常生效 */
+    const r = agent.procs.start(args.name, sb.display || sb.command, undefined, sb.argv || undefined);
     if (!r.ok) {
       t.body(r.error);
       t.done(false, r.blocked ? "已拦截" : "启动失败", false);

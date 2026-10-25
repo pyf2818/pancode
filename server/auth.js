@@ -157,10 +157,16 @@ async function register(username, password) {
   const salt = genSalt();
   let hash;
   try { hash = await hashPassword(password, salt); } catch (e) { return { ok: false, error: "密码处理失败：" + e.message }; }
-  users[username] = { salt, hash, ts: Date.now() };
+  /* W28 终审:hashPassword 的 await 是让出点 —— 两个不同用户名并发首注册时,
+     后者手里的 users 是前者落盘前的快照,直接 saveUsers 会把前一个账号整个抹掉。
+     写盘前重读一次盘,把新账号追加到**最新**全量上(重读里若已同名则拒绝),
+     丢失更新被收敛成后者注册失败。 */
+  const fresh = loadUsers();
+  if (fresh[username]) return { ok: false, error: "用户名已存在，直接登录即可" };
+  fresh[username] = { salt, hash, ts: Date.now() };
   const token = newSession(username);
   // 账号与会话都落盘完成后才回话，客户端拿到 token 的那一刻起它就是可恢复的
-  await Promise.all([saveUsers(users), writeSessions()]);
+  await Promise.all([saveUsers(fresh), writeSessions()]);
   return { ok: true, token, username };
 }
 

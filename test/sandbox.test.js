@@ -62,11 +62,17 @@ describe("wrap —— docker 硬隔离包装", () => {
 });
 
 describe("wrap —— wsl 软隔离包装", () => {
-  it("工作区映射成 /mnt/<盘> 路径并 cd 进去执行", () => {
+  it("工作区映射成 /mnt/<盘> 路径并 cd 进去执行（W28:argv 无 shell,内层 shQuote）", () => {
     const r = sbx.wrap("npm run dev", { workspace: "E:\\proj\\ws", cfg: { sandbox: { backend: "wsl" } }, detectors: { docker: no, wsl: yes }, liveWslpath: false });
     expect(r.sandboxed).toBe(true);
     expect(r.backend).toBe("wsl");
-    expect(r.command).toBe("wsl.exe -e sh -c 'cd \"/mnt/e/proj/ws\" && npm run dev'");
+    expect(r.argv.slice(0, 4)).toEqual(["wsl.exe", "-e", "sh", "-c"]);
+    expect(r.argv[4]).toBe("cd '/mnt/e/proj/ws' && npm run dev");   // 内层 sh 的单引号包裹
+  });
+  it("工作区名含 \$ 等元字符时内层 shQuote 转义（不展开不替换）", () => {
+    const r = sbx.wrap("ls", { workspace: "E:\\tmp\\$(id)", cfg: { sandbox: { backend: "wsl" } }, detectors: { docker: no, wsl: yes }, liveWslpath: false });
+    // shQuote 的单引号包裹里 $ 本就是字面（不展开不替换）；JS 源里 "\\$" 写法只是 $(id) 字符
+    expect(r.argv[4]).toBe("cd '/mnt/e/tmp/$(id)' && ls");
   });
   it("wslPathOf 对 Windows 盘符路径给出 /mnt 猜测值（纯函数模式）", () => {
     expect(sbx.wslPathOf("C:\\a\\b c\\d", null)).toBe("/mnt/c/a/b c/d");

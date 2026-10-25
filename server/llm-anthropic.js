@@ -139,7 +139,17 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
   if (conv.system) body.system = conv.system;
   if (aTools.length) body.tools = aTools;
   if (cfg.temperature != null) body.temperature = cfg.temperature;
-  if (cfg.reasoningEffort) body.thinking = { type: "enabled", budget_tokens: 4096 };  // reasoning_effort 的近似映射
+  /* W28 终审:thinking 与工具循环当前互斥 —— 启用 thinking 时带 tool_use 的下一轮
+     请求必须回传上一条 assistant 的 thinking 块（toAnthropicMessages 还不保存它们），
+     温度也必须省略。所以:带工具的请求一律不发 thinking;纯对话才开，且
+     budget 不得 ≥ max_tokens（Anthropic 直接 400），温度一并省略。 */
+  if (cfg.reasoningEffort && !aTools.length) {
+    const budget = Math.min(4096, Math.max(1024, (Number(cfg.maxTokens) || 8192) - 1024));
+    if (budget >= 1024 && (Number(cfg.maxTokens) || 8192) > budget) {
+      body.thinking = { type: "enabled", budget_tokens: budget };
+      delete body.temperature;
+    }
+  }
 
   const connectMs = Math.max(15000, Number(cfg.connectTimeout) || 60000);
   const idleMs = Math.max(5000, Number(cfg.idleTimeout) || 90000);
@@ -251,6 +261,7 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf8");
     let buf = "", eventName = null;
+    armIdle();   // W28 终审:首个事件到来前也可能挂死 —— header 已到但上游不发字节，与 llm.js 同契约
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
