@@ -186,7 +186,7 @@ OPENAI_MODEL=model         # LLM 模型名称
 ## 🧪 测试
 
 ```bash
-npm run test:unit       # vitest 单测（~1280 项，含沙箱/Anthropic 适配/net-guard/SSE 解析）
+npm run test:unit       # vitest 单测（1316 项 / 72 个文件，含沙箱/Anthropic 适配/net-guard/SSE 解析）
 npm run test:verify     # 55 个真探针（跑在活服务器上）：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离 / 浏览器…（scripts/ 下共 62 个验收脚本，桌面/界面类单独跑）
 node scripts/smoke-test.js        # 端到端：启动服务 → Agent 闭环 → 断言失败/修复/通过/Diff → 还原
 npm run test:nightly    # 真实模型夜间回归（read-echo / subagent / apply-edit / compaction）
@@ -194,7 +194,7 @@ npm run test:nightly    # 真实模型夜间回归（read-echo / subagent / appl
 npm test                # 完整套件：单测 + 探针 + smoke + integration/patch/lsp/code-index
 ```
 
-CI（`.github/workflows/ci.yml`）：lint → 单测 → 55 探针 → smoke → 文件操作，Windows 单环境先稳住链路（Node 24，与 `engines` 一致）；`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过并打 `RESULT: SKIP`——SKIP 不算通过）。
+CI（`.github/workflows/ci.yml`）：lint → 单测 → 探针 → smoke → 文件操作，Windows 单环境先稳住链路（Node 24，与 `engines` 一致）。55 支探针里 **53 支在 runner 上跑到底**，另外 2 支打 `SKIP` —— `_verify_computer`（UIA + 屏幕截图）与 `_verify_browser`（agent-browser 驱动本机 Chrome/Edge）都要一个交互桌面会话，runner 上没有；本地 `npm run verify:all` 才跑全 55 支外加 Electron 壳那几项。跳过的只报跳过，不算通过。`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过并打 `RESULT: SKIP`——SKIP 不算通过）。
 
 ---
 
@@ -209,7 +209,7 @@ CI（`.github/workflows/ci.yml`）：lint → 单测 → 55 探针 → smoke →
 
 ## 📜 版本
 
-当前：**v3.7.0** —— 系统优化与对齐收口：修复子智能体对真实 LLM 恒空参的 P0（多智能体路径自此真实可用）、并发正确性收口（深层会话归属改走 AsyncLocalStorage）、命令沙箱运行器（policy 默认 / docker 硬隔离 / wsl 软隔离）、Anthropic 原生协议（thinking 增量 / tool_use 流式 / prompt caching 断点）、出网域名白黑名单 + 浏览器导航门、net-guard 连接期 IP 钉住（TOCTOU）、MCP 工具纳入审批门、看门狗豁免审批/长测试等待、真实模型夜间回归集、CI 起死回生（package-lock 入库，57 探针真绿）、agent-llm 拆出纯函数层；前端：免登录（本机自动身份）、轮次折叠收纳、多会话网格视图、VS Code 扩展脚手架（ide/vscode）、演示引擎空工作区自动铺示例项目。验证口径：vitest ~1235 项 + 57 探针 + smoke 全绿。
+当前：**v3.7.0** —— 系统优化与对齐收口：修复子智能体对真实 LLM 恒空参的 P0（多智能体路径自此真实可用）、并发正确性收口（深层会话归属改走 AsyncLocalStorage）、命令沙箱运行器（policy 默认 / docker 硬隔离 / wsl 软隔离）、Anthropic 原生协议（thinking 增量 / tool_use 流式 / prompt caching 断点）、出网域名白黑名单 + 浏览器导航门、net-guard 连接期 IP 钉住（TOCTOU）、MCP 工具纳入审批门、看门狗豁免审批/长测试等待、真实模型夜间回归集、CI 起死回生（package-lock 入库，Node 24 上 53 支探针真跑到底）、agent-llm 拆出纯函数层；前端：免登录（本机自动身份）、轮次折叠收纳、多会话网格视图、VS Code 扩展脚手架（ide/vscode）、演示引擎空工作区自动铺示例项目。验证口径：vitest 1316 项 + 55 支探针 + smoke 全绿。
 
 上一版（v3.1.0 – v3.6.x）：界面与可用性收口：主题配色库（深浅各自成套、切模式不跳回）、设置重做为全屏工作台 + Agent 资产可视化管理中心（角色 / 技能 / 规则 / 记忆 / 沉淀 / 进化全部可编辑）、对话输出改成单条时间轴步骤流 + 任务进度胶囊、长任务不再中途卡断（心跳 / 审批计时 / 工具与命令分级超时）、模型配置一屏化、Git 提交并推送打通、markdown 渲染搬进 Worker、桌面版图标与托盘。
 

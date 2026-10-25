@@ -107,6 +107,12 @@ function findWindowLine(listText, pid) {
 }
 
 (async () => {
+  /* GitHub runner 上没有交互桌面会话：UIA 枚举不到真窗口、截图是一片黑，
+     由此产生的红与产品无关。这里如实打 SKIP 后退出，不算"通过"——本地 verify:all 才跑全这条。 */
+  if (process.env.CI) {
+    console.log("SKIP：CI runner 无交互桌面，桌面控制栈不在 CI 上验收（本地 npm run verify:all 跑全）");
+    sb.cleanup(); process.exit(0); return;
+  }
   if (process.platform !== "win32") {
     console.log("SKIP：桌面控制只在 Windows 上可用，当前平台 " + process.platform);
     sb.cleanup(); process.exit(0); return;

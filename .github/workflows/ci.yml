@@ -14,11 +14,15 @@ on:
 #  ③ node-version 必须与 package.json 的 engines(>=24) 一致：vitest 5 要求 ^22.12||^24||>=26，
 #    agent-browser 要求 >=24 —— 留在 20 上 npm ci 只是 EBADENGINE 警告，跑到 test:unit 才炸，
 #    表现为"CI 红在装包之后的那一步"，查起来要绕一圈。改 Node 版本时两处一起改。
-# ELECTRON_SKIP_BINARY_DOWNLOAD / PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD：本链路不打包、
-# 不起 Electron、verify-ui（需 Playwright 浏览器）不在 CI 里 —— 两个大下载都跳过。
+# 浏览器下载不跳过：test:verify 的 55 支里有 19 支直接 chromium.launch()（_verify_codegraph 是第 3 支，
+# 装上才跑得动 —— 之前这里设 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1，注释写着"verify 链不需要浏览器"，
+# 那句话是错的，runner 上第一步就在 browserType.launch 报 Executable doesn't exist）。
+# 只跳 Electron：本链路不打包、不起 Electron 壳（桌面验收 _verify_desktop 在本地 verify:all 里跑）。
+# 例外两支需要真机桌面，runner 上没有交互会话，探针自己认这个条件并如实打 SKIP 后 exit 0：
+#   _verify_computer（UIA worker + 屏幕截图）、_verify_browser（agent-browser 二进制 + 本机 Chrome/Edge）。
+# 所以 CI 那一步的口径是 53 支跑到底 + 2 支 SKIP，不是"55 支全过"。
 env:
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
 jobs:
   test:
@@ -40,7 +44,7 @@ jobs:
       - name: Unit tests (vitest)
         run: npm run test:unit
 
-      - name: Verify scripts (55 个真探针：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离…，首尾各跑一次数据根守门)
+      - name: Verify scripts (53 支真探针跑到底：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 界面几何…，首尾各跑一次数据根守门；_verify_computer、_verify_browser 需真机桌面，runner 上如实 SKIP)
         run: npm run test:verify
 
       - name: Smoke test (Agent 闭环端到端, 演示引擎无需 Key)

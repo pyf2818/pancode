@@ -77,6 +77,13 @@ function mkAgent(convId, cfg) {
 }
 
 (async () => {
+  /* 这条要真开一个本机 Chrome/Edge 去读无障碍树：runner 上没有可交互的浏览器会话，
+     跑出来的红是环境红不是产品红。CI 里如实 SKIP。
+     注意本地缺二进制时仍然 exit 1 —— 不接受"读代码通过"，这个下界不能跟着松。 */
+  if (process.env.CI) {
+    console.log("SKIP：CI runner 上不驱动真浏览器（agent-browser 需要本机 Chrome/Edge + 交互会话），本地 npm run verify:all 跑全");
+    sb.cleanup(); process.exit(0); return;
+  }
   if (!ab.resolveExe({})) {
     console.log("\x1b[31mSKIP：没有 agent-browser 二进制（npm install 没跑？）—— 这条探针必须装好再测，不接受「读代码通过」。\x1b[0m");
     sb.cleanup(); process.exit(1); return;
