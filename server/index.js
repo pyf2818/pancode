@@ -401,6 +401,11 @@ async function helloPayload(eng, userKey) {
     round: e.round,
     engine: configMod.publicInfo(cfg),
     agent: configMod.agentSettings(cfg),
+    /* 压缩线（进度条分母）。前端此前用 state.agent.contextWindow 估算，
+       而 agentSettings 不返回该字段 → 恒 undefined → 退回硬编码 128000；
+       服务端实测分支却用压缩线。两个分母不一致，水位会虚高还会跳变。
+       这里把真正在用的那个数下发过去，两边统一。 */
+    ctxLimit: (e && typeof e._ctxLimit === "function") ? e._ctxLimit() : null,
     lsp: lspManager.capabilities(),
     git: git.info(),
     project: path.basename(WS_DIR),
@@ -1213,6 +1218,14 @@ app.post("/api/models", async (req, res) => {
 });
 
 /* ---------- 多份模型配置（profile）：接口地址 + 模型名存配置，密钥各自存本地 .env ---------- */
+/* 模型上下文窗口预设表：前端用它给「模型 ID」与「上下文窗口」联动。
+   上游 /v1/models 不返回窗口元数据，只能靠这张本地表。 */
+app.get("/api/llm/presets", (req, res) => {
+  try {
+    const mp = require("./model-presets");
+    res.json({ ok: true, presets: mp.listPresets(), defaultWindow: mp.DEFAULT_CONTEXT_WINDOW });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
 app.get("/api/llm/profiles", (req, res) => {
   try {
     res.json({

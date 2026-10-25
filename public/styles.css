@@ -1161,6 +1161,13 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .trace-stats .ts-item{flex:1;background:var(--bg3);border-radius:6px;padding:6px 4px;text-align:center}
 .trace-stats .ts-item b{display:block;font-size:15px;font-weight:700;color:var(--text);line-height:1.2}
 .trace-stats .ts-item span{font-size:10px;color:var(--text-dim)}
+/* 两个口径要一眼分得开：「发出的」是流量（暖色，= 花钱），「水位」是占用（冷色）。
+   原来两格长得一模一样，用户把发出去的量读成了占用，于是以为系统吃额度很凶。 */
+.trace-stats .ts-item.ts-sent b{color:var(--warn)}
+.trace-stats .ts-item.ts-sent span{color:color-mix(in srgb,var(--warn) 75%,var(--text-dim))}
+.trace-stats .ts-item.ts-water b{color:var(--accent)}
+/* 参照行：把大数字折算成用户自己的行为单位（轮问答），让人能判断多不多 */
+.trace-stats .ts-item .ts-ref{display:block;font-style:normal;font-size:9.5px;line-height:1.3;color:var(--text-dim);opacity:.85;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .trace-list{flex:1;min-height:0;overflow-y:auto;padding:0 8px 8px}
 /* W26 空态：演示引擎不产生 trace，给一句说明而不是一块静止的 0 */
 .trace-empty{padding:14px 10px;font-size:11.5px;line-height:1.7;color:var(--text-dim);opacity:.85}

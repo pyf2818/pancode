@@ -8,7 +8,7 @@ const TRACE_LABELS = {
   "llm.round": "llm.round", "tool.call": "tool.call", "tool.arg_err": "arg_err",
   "tool.loop": "loop", "tool.failstreak": "failstreak", "usage": "usage",
 };
-const traceState = { rounds: 0, tools: 0, tokens: 0, cost: 0, currency: "", loops: 0, errors: 0, seq: 0 };
+const traceState = { rounds: 0, tools: 0, tokens: 0, cost: 0, currency: "", loops: 0, errors: 0, seq: 0, lastReq: 0 };
 
 /* 金额显示口径与 server/cost.js 的 fmtMoney 一致（不足 1 元留 4 位小数）。
    浏览器与 Node 之间没有共享模块，改规则时两处一起改。 */
@@ -22,6 +22,15 @@ function fmtMoney(n, currency) {
    （显示 ¥0 会被读成"这次免费"，而真实含义是"我不知道价"）。 */
 function paintUsage() {
   setTraceText("traceTokens", fmtTok(traceState.tokens) + (traceState.cost > 0 ? " · " + fmtMoney(traceState.cost, traceState.currency) : ""));
+  /* 参照行：把累计 token 折算成"相当于多少次单轮问答"。
+     只标 token 数，用户没法判断多不多；折算成他自己的行为（轮次）就有尺子了。
+     用最近一次请求的实际 prompt 体积当"一轮"的量 —— 那是真实值，不是猜的。 */
+  const ref = $("traceTokensRef");
+  if (!ref) return;
+  const per = traceState.lastReq || 0;
+  if (!per || !traceState.tokens) { ref.textContent = ""; return; }
+  const n = Math.max(1, Math.round(traceState.tokens / per));
+  ref.textContent = t("traceSentRef", { n });
 }
 
 function traceDetail(ev) {
@@ -79,14 +88,19 @@ function clearTrace() {
   paintTraceEmpty();
   setTraceText("traceRounds", "0"); setTraceText("traceTools", "0"); setTraceText("traceLoops", "0");
   setTraceText("traceErrors", "0"); setTraceText("traceTokens", "0"); setTraceText("agTraceCount", t("nEvents", { n: 0 }));
+  traceState.lastReq = 0;
+  const ref0 = $("traceTokensRef"); if (ref0) ref0.textContent = "";
   setTraceText("traceCtx", "—");
 }
 /* 实时那路：服务端已按会话分桶，直接覆盖（与上面回放口径一致）。
    u.cost 只有配了单价才存在；没配就保持只显示 token。 */
-function onUsageEvent(u) {
+function onUsageEvent(u, ev) {
   if (!u) return;
   traceState.tokens = u.total_tokens || traceState.tokens;
   if (u.cost > 0) { traceState.cost = u.cost; traceState.currency = u.costCurrency || "CNY"; traceState.costModel = u.costModel || ""; }
+  /* 单次请求的 prompt 体积 —— 折算参照的尺子。
+     取最近一次而不是平均：最近这次最贴近"现在一轮要花多少"。 */
+  if (ev && ev.request && Number(ev.request.prompt) > 0) traceState.lastReq = Number(ev.request.prompt);
   paintUsage();
 }
 /* 跨会话回看：从服务端拉取某会话落盘的 trace 历史并渲染（dimmed），然后 live 事件继续追加 */

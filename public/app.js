@@ -2570,6 +2570,7 @@ function handleEventInner(ev) {
       if (typeof wireEnvPanel === "function") wireEnvPanel();
       if (typeof renderEnvPanel === "function") setTimeout(renderEnvPanel, 0);
       if (ev.lsp) state.lsp = ev.lsp;
+      if (ev.ctxLimit) state.ctxLimit = ev.ctxLimit;   // 水位分母：压缩线（与压缩判定同源）
       syncFiles(ev.files);
       setRunning(ev.running, null);
       if (!state.booted) {
@@ -2800,7 +2801,7 @@ function handleEventInner(ev) {
     case "term.exit": break;
 
     case "agent.trace": onTraceEvent(ev.event); break;
-    case "agent.usage": onUsageEvent(ev.usage); break;
+    case "agent.usage": onUsageEvent(ev.usage, ev); break;
 
     case "file.changed": {
       if (ev.deleted) {
@@ -3073,7 +3074,12 @@ function refreshCtx() {
     let chars = 0;
     chatPane().querySelectorAll(".msg-user, .msg-ai, .think-block, .tool-card").forEach((n) => { chars += (n.textContent || "").length; });
     used = Math.ceil(chars / 4);
-    budget = (state.agent && state.agent.contextWindow) || 128000;
+    /* 分母统一用服务端下发的压缩线（hello 的 ctxLimit）。
+       此前这里读 state.agent.contextWindow —— 该字段根本不存在（agentSettings
+       不返回它），于是恒退化成硬编码 128000，与服务端实测分支的压缩线
+       （现 419430）对不上：估算时水位虚高近 4 倍，数据到达后又突然变小。 */
+    budget = state.ctxLimit || 0;
+    if (!budget) { wrap.style.display = "none"; return; }   // 分母未知就别显示水位（显示 0% 是误导）
   }
   const pct = Math.min(100, Math.max(0, Math.round((used / budget) * 100)));
   wrap.style.display = "flex";
@@ -5163,9 +5169,15 @@ function stopGoal() {
       var nxt=cur==="zh"?"en":"zh";
       if(typeof setLang==="function") setLang(nxt);
     };
-    // 初始按持久化语言应用一次（默认 zh 时静态 HTML 已为中文，无需处理）
+    /* 初始按持久化语言应用一次。
+       原先中文不调 setLang（"静态 HTML 已为中文，无需处理"）—— 但 data-i18n-title
+       这类**属性**型文案只在 applyI18n() 里刷，而 applyI18n() 只由 setLang() 触发。
+       于是中文界面的 tooltip 一直是 index.html 里的静态旧文案，字典里那版更详细的
+       说明从来没显示过（实测 54 处里 5 处静态与字典不一致，全是"字典更详细"）。
+       现在无条件走一次 setLang：静态 HTML 已与字典对齐，跑一次不会有视觉变化，
+       但此后改文案只改 i18n 一处即可（单一真相源）。 */
     var cur=localStorage.getItem("cw-lang")||"zh";
-    if(cur!=="zh" && typeof setLang==="function") setLang(cur);
+    if(typeof setLang==="function") setLang(cur);
     /* 终端首行那句介绍带工作区目录名，是拼出来的，[data-i18n] 覆盖不到：
        注册成切语言时重算，切过去就立刻变色，不用等下一次终端输出。 */
     if (typeof window.onLang === "function") window.onLang(function () {

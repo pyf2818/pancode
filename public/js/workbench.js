@@ -115,6 +115,66 @@ function wbInput(label, desc, value, onCommit, opts, kw) {
   } else ctrl.appendChild(inp);
   return row;
 }
+
+/* ---------- 模型 ID → 上下文窗口联动 ----------
+   换模型时自动带出真实窗口：上游 /v1/models 不返回窗口元数据，
+   只能靠服务端预设表（/api/llm/presets）。
+   只有「用户没手动改过窗口」时才动它 —— 判据是当前窗口值是否等于
+   旧模型的预设值。预设表拉不到就什么都不做（宁可不联动，也别猜错窗口
+   撞上游 400）。 */
+let _wbModelPresets = null;   // { byModel: {id: {contextWindow, note}}, defaultWindow }
+function wbMatchPreset(model) {
+  if (!_wbModelPresets) return null;
+  const m = String(model || "").toLowerCase();
+  if (!m) return null;
+  for (const p of _wbModelPresets.list || []) {
+    if (m.indexOf(p.match.toLowerCase()) >= 0) return p;
+  }
+  return null;
+}
+async function wbLoadModelPresets() {
+  try {
+    const r = await fetch("/api/llm/presets").then((x) => x.json());
+    if (r && r.ok && Array.isArray(r.presets)) {
+      _wbModelPresets = { list: r.presets, defaultWindow: r.defaultWindow || 128000 };
+    }
+  } catch (e) { /* 拉不到就保持不联动 */ }
+}
+function wireModelWindowPreset(modelRow, ctxRow, e) {
+  if (!modelRow || !ctxRow) return;
+  const modelInp = modelRow.ctrl.querySelector("input");
+  const ctxInp = ctxRow.ctrl.querySelector("input");
+  if (!modelInp || !ctxInp) return;
+  if (!_wbModelPresets) {
+    wbLoadModelPresets().then(() => {
+      if (_wbModelPresets) wireModelWindowPreset(modelRow, ctxRow, e);
+    });
+    return;
+  }
+  /* 记录「本次会话里用户手动改过窗口」—— 用它兜住一种情况：
+     用户先改了窗口（值不在预设表里），再换模型，此时不该动。 */
+  let manual = false;
+  ctxInp.addEventListener("input", () => { manual = true; });
+  const origModelCommit = modelInp.onblur;
+  modelInp.onblur = (ev) => {
+    if (origModelCommit) origModelCommit.call(modelInp, ev);
+    const newModel = modelInp.value.trim();
+    if (!newModel) return;
+    const pre = wbMatchPreset(newModel);
+    if (!pre) return;                       // 没命中预设：不猜
+    if (manual) return;                     // 用户手改过窗口：尊重用户
+    const cur = Number(ctxInp.value) || 0;
+    const oldPre = wbMatchPreset(e.model);
+    /* 当前窗口值等于「旧模型的预设值」或「兜底值」→ 认为是没手改过的默认值，可以换 */
+    const isUntouched = !oldPre ? cur === _wbModelPresets.defaultWindow : cur === oldPre.contextWindow;
+    if (!isUntouched) return;
+    if (cur === pre.contextWindow) return;  // 已经是目标值
+    ctxInp.value = String(pre.contextWindow);
+    wbSave("llm", { contextWindow: pre.contextWindow });
+    wbSaved((pre.note || newModel) + " · 上下文窗口 → " + pre.contextWindow);
+  };
+}
+
 function wbSlider(label, desc, value, min, max, step, unit, onInput, kw) {
   const row = wbRow(label, desc, kw); const ctrl = row.ctrl;
   const out = wbEl("span", "wb-slider-val", value + (unit || ""));
@@ -606,10 +666,17 @@ async function wbRenderModel(box) {
     finally { test.disabled = false; test.textContent = t("wbWtAddRowwbElT64"); }
   };
 
-  g.appendChild(wbInput(t("wbWtAddRowwbInputT71"), t("wbWtAddRowwbInputT72"), e.model === t("engineDemo") ? "" : e.model,
-    (v) => v && wbSave("llm", { model: v }), { wide: true, placeholder: t("wbWtAddRowplaceholderT73") }, "model 模型 id"));
-  g.appendChild(wbInput(t("wbWtAddRowwbInputT74"), t("wbWtAddRowwbInputT75"), e.contextWindow || 128000,
-    (v) => wbSave("llm", { contextWindow: v }), { min: 4096, max: 2000000, step: 1024 }, "context window token 上下文"));
+  /* 模型 ID 与上下文窗口联动。
+     上游 /v1/models 不返回窗口元数据，只能靠本地预设表（/api/llm/presets）。
+     判据：窗口当前值「等于旧模型的预设值」→ 说明用户没手动改过，可以跟着换；
+     等于别的值 → 用户手改过，绝不覆盖。 */
+  const modelRow = wbInput(t("wbWtAddRowwbInputT71"), t("wbWtAddRowwbInputT72"), e.model === t("engineDemo") ? "" : e.model,
+    (v) => v && wbSave("llm", { model: v }), { wide: true, placeholder: t("wbWtAddRowplaceholderT73") }, "model 模型 id");
+  const ctxRow = wbInput(t("wbWtAddRowwbInputT74"), t("wbWtAddRowwbInputT75"), e.contextWindow || 128000,
+    (v) => wbSave("llm", { contextWindow: v }), { min: 4096, max: 2000000, step: 1024 }, "context window token 上下文");
+  g.appendChild(modelRow);
+  g.appendChild(ctxRow);
+  wireModelWindowPreset(modelRow, ctxRow, e);
   g.appendChild(wbInput(t("wbWtAddRowwbInputT76"), t("wbWtAddRowwbInputT77"), e.maxToolRounds || 100,
     (v) => wbSave("llm", { maxToolRounds: v }), { min: 5, max: 500 }, "rounds max 轮次 预算"));
   g.appendChild(wbInput(t("wbWtAddRowwbInputT78"), t("wbWtAddRowwbInputT79"), e.maxOutputTokens || 0,

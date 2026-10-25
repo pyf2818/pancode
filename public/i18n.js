@@ -6,7 +6,7 @@
 const LANGS = {
   zh: {
     // 标题栏
-    modelSettings: "模型设置",
+    modelSettings: "设置（模型 / 外观 / Agent）",
     agentSettings: "Agent 设置",
     workflow: "工作流",
     sediment: "沉淀",
@@ -167,7 +167,7 @@ const LANGS = {
     themeToggle: "切换浅色 / 深色主题",
     // 活动栏
     evolutionTree: "进化树",
-    agentsWindowTip: "Agents 窗口",
+    agentsWindowTip: "Agents 工作台窗口",
     globalSettings: "全局设置",
     // 侧栏：资源管理器 / Skills
     newSkillTip: "创建新 Skill",
@@ -412,9 +412,11 @@ const LANGS = {
     nFiles: "{n} 个文件",
     nEvents: "{n} 事件",
     traceEmptyHint: "这里实时记录 Agent 的内部决策（round / 工具调用 / token 用量）。演示引擎不产生 trace —— 在「模型设置」接入真实 LLM 后即可看到。",
-    traceTokensTip: "本会话累计发出去的 token（每次请求都含全量上下文，所以它必然远大于窗口占用，别读成「用了多少内存」）",
-    traceCtxTip: "当前上下文占自动压缩水位线的百分比，与输入框旁的环形进度同源",
-    traceTotal: "累计",
+    traceTokensTip: "本会话累计「发出去」的 token（计费口径）——每轮工具调用都会把系统提示与全部历史重发一遍，所以这个数必然远大于「水位」。它不是内存占用、也不是剩余额度。旁边的「水位」才是当前上下文占压缩线的比例。",
+    traceCtxTip: "当前上下文占自动压缩水位线的百分比，与输入框旁的环形进度同源。接近 100% 时会自动压缩历史（先做不花钱的清理，再做需要模型参与的摘要）——那一刻起历史里的细节会被摘要替代。",
+    traceTotal: "发出的",
+    traceSentRef: "≈ {n} 轮问答",
+    traceSentRefTip: "把累计发出的 token 按最近一轮的实际体积折算 —— 相当于发起了这么多次完整问答。这不是窗口占用：窗口占用看旁边的「水位」。",
     traceWater: "水位",
     // 后台进程面板
     procsTitle: "后台进程 — Agent 启动的长驻服务",
@@ -2173,9 +2175,11 @@ const LANGS = {
     nFiles: "{n} files",
     nEvents: "{n} events",
     traceEmptyHint: "Live view of the Agent's internal decisions (rounds / tool calls / token usage). The demo engine emits no trace — connect a real LLM in Model Settings to see it.",
-    traceTokensTip: "Tokens this session has sent in total. Every request carries the full context, so this is always far above the window usage — do not read it as memory used.",
-    traceCtxTip: "How full the current context is against the auto-compaction watermark; same source as the ring next to the input box",
-    traceTotal: "total",
+    traceTokensTip: "Tokens this session has sent in total (billing view) — every tool round re-sends the system prompt and the whole history, so this is always far above the 'water level' next to it. It is not memory used and not remaining quota; the water level is the share of the compaction line in use.",
+    traceCtxTip: "How full the current context is against the auto-compaction watermark; same source as the ring next to the input box. Near 100% the history is compacted automatically (cheap cleanup first, then a model-written summary) — from that point on earlier details are replaced by that summary.",
+    traceTotal: "sent",
+    traceSentRef: "≈ {n} Q&A rounds",
+    traceSentRefTip: "Cumulative tokens sent, converted by the actual size of the latest round — that is roughly how many full Q&A turns this amounts to. It is not window usage: see the water level next to it.",
     traceWater: "water",
     procsTitle: "Background processes — long-lived services started by the Agent",
     procsTip: "Long-lived processes the Agent started with start_process (dev server / watcher / build…). Live logs and one-click stop.",

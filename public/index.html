@@ -217,7 +217,7 @@
     <div class="ag-side-row">
       <div class="ag-side-title" data-i18n="sessions">会话</div>
       <button id="btnNewConv" class="ag-side-btn" data-i18n-title="newSessionTip" title="新建会话"><i data-ico="plus"></i></button>
-      <button id="btnGridView" class="ag-side-btn" data-i18n-title="gridviewTip" title="网格视图"><i data-ico="grid4"></i></button>
+      <button id="btnGridView" class="ag-side-btn" data-i18n-title="gridviewTip" title="网格视图：并排查看多个会话（再点一次切回）"><i data-ico="grid4"></i></button>
     </div>
     <input id="convSearch" class="conv-search" data-i18n-ph="searchSessionsPh" placeholder="搜索会话…" />
     <div id="agSessionList" class="ag-sess-scroll" data-i18n-skip></div>
@@ -334,8 +334,8 @@
       <div id="traceStats" class="trace-stats">
         <div class="ts-item"><b id="traceRounds">0</b><span>rounds</span></div>
         <div class="ts-item"><b id="traceTools">0</b><span>tools</span></div>
-        <div class="ts-item" data-i18n-title="traceTokensTip" title="本会话累计发出去的 token（每次请求都含全量上下文，所以它必然远大于窗口占用，别读成「用了多少内存」）"><b id="traceTokens">0</b><span data-i18n="traceTotal">累计</span></div>
-        <div class="ts-item" data-i18n-title="traceCtxTip" title="当前上下文占自动压缩水位线的百分比，与输入框旁的环形进度同源"><b id="traceCtx">0%</b><span data-i18n="traceWater">水位</span></div>
+        <div class="ts-item ts-sent" data-i18n-title="traceTokensTip" title="本会话累计「发出去」的 token（计费口径）——每轮工具调用都会把系统提示与全部历史重发一遍，所以这个数必然远大于「水位」。它不是内存占用、也不是剩余额度。旁边的「水位」才是当前上下文占压缩线的比例。"><b id="traceTokens">0</b><span data-i18n="traceTotal">发出的</span><em id="traceTokensRef" class="ts-ref"></em></div>
+        <div class="ts-item ts-water" data-i18n-title="traceCtxTip" title="当前上下文占自动压缩水位线的百分比，与输入框旁的环形进度同源。接近 100% 时会自动压缩历史（先做不花钱的清理，再做需要模型参与的摘要）——那一刻起历史里的细节会被摘要替代。"><b id="traceCtx">0%</b><span data-i18n="traceWater">水位</span></div>
         <div class="ts-item"><b id="traceLoops">0</b><span>loops</span></div>
         <div class="ts-item"><b id="traceErrors">0</b><span>errors</span></div>
       </div>
