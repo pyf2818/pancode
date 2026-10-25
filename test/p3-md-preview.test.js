@@ -27,7 +27,9 @@ const APP = path.join(REPO, "public", "app.js");
 /* 渲染器是一整块（正则常量 + 三个小工具 + 主函数）。只切主函数体的话那些常量成了未定义，
    所有用例一起抛错——看着像"全坏"，其实是抽取错。 */
 function extractRenderer() {
-  const src = fs.readFileSync(APP, "utf8");
+  /* 行尾先归一：切块靠找"顶格的 }"这一整行，而 Windows CI 上 checkout 出来是 CRLF，
+     拿 LF 的 \n}\n 去 CRLF 的文件里找永远找不到 —— 报出来的却是"结构变了"，是句谎话。 */
+  const src = fs.readFileSync(APP, "utf8").replace(/\r\n/g, "\n");
   const head = src.indexOf("/* 预览用的 Markdown 渲染器");
   const from = head >= 0 ? head : src.indexOf("function renderMarkdown(src) {");
   const body = src.indexOf("function renderMarkdown(src) {", from);
