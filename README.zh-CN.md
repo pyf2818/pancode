@@ -15,7 +15,7 @@
 [![local-first](https://img.shields.io/badge/local--first-no_cloud-E8A33D?style=flat-square)](#-关于-pancode)
 [![desktop](https://img.shields.io/badge/desktop-Electron-4A7DFF?style=flat-square)](#-快速开始)
 
-[快速开始](#-快速开始) · [关于 pancode](#-关于-pancode) · [功能矩阵](#-功能矩阵) · [智能内核](#-智能编程内核) · [项目结构](#-项目结构) · [测试](#-测试) · [配置](#-配置)
+[快速开始](#-快速开始) · [界面一览](#-界面一览) · [关于 pancode](#-关于-pancode) · [功能矩阵](#-功能矩阵) · [智能内核](#-智能编程内核) · [项目结构](#-项目结构) · [测试](#-测试) · [配置](#-配置)
 
 **中文** · [English](README.md)
 
@@ -24,6 +24,40 @@
 ---
 
 > pancode 只做一件事：把「读代码、改代码、跑测试、验结果」交给你身边的 AI —— 全程真实执行、全程可审阅、全程留在本机。
+
+## 🖼️ 界面一览
+
+<div align="center">
+<img src="assets/screenshots/editor.jpg" alt="编辑窗口" width="100%"/><br/>
+<sub><b>编辑窗口（CODE）</b> —— 文件树 · 可写编辑器 · 实时预览 · AI 助手侧栏 · 集成终端</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/agents.jpg" alt="Agents 窗口" width="100%"/><br/>
+<sub><b>Agents 窗口（AGENT）</b> —— 会话管理 · Skill 秒选 · 环境信息 / 实时终端 / Agent Trace 三栏全景</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/visualize.jpg" alt="AI 生成可视化" width="100%"/><br/>
+<sub><b>AI 生成可视化</b> —— 对话内直接产出架构图，一键下载 SVG / PNG</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/goal.jpg" alt="目标驱动与结论卡" width="100%"/><br/>
+<sub><b>目标驱动 + 结论卡</b> —— Goal 一键启动长任务；最终结论独立成卡，轮次折叠收纳</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/skills.jpg" alt="技能与工作流" width="100%"/><br/>
+<sub><b>技能与工作流</b> —— 内置 12+ 工作流，沉淀为可复用技能，按触发词自动注入</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/evolution.jpg" alt="进化图鉴" width="100%"/><br/>
+<sub><b>进化图鉴</b> —— 成长树 · 能力属性 · 灵魂核心 · 进化路线 · 成就徽章，越用越懂你</sub>
+</div>
+
+---
 
 ## 📌 关于 pancode
 

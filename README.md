@@ -15,7 +15,7 @@
 [![local-first](https://img.shields.io/badge/local--first-no_cloud-E8A33D?style=flat-square)](#-about-pancode)
 [![desktop](https://img.shields.io/badge/desktop-Electron-4A7DFF?style=flat-square)](#-quick-start)
 
-[Quick Start](#-quick-start) · [About](#-about-pancode) · [Features](#-feature-matrix) · [Agent Kernel](#-the-coding-kernel) · [Project Structure](#-project-structure) · [Tests](#-tests) · [Configuration](#-configuration)
+[Quick Start](#-quick-start) · [Screenshots](#-screenshots) · [About](#-about-pancode) · [Features](#-feature-matrix) · [Agent Kernel](#-the-coding-kernel) · [Project Structure](#-project-structure) · [Tests](#-tests) · [Configuration](#-configuration)
 
 [中文](README.zh-CN.md) · **English**
 
@@ -24,6 +24,40 @@
 ---
 
 > pancode does one thing: hand "read code, edit code, run tests, verify results" to the AI beside you — executed for real, reviewable at every step, and never leaving your machine.
+
+## 🖼️ Screenshots
+
+<div align="center">
+<img src="assets/screenshots/editor.jpg" alt="Editor window" width="100%"/><br/>
+<sub><b>Editor Window (CODE)</b> — file tree · writable editor · live preview · AI sidebar · integrated terminal</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/agents.jpg" alt="Agents window" width="100%"/><br/>
+<sub><b>Agents Window (AGENT)</b> — session management · one-click Skills · environment / live terminal / Agent Trace, all in view</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/visualize.jpg" alt="AI-generated visualization" width="100%"/><br/>
+<sub><b>AI-generated visuals</b> — architecture diagrams rendered right in the chat, one-click SVG / PNG download</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/goal.jpg" alt="Goal and answer card" width="100%"/><br/>
+<sub><b>Goal-driven + answer card</b> — launch long tasks with one Goal; the final answer stands alone as a card, rounds collapse away</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/skills.jpg" alt="Skills and workflows" width="100%"/><br/>
+<sub><b>Skills &amp; workflows</b> — 12+ built-in workflows, distilled into reusable skills, auto-injected by trigger words</sub>
+</div>
+
+<div align="center">
+<img src="assets/screenshots/evolution.jpg" alt="Evolution codex" width="100%"/><br/>
+<sub><b>Evolution codex</b> — growth tree · abilities · soul core · evolution paths · achievement badges</sub>
+</div>
+
+---
 
 ## 📌 About pancode
 
