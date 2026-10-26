@@ -282,7 +282,11 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
     const txt = await res.text().catch(() => "");
     // 只补提示语，不改 "LLM 请求失败 HTTP <code>" 这个前缀：agent-llm 的错误分类靠消息里的状态码判定
     const hint = res.status === 404 ? "（地址或模型名不存在：检查接口地址是否少了 /v1 这类版本段、模型 ID 是否拼错）"
-      : (res.status === 401 || res.status === 403) ? "（密钥不对，或这个密钥没有该模型的权限）" : "";
+      : (res.status === 401 || res.status === 403) ? "（密钥不对，或这个密钥没有该模型的权限）"
+      /* 5xx 一律是「服务商那侧」的失败：请求已正常到达网关，是网关转发给真正推理引擎时挂了。
+         常见三因：上游超时（思考型模型首字慢，网关等不到）、提示超过上游上下文窗口（Ollama 默认 num_ctx 很小）、
+         网关的模型映射/渠道配错。 pancode 侧能看的只有网关包好的壳，原始错误在服务商后台日志里。 */
+      : res.status >= 500 ? "（网关到推理引擎失败：多为上游超时 / 提示超过上游上下文窗口 / 模型映射或渠道配错 —— 原始错误在服务商后台日志里，与本机网络无关）" : "";
     throw withEndpoint(new Error("LLM 请求失败 HTTP " + res.status + hint + ": " + txt.slice(0, 400)), url);
   }
 
