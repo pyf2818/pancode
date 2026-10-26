@@ -406,6 +406,10 @@ async function helloPayload(eng, userKey) {
        服务端实测分支却用压缩线。两个分母不一致，水位会虚高还会跳变。
        这里把真正在用的那个数下发过去，两边统一。 */
     ctxLimit: (e && typeof e._ctxLimit === "function") ? e._ctxLimit() : null,
+    /* 上下文窗口的「来龙去脉」：是手填、预设、还是引擎刚在线探测到的真实窗口。
+       探测到真实窗口且比手填小 → source="auto-clamped"（自动钳掉，防上游 400/500）；
+       这样前端能把"窗口：163840（自动探测）"直接秀给用户，不必再手改。 */
+    contextWindow: (e && typeof e._ctxWindowInfo === "function") ? e._ctxWindowInfo() : null,
     lsp: lspManager.capabilities(),
     git: git.info(),
     project: path.basename(WS_DIR),

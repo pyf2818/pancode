@@ -677,6 +677,18 @@ async function wbRenderModel(box) {
   g.appendChild(modelRow);
   g.appendChild(ctxRow);
   wireModelWindowPreset(modelRow, ctxRow, e);
+  /* 上下文窗口「怎么来的」：引擎启动时在线问本网关 /v1/models 拿到了真实 n_ctx，就秀出来。
+     探测到且比配置小 → 说明已被自动钳掉（这正是「经常响应出错」的根因修复），
+     用户不必再手填。探测不到（多数云端不返回窗口字段）则不显示，退回预设/兜底。 */
+  const cwInfo = box && box.contextWindow;
+  if (cwInfo && cwInfo.detected > 0) {
+    const srcTxt = cwInfo.source === "auto-clamped"
+      ? ("自动探测到真实窗口 " + cwInfo.detected + "，已钳掉配置里过大的值")
+      : ("自动探测到真实窗口 " + cwInfo.detected);
+    const hint = wbEl("div", "wb-model-meta",
+      srcTxt + " · 当前生效 " + cwInfo.effective + (cwInfo.effective !== cwInfo.detected ? "（配置更小，尊重配置）" : ""));
+    ctxRow.ctrl.appendChild(hint);
+  }
   g.appendChild(wbInput(t("wbWtAddRowwbInputT76"), t("wbWtAddRowwbInputT77"), e.maxToolRounds || 100,
     (v) => wbSave("llm", { maxToolRounds: v }), { min: 5, max: 500 }, "rounds max 轮次 预算"));
   g.appendChild(wbInput(t("wbWtAddRowwbInputT78"), t("wbWtAddRowwbInputT79"), e.maxOutputTokens || 0,

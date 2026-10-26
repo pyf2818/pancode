@@ -58,6 +58,8 @@ const COST = require("./cost");                 // P1-B4：token → 金额的�
 const usageStore = require("./usage-store");    // 同上：按天/模型落盘的账本
 const decisionLog = require("./decision-log");  // P3-D1：决策链（为什么放行/被拒/选了哪个方案）
 const { PatchEngine, parsePatchText } = require("./patch");
+const { probeContextWindow } = require("./context-window"); // 在线探测本网关真实上下文窗口（n_ctx）
+const mp = require("./model-presets");                       // 模型窗口预设表（探测不到时退回）
 const { TOOL_HANDLERS } = require("./tools");
 const rulesLib = require("./rules");
 const { classifyLlmError, isVisionRejection, isVisionRelated } = require("./app-error");
@@ -1444,6 +1446,8 @@ class LlmAgent extends AgentBase {
     this._lastPromptLen = 0;           // 实测 prompt_tokens 对应的 history 长度（超出部分按估算补齐，避免滞后一轮）
     this._lastPromptArr = null;        // 实测依附的那个数组（换引用即锚点过期，见 _ctxUsed）
     this._ctxPrefix = 0;               // 实测值里不属于历史的固定前缀（system + 工具 schema）
+    this._detectedWindow = 0;          // 在线探测到的本网关真实上下文窗口（0=未探测/探测不到）
+    this.refreshContextWindow();       // 异步探测当前模型窗口，结果回填到上面（失败静默）
     this._trace = [];                   // P2 可观测：环形 trace 缓冲（最近 200 条事件）
     this._traceSeq = 0;
     // P2 可观测：trace 落盘持久化（跨会话回看，对抗审查：批量/串行/封顶/路径净化/失败静默）
@@ -3198,9 +3202,50 @@ ${taskSummary}
     return Math.ceil(n * 1.2);
   }
 
-  /* 模型真实上下文窗口（进度条分母 / 压缩依据）：llm.contextWindow 可配置，默认按 128K 兜底 */
+  /* 在线探测本网关上「当前模型」的真实上下文窗口，结果缓存到 this._detectedWindow。
+     异步、失败静默——探测不到就退回预设/兜底，绝不阻断对话，也绝不抛未处理异常。
+     引擎每次构建（换模型/换接口/重挂工作区）都会重新探测一次。 */
+  refreshContextWindow() {
+    const llm = this.cfg && this.cfg.llm;
+    if (!llm || !llm.baseURL || !llm.model) return;   // 没配齐就别打网关
+    const self = this;
+    probeContextWindow(llm.baseURL, llm.apiKey, llm.model)
+      .then((n) => { if (n > 0 && n !== self._detectedWindow) self._detectedWindow = n; })
+      .catch(() => {});
+  }
+
+  /* 有效上下文窗口（token）：综合「在线探测 / 手填 / 预设 / 兜底」后的最终值。
+     - 探测到本网关真实窗口（detected>0）：最权威，直接采用；若用户手填了更大的值则钳到
+       真实窗口（防止「以为很大、上游却 400/500」），手填更小则尊重用户。
+     - 探测不到（多为云端，网关不返回窗口元数据）：退回手填 → 预设表 → 128K 兜底。 */
+  _effectiveWindow() {
+    const llm = (this.cfg && this.cfg.llm) || {};
+    const userSet = Number(llm.contextWindow) || 0;
+    const detected = this._detectedWindow || 0;
+    const preset = (mp && mp.presetFor ? mp.presetFor(llm.model).contextWindow : 0) || 0;
+    if (detected > 0) return userSet > 0 ? Math.min(detected, userSet) : detected;
+    return userSet > 0 ? userSet : (preset > 0 ? preset : 128000);
+  }
+
+  /* 模型真实上下文窗口（进度条分母 / 压缩依据）：综合探测与手填后的有效窗口。 */
   _ctxBudget() {
-    return Number(this.cfg.llm && this.cfg.llm.contextWindow) || 128000;
+    return this._effectiveWindow();
+  }
+
+  /* 上下文窗口的来龙去脉：前端用来显示「窗口：163840（自动探测）」之类，
+     让用户知道这个数到底怎么来的、要不要手改。 */
+  _ctxWindowInfo() {
+    const llm = (this.cfg && this.cfg.llm) || {};
+    const userSet = Number(llm.contextWindow) || 0;
+    const detected = this._detectedWindow || 0;
+    const pr = (mp && mp.presetFor) ? mp.presetFor(llm.model) : { contextWindow: 0, matched: false };
+    const preset = pr.contextWindow || 0;
+    const effective = this._effectiveWindow();
+    let source;
+    if (detected > 0) source = userSet > 0 ? (userSet > detected ? "auto-clamped" : "configured") : "detected";
+    else if (userSet > 0) source = "configured";
+    else source = pr.matched ? "preset" : "default";
+    return { configured: userSet, detected, preset, effective, source };
   }
 
   /* ---------------- 压缩预算 ----------------
