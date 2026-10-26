@@ -1,36 +1,57 @@
-# pancode
+<div align="center">
+  <img src="assets/banner.png" alt="pancode" width="100%">
+</div>
 
-> [English](README.md) | [中文](README.zh-CN.md)
+<div align="center">
 
-> A **local-first AI coding workbench** — a writable editor that reads and writes real files on disk, a real terminal that runs real commands, and an agent that programs autonomously through a **real LLM tool-calling loop**. Not a demo toy.
+**Make AI your coding partner.** Real. Efficient. Controllable. It learns how you work.
 
-**Make AI your coding partner: real, efficient, controllable — and it learns how you work.**
+*让 AI 成为你的编程伙伴 —— 真实、高效、可控、越用越懂你。*
+
+[![version](https://img.shields.io/badge/version-3.7.1-4A7DFF?style=flat-square)](CHANGELOG.md)
+[![license](https://img.shields.io/badge/license-MIT-2EA043?style=flat-square)](LICENSE)
+[![node](https://img.shields.io/badge/node-%E2%89%A524-8B5CF6?style=flat-square)](package.json)
+[![tests](https://img.shields.io/badge/tests-1300%2B_passing-2EA043?style=flat-square)](#-tests)
+[![local-first](https://img.shields.io/badge/local--first-no_cloud-E8A33D?style=flat-square)](#-about-pancode)
+[![desktop](https://img.shields.io/badge/desktop-Electron-4A7DFF?style=flat-square)](#-quick-start)
+
+[Quick Start](#-quick-start) · [About](#-about-pancode) · [Features](#-feature-matrix) · [Agent Kernel](#-the-coding-kernel) · [Project Structure](#-project-structure) · [Tests](#-tests) · [Configuration](#-configuration)
+
+[中文](README.zh-CN.md) · **English**
+
+</div>
 
 ---
+
+> pancode does one thing: hand "read code, edit code, run tests, verify results" to the AI beside you — executed for real, reviewable at every step, and never leaving your machine.
 
 ## 📌 About pancode
 
-pancode is a fully self-contained, local-first AI coding system — from its runtime to its workbench, everything is built in-house. At its core sits a homegrown agent runtime that drives the "think → call tool → observe → think again" ReAct loop inside a single process, alongside the HTTP/WebSocket gateway, the filesystem protocol, command execution, context compaction, memory/evolution, and multi-agent orchestration. The front end is a browser-based workbench that uses Monaco as its editing kernel, ships a unified SVG icon set, and stays consistent across light and dark themes. The desktop build bundles the backend and workspace into an installable Electron app — open it and go, no login required.
+pancode is a fully self-contained, local-first AI coding system — from its runtime to its workbench, everything is built in-house. At its core sits a homegrown agent runtime that drives the "think → call tool → observe → think again" ReAct loop inside a single process, alongside the HTTP/WebSocket gateway, the filesystem protocol, command execution, context compaction, memory/evolution, and multi-agent orchestration. The front end is a browser-based workbench that uses Monaco as its editing kernel, ships a unified SVG icon set, and stays consistent across light and dark themes. The desktop build bundles the backend and workspace into an installable app — open it and go, no login required.
 
-The project depends on no off-the-shelf agent framework: the security model, tool contracts, patch review, context budget, orchestration scheduler, and memory accumulation are all designed and implemented from first principles. Monaco is adopted purely as the interactive editing kernel; it is a peer component alongside the agent runtime and backend services, not a wrapper "built on top of" some editor.
+The project depends on no off-the-shelf agent framework: the security model, tool contracts, patch review, context budget, orchestration scheduler, and memory accumulation are all designed and implemented from first principles. Monaco is adopted purely as the interactive editing kernel; it is a peer component alongside the agent runtime and backend services, not a wrapper built around some editor.
+
+**Three boundaries, from first principles:**
+
+- **Real** — files are written to disk, commands really run, tests really execute; the on-disk workspace is the single source of truth.
+- **Controllable** — every write is reviewable per hunk, every command is approvable, every step is undoable.
+- **Learns you** — long-term memory, soul evolution, and skill deposits make it fit your habits and conventions the more you use it.
 
 ---
 
-## ✨ Why pancode
-
-Feature coverage benchmarked against Cursor / Windsurf / Cline / Aider / Copilot — implemented end to end under a local-first constraint:
+## ✨ Feature Matrix
 
 | Dimension | Highlights |
 | --- | --- |
 | **Agent core** | Real ReAct tool loop (74 tools), Plan / Ask / Agent modes, approval flow (`ask` / `semi` / `auto` + allow/deny + hooks), command sandbox (policy / docker / wsl), egress domain policy |
-| **Editing** | Aider-style search/replace patches with per-hunk review, undo checkpoints, Git baseline & restore, LSP diagnostics, semantic code index, repo map, `@file` mentions |
+| **Editing** | search/replace patches with per-hunk review, undo checkpoints, Git baseline & restore, LSP diagnostics, semantic code index, repo map, `@file` mentions |
 | **Orchestration** | Multi-agent orchestration with per-file claiming, focused sub-agents, goal-driven long runs, workflow templates |
 | **Context** | Four-tier compaction (microcompact → structured summary → circuit breaker → emergency trim), CJK-aware token accounting, per-round group trimming, spill-to-disk for oversized tool output |
 | **Memory** | Structured long-term memory, soul/values evolution, progression levels, Skills marketplace, per-session settlement |
 | **Ecosystem** | MCP (zero-dependency client), OpenAI-compatible + Anthropic-native protocols, per-session cost ledger |
-| **One stop** | Editor + chat + integrated terminal + source control + live preview in one workbench; Electron desktop app; VS Code extension scaffold |
+| **One stop** | Editor + chat + integrated terminal + source control + live preview in one workbench; installable desktop app |
 
-Runs with **no API key at all** — a built-in demo engine performs a full loop (read code → edit → run tests → watch them fail → fix → pass → diff) so you can evaluate before wiring a model.
+With **no API key at all**, a built-in demo engine performs a full loop (read code → edit → run tests → watch them fail → fix → pass → diff) so you can evaluate before wiring a model.
 
 ---
 
@@ -42,10 +63,10 @@ The canonical "think → call tool → observe → think again" loop runs until 
 `list_files` · `read_file` · `write_file` · `apply_edit` · `delete_file` · `search_code` · `run_command` · `repo_map` · `search_symbol` · `search_memory` · `get_diagnostics` · `undo` · `create_skill` · `create_plan` / `update_plan` · `list_templates` / `instantiate_template` / `save_template` / `remove_template` · `set_goal` / `goal_status` · `save_session_memory` · `agent`
 
 ### Plan Mode (plan/execute separation)
-When enabled, the agent may only read, retrieve, and plan — **no** writing files, running commands, or calling external MCP tools — until you review the plan and switch back to execute mode. This is the industry-standard safety boundary (same paradigm as Cursor / Cline / Windsurf).
+When enabled, the agent may only read, retrieve, and plan — **no** writing files, running commands, or calling external MCP tools — until you review the plan and switch back to execute mode. This is the industry-standard safety boundary.
 
 ### Reliable editing: patches + per-hunk review + undo
-- Edits are **Aider-style search/replace blocks**, more precise and safer than whole-file overwrites.
+- Edits are **search/replace blocks**, more precise and safer than whole-file overwrites.
 - Changes land in a **review panel**; you **accept / reject** per file / per hunk (diff view) before anything touches disk.
 - A checkpoint is recorded before every write; the `undo` tool rolls back one step (LIFO).
 
@@ -56,7 +77,7 @@ The backend bridges language servers (stdio JSON-RPC) and surfaces compile / typ
 A zero-dependency stdio JSON-RPC client plugs into local / third-party tool servers (filesystem, databases, API gateways…). Tools a server exposes are auto-registered as `mcp__<server>__<tool>`; disabled automatically in Plan Mode. Manage them visually under **Agent Settings → MCP**.
 
 ### Multi-agent orchestration
-The `agent` tool dispatches a focused sub-agent that reads / searches / writes / edits / runs commands in the same workspace and reports back in Chinese. Orchestration renders as a directed acyclic graph: **vertical swimlanes** express layer ordering, Bézier edges trace dependencies, and sub-task outputs expand by default. The final result is set apart as an independent **answer card** (bordered, with a "结论/answer" badge) distinct from the thinking chain, with **copy / regenerate / branch** actions. Dispatched serially with a round cap to prevent runaway, it makes real workspace changes and refreshes the editor and index.
+The `agent` tool dispatches a focused sub-agent that reads / searches / writes / edits / runs commands in the same workspace and reports back. Orchestration renders as a directed acyclic graph: **vertical swimlanes** express layer ordering, Bézier edges trace dependencies, and sub-task outputs expand by default. The final result is set apart as an independent **answer card** (bordered, with a dedicated badge) distinct from the thinking chain, with **copy / regenerate / branch** actions. Dispatched serially with a round cap to prevent runaway, it makes real workspace changes and refreshes the editor and index.
 
 ---
 
@@ -64,7 +85,7 @@ The `agent` tool dispatches a focused sub-agent that reads / searches / writes /
 
 - **Structured long-term memory**: stored by type (preferences / experience / conventions / anti-patterns), auto-classified from your corrections, with memory distillation to curb bloat; `search_memory` lets the agent consult past experience.
 - **Soul evolution**: after a task, proposes tuning the agent's values / boundaries / principles (takes effect only after your confirmation).
-- **Progression system**: computes stage and XP from accumulated deposits, feeding back into behavioral preferences (craftsman → quality, scholar → docs, companion → rapport).
+- **Progression system**: computes stage and XP from accumulated deposits, feeding back into behavioral preferences.
 - **Skills marketplace**: distills a class of problems into reusable templates, auto-injected by trigger words.
 - **Session settlement**: `save_session_memory` structures the session's effective decisions / lessons / rejected actions into long-term assets.
 
@@ -74,7 +95,7 @@ The `agent` tool dispatches a focused sub-agent that reads / searches / writes /
 
 | Window | Purpose |
 | --- | --- |
-| **Editor Window** | VS Code-style editor: file tree CRUD, writable editor (Ctrl+S), full-text search, source control, integrated terminal, AI sidebar, live preview (**two-way scroll sync** with the editor) |
+| **Editor Window** | Professional IDE layout: file tree CRUD, writable editor (Ctrl+S), full-text search, source control, integrated terminal, AI sidebar, live preview (**two-way scroll sync** with the editor) |
 | **Agents Window** | Conversation workbench: thinking stream, tool cards grouped per round (collapsible), real terminal, diff reports, task plan, multi-agent orchestration graph, multi-session grid view |
 
 Both windows stay in sync — conversations, terminal, state.
@@ -99,7 +120,7 @@ npm run dist         # Windows installer (NSIS) → release/
 
 ### Configure a model
 
-Click **Model Settings** (top right) and point it at any OpenAI-compatible API (OpenAI / DeepSeek / Moonshot / Qwen / Ollama / vLLM…), or pick the native Anthropic protocol (`provider: "anthropic"`) for thinking deltas and prompt caching. Switching models auto-fills the context window from the 26 presets in `model-presets.js` — no manual entry needed.
+Click **Model Settings** (top right) and point it at any OpenAI-compatible API, or pick the native Anthropic protocol (`provider: "anthropic"`) for thinking deltas and prompt caching. Switching models auto-fills the context window from the 26 presets in `model-presets.js` — no manual entry needed.
 
 **Data boundary:** the app is local-first (files, conversations and memory stay in `.pancode` on this machine), but a remote LLM means prompts, selected code, tool results and file snippets **are sent to the provider you configure**. The API key is stored locally and never rendered back to the UI. Point the base URL at a local runtime (Ollama / vLLM) if the code must not leave the machine.
 
@@ -169,11 +190,11 @@ pancode/
 │   ├── _verify_*.js             # Link probes (render/orchestration/preview/grid/i18n/compaction…)
 │   └── _smoke_ui.js / _verify_pkg.js
 ├── docs/                        # Design research / optimization plans / gap analyses
-├── research/                    # Competitive architecture & baseline reports
+├── research/                    # Architecture research reports
 ├── test/                        # E2E + unit (P0–P5 tiers)
 ├── tests/                       # e2e-workspace smoke
-├── ide/vscode/                  # VS Code extension scaffold
-├── assets/                      # Icons (icon.svg / icon-1024.png / icon.ico "清雅薄荷/mint")
+├── ide/                         # Editor extension scaffold
+├── assets/                      # Icons & banner (icon.* / banner.png)
 ├── pancode.config.json          # Config shape sample
 ├── package.json / tsconfig.json
 ├── README.md / README.zh-CN.md
@@ -209,8 +230,8 @@ See `pancode.config.json` in the repo root for the full shape (permissions, rule
 
 ## 📚 Research & docs
 
-- `ai-coding-agent-baseline.md` — capability baseline of Claude Code / Codex / Cline / Cursor, verified against official docs.
-- `agentic-coding-tools-architecture-report.md` — architecture report across Cursor / Windsurf / Cline / Aider / Copilot / Zed / OpenCode / Goose / Continue.
+- `agentic-coding-tools-architecture-report.md` — architecture report across mainstream coding agents (19 transferable best practices A–F).
+- `ai-coding-agent-baseline.md` — capability baseline of coding agents, verified against official docs.
 - `docs/` — design research, optimization plans, gap analyses.
 - `CHANGELOG.md` — release history.
 
@@ -219,17 +240,27 @@ See `pancode.config.json` in the repo root for the full shape (permissions, rule
 ## 🧪 Tests
 
 ```bash
-npm run test:unit       # vitest, 1,300+ tests in 72 files (sandbox, net-guard, SSE, Anthropic, sub-agents…)
+npm run test:unit       # vitest, 1,300+ tests in 72 files (sandbox, net-guard, SSE, sub-agents…)
 npm run test:verify     # 55 probes on a live server (render, repo map, tools, agents, isolation…; 62 acceptance scripts under scripts/, desktop/UI ones run separately)
 npm run smoke           # end-to-end loop with the demo engine
 npm run test:nightly    # real-LLM nightly regression — no key means SKIP, which is NOT a pass
 npm test                # full suite: unit + probes + smoke + integration/patch/lsp/code-index
 ```
 
-CI runs lint → unit → probes → smoke → file ops on Windows (Node 24, matching `engines`). Of the 55 probes, 53 run to completion on the runner and 2 print `SKIP` — `_verify_computer` (UIA + screen capture) and `_verify_browser` (agent-browser driving a local Chrome/Edge) both need an interactive desktop session, which a CI runner does not have; `npm run verify:all` locally runs all 55 plus the Electron shell checks. A skipped probe is reported as skipped, not as a pass. A nightly workflow runs the real-LLM regression when `NIGHTLY_LLM_KEY` is configured — without it the nightly prints `RESULT: SKIP`, which is not a pass.
+CI runs lint → unit → probes → smoke → file ops on Windows (Node 24, matching `engines`). Of the 55 probes, 53 run to completion on the runner and 2 print `SKIP` — they need an interactive desktop session, which a CI runner does not have; `npm run verify:all` locally runs all 55 plus the desktop shell checks. A skipped probe is reported as skipped, not as a pass. A nightly workflow runs the real-LLM regression when `NIGHTLY_LLM_KEY` is configured — without it the nightly prints `RESULT: SKIP`, which is not a pass.
 
 ---
 
 ## 📄 License
 
 [MIT](LICENSE)
+
+---
+
+<div align="center">
+
+**pancode** — real, efficient, controllable, and it learns how you work.
+
+[中文](README.zh-CN.md) · **English**
+
+</div>

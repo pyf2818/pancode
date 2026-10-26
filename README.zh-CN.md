@@ -1,33 +1,56 @@
-# pancode
+<div align="center">
+  <img src="assets/banner.png" alt="pancode" width="100%">
+</div>
 
-> [English](README.md) | 中文
+<div align="center">
 
-> 本地优先的 **AI 编程工作台** —— 可写编辑器真实读写磁盘、终端真实执行命令、Agent 通过**真实 LLM 工具调用循环**自主完成编程任务。不是演示玩具。
+**让 AI 成为你的编程伙伴。** 真实、高效、可控、越用越懂你。
 
-**让 AI 成为你的编程伙伴：真实、高效、可控、且越用越懂你。**
+*A local-first AI coding workbench that programs autonomously through a real LLM tool-calling loop.*
+
+[![version](https://img.shields.io/badge/version-3.7.1-4A7DFF?style=flat-square)](CHANGELOG.md)
+[![license](https://img.shields.io/badge/license-MIT-2EA043?style=flat-square)](LICENSE)
+[![node](https://img.shields.io/badge/node-%E2%89%A524-8B5CF6?style=flat-square)](package.json)
+[![tests](https://img.shields.io/badge/tests-1300%2B_passing-2EA043?style=flat-square)](#-测试)
+[![local-first](https://img.shields.io/badge/local--first-no_cloud-E8A33D?style=flat-square)](#-关于-pancode)
+[![desktop](https://img.shields.io/badge/desktop-Electron-4A7DFF?style=flat-square)](#-快速开始)
+
+[快速开始](#-快速开始) · [关于 pancode](#-关于-pancode) · [功能矩阵](#-功能矩阵) · [智能内核](#-智能编程内核) · [项目结构](#-项目结构) · [测试](#-测试) · [配置](#-配置)
+
+**中文** · [English](README.md)
+
+</div>
 
 ---
+
+> pancode 只做一件事：把「读代码、改代码、跑测试、验结果」交给你身边的 AI —— 全程真实执行、全程可审阅、全程留在本机。
 
 ## 📌 关于 pancode
 
-pancode 是一套从运行时到工作台均为自主实现的本地优先 AI 编程系统。它的核心是一个自研的 Agent 运行时：以 ReAct 循环驱动「思考 → 调工具 → 看结果 → 再思考」，在单一进程里同时承载 HTTP/WebSocket 网关、文件系统协议、命令执行、上下文压缩、记忆/进化与多智能体编排；前端则是一套采用 Monaco 作为编辑内核、全 SVG 图标、深浅主题一致的浏览器工作台；桌面端通过 Electron 把后端与工作区一并打包为安装程序，打开即用、无需登录。
+pancode 是一套从运行时到工作台均为自主实现的本地优先 AI 编程系统。它的核心是一个自研的 Agent 运行时：以 ReAct 循环驱动「思考 → 调工具 → 看结果 → 再思考」，在单一进程里同时承载 HTTP/WebSocket 网关、文件系统协议、命令执行、上下文压缩、记忆/进化与多智能体编排；前端是一套采用 Monaco 作为编辑内核、全 SVG 图标、深浅主题一致的浏览器工作台；桌面端把后端与工作区一并打包为安装程序，打开即用、无需登录。
 
 整个项目不依赖任何现成 Agent 框架——安全模型、工具契约、补丁审阅、上下文预算、编排调度、记忆沉淀全部是自主设计与实现。编辑器选用 Monaco 仅作为交互内核，与 Agent 运行时、后端服务是并列的组件关系，而非「建立在某个编辑器之上」的封装层。
 
+**三条边界，从第一性原理出发：**
+
+- **真实** —— 文件真实落盘、命令真实执行、测试真实运行；一切以磁盘工作区为唯一真相。
+- **可控** —— 每一次写入可逐 hunk 审阅、每一次命令可审批拦截、每一步可撤销回滚。
+- **懂你** —— 长期记忆、灵魂演进、技能沉淀，越用越贴合你的习惯与约定。
+
 ---
 
-## ✨ 为什么是 pancode（世界一流特性矩阵）
-
-对照 Cursor / Windsurf / Cline / Aider / Copilot 等一流产品，pancode 把「成熟产品的可复制工程模式」几乎全部落地，并在**本地优先**前提下做到开箱即用。
+## ✨ 功能矩阵
 
 | 维度 | 能力 |
 | --- | --- |
-| **功能** | 真实 LLM 工具循环（ReAct）、Plan Mode 规划/执行分离、Aider 式 search/replace 补丁 + 逐 hunk 审阅、LSP 实时诊断、MCP 外部工具扩展、多智能体编排、目标驱动（Goal）+ 工作流模板、完整 Git 基线/Git 还原 |
+| **功能** | 真实 LLM 工具循环（ReAct）、Plan Mode 规划/执行分离、search/replace 补丁 + 逐 hunk 审阅、LSP 实时诊断、MCP 外部工具扩展、多智能体编排、目标驱动（Goal）+ 工作流模板、完整 Git 基线/Git 还原 |
 | **便捷人性化** | 命令面板（Ctrl/⌘+Shift+P）、首次引导、深浅主题、中英 i18n、免登录（本机自动身份，打开即用）、会话持久化与按会话隔离、多会话网格视图、轮次折叠收纳、聊天历史复用/复制、模式秒切（Ctrl/⌘+.）、上下文占用实时条、审批流（120s 超时 + 记住此操作） |
-| **美观** | 统一 SVG 图标体系、双窗口 VS Code 风格布局、实时预览面板、启动 splash、结构化弹窗与 toast、深浅主题一致 |
+| **美观** | 统一 SVG 图标体系、双窗口专业 IDE 布局、实时预览面板、启动 splash、结构化弹窗与 toast、深浅主题一致 |
 | **智能** | 仓库地图（Repo Map）、语义代码索引（向量/BM25 + 实时增量）、@file/@folder 引用注入、上下文预算 + 自动压缩、错误回灌自纠、智能上下文检索 |
 | **用户数据** | 结构化长期记忆（偏好/经验/约定/反例）、自动沉淀与记忆归纳、灵魂（价值观/边界/原则）演进、进化阶段与路线、Skills 市场、会话级结算沉淀 |
-| **一站式** | 编辑器 + AI 对话 + 集成终端 + 源代码管理 + 实时预览 + 技能市场 + 进化树 + 会话管理，全部聚合同一工作台；桌面版（Electron）可打包为安装程序 |
+| **一站式** | 编辑器 + AI 对话 + 集成终端 + 源代码管理 + 实时预览 + 技能市场 + 进化树 + 会话管理，全部聚合同一工作台；桌面版可打包为安装程序 |
+
+不配置 API Key 时自动启用**演示引擎**，开箱即可体验完整闭环（读代码 → 编辑 → 跑测试真实失败 → 自主修复 → 复测通过 → Diff 报告），先评估再接入模型。
 
 ---
 
@@ -39,10 +62,10 @@ pancode 是一套从运行时到工作台均为自主实现的本地优先 AI �
 `list_files` · `read_file` · `write_file` · `apply_edit` · `delete_file` · `search_code` · `run_command` · `repo_map` · `search_symbol` · `search_memory` · `get_diagnostics` · `undo` · `create_skill` · `create_plan` / `update_plan` · `list_templates` / `instantiate_template` / `save_template` / `remove_template` · `set_goal` / `goal_status` · `save_session_memory` · `agent`
 
 ### Plan Mode（规划/执行分离）
-开启后 Agent 仅可读 / 检索 / 规划，**禁止**任何写文件、执行命令或调用外部 MCP 工具，直到你审阅计划并切回执行模式。这是行业公认的安全边界（Cursor / Cline / Windsurf 同范式）。
+开启后 Agent 仅可读 / 检索 / 规划，**禁止**任何写文件、执行命令或调用外部 MCP 工具，直到你审阅计划并切回执行模式。这是行业公认的安全边界。
 
 ### 可靠编辑：补丁 + 逐 hunk 审阅 + 撤销
-- 编辑以 **Aider 式 search/replace 文本块**为单位，比整文件覆盖更精准、更安全。
+- 编辑以 **search/replace 文本块**为单位，比整文件覆盖更精准、更安全。
 - 改动先进入**审阅面板**，你在 diff 视图中逐文件 / 逐片段（hunk）**接受 / 拒绝**后才落盘。
 - 每次改盘前自动记录检查点，`undo` 工具可**单步回滚**（后进先出）。
 
@@ -71,7 +94,7 @@ pancode 是一套从运行时到工作台均为自主实现的本地优先 AI �
 
 | 窗口 | 用途 |
 | --- | --- |
-| **Editor Window** | VS Code 风格编辑器：文件树 CRUD、可写编辑器（Ctrl+S 保存）、全文搜索、源代码管理、集成终端、AI 侧栏、实时预览（编辑与预览**双向滚动同步**） |
+| **Editor Window** | 专业编辑器布局：文件树 CRUD、可写编辑器（Ctrl+S 保存）、全文搜索、源代码管理、集成终端、AI 侧栏、实时预览（编辑与预览**双向滚动同步**） |
 | **Agents Window** | 对话工作台：AI 思考流、工具调用卡片、实时终端、改动文件 Diff 报告、任务计划、多智能体编排图、多会话网格视图 |
 
 两个窗口自由切换，对话 / 终端 / 状态完全同步。
@@ -99,7 +122,7 @@ npm run dist         # 打包 Windows 安装程序（NSIS，可自选安装目�
 
 ### 配置模型（真实 LLM 引擎）
 
-点击右上角「模型设置」，填入任意 **OpenAI 兼容 API**（OpenAI / DeepSeek / Moonshot / 通义 / Ollama / vLLM…），Agent 立即获得完整工具集。更换模型时上下文窗口会按 `model-presets.js` 的 26 条预设自动带出，无需手填。
+点击右上角「模型设置」，填入任意 **OpenAI 兼容 API**（或 Anthropic 原生协议，支持 thinking 增量与 prompt caching），Agent 立即获得完整工具集。更换模型时上下文窗口会按 `model-presets.js` 的 26 条预设自动带出，无需手填。
 
 **数据边界：** 应用是本地优先的（文件、对话、记忆都留在本机 `.pancode`），但接远程模型时，提示词、被选中的代码、工具结果与文件片段**会发送给你配置的服务商**；API Key 只存本地，不会回显到界面。代码不能出机器时，请把 base URL 指向本机运行时（Ollama / vLLM）。
 
@@ -109,8 +132,6 @@ OPENAI_API_KEY=sk-xxx \
 OPENAI_MODEL=deepseek-chat \
 npm start
 ```
-
-不配置 Key 时自动启用**演示引擎**，可开箱体验完整闭环（读代码 → 编辑 → 跑测试真实失败 → 自主修复 → 复测通过 → Diff 报告）。
 
 ---
 
@@ -169,11 +190,11 @@ pancode/
 │   ├── _verify_*.js             # 链路探针（渲染/编排/预览/网格/i18n/压缩…）
 │   └── _smoke_ui.js / _verify_pkg.js
 ├── docs/                        # 设计研究 / 优化计划 / 差距分析
-├── research/                    # 竞品架构与基线报告
+├── research/                    # 架构研究报告
 ├── test/                        # 端到端 + 单元（P0–P5 分级）
 ├── tests/                       # e2e-workspace 烟测
-├── ide/vscode/                  # VS Code 扩展脚手架
-├── assets/                      # 图标（icon.svg / icon-1024.png / icon.ico「清雅薄荷」）
+├── ide/                         # 编辑器扩展脚手架
+├── assets/                      # 图标与 Banner（icon.* / banner.png）
 ├── pancode.config.json          # 配置形态样例
 ├── package.json / tsconfig.json
 ├── README.md / README.zh-CN.md
@@ -228,30 +249,31 @@ OPENAI_MODEL=model         # LLM 模型名称
 ## 🧪 测试
 
 ```bash
-npm run test:unit       # vitest 单测（1300+ 项 / 72 个文件，含沙箱/Anthropic 适配/net-guard/SSE 解析）
-npm run test:verify     # 55 个真探针（跑在活服务器上）：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离 / 浏览器…
+npm run test:unit       # vitest 单测（1300+ 项 / 72 个文件，含沙箱/net-guard/SSE 解析）
+npm run test:verify     # 55 个真探针（跑在活服务器上）：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 隔离…
 node scripts/smoke-test.js        # 端到端：启动服务 → Agent 闭环 → 断言失败/修复/通过/Diff → 还原
 npm run test:nightly    # 真实模型夜间回归（read-echo / subagent / apply-edit / compaction）
                         # 无 Key 只打印 SKIP 并 exit 0 —— SKIP 不算通过，别把它报成"夜间回归绿了"
 npm test                # 完整套件：单测 + 探针 + smoke + integration/patch/lsp/code-index
 ```
 
-CI（`.github/workflows/ci.yml`）：lint → 单测 → 探针 → smoke → 文件操作，Windows 单环境先稳住链路（Node 24，与 `engines` 一致）。55 支探针里 **53 支在 runner 上跑到底**，另外 2 支打 `SKIP` —— `_verify_computer`（UIA + 屏幕截图）与 `_verify_browser`（agent-browser 驱动本机 Chrome/Edge）都要一个交互桌面会话，runner 上没有；本地 `npm run verify:all` 才跑全 55 支外加 Electron 壳那几项。跳过的只报跳过，不算通过。`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过并打 `RESULT: SKIP`——SKIP 不算通过）。
+CI（`.github/workflows/ci.yml`）：lint → 单测 → 探针 → smoke → 文件操作，Windows 单环境先稳住链路（Node 24，与 `engines` 一致）。55 支探针里 **53 支在 runner 上跑到底**，另外 2 支打 `SKIP`（需要交互桌面会话，runner 上没有）；本地 `npm run verify:all` 才跑全 55 支外加 Electron 壳那几项。跳过的只报跳过，不算通过。`nightly.yml` 每晚用真实 LLM 跑回归（需配 `NIGHTLY_LLM_KEY` secret，未配则优雅跳过并打 `RESULT: SKIP`——SKIP 不算通过）。
 
 ---
 
 ## 📚 研究与方法论
 
-- `agentic-coding-tools-architecture-report.md` —— 对标 Cursor/Windsurf/Cline/Aider/Copilot/Zed/OpenCode/Goose/Continue 的架构技术报告（19 条可复制最佳实践 A–F）。
+- `agentic-coding-tools-architecture-report.md` —— 主流编程智能体的架构技术报告（19 条可复制最佳实践 A–F）。
+- `ai-coding-agent-baseline.md` —— 编程智能体能力基线（对照官方文档逐条核实）。
 - `docs/agent-design-research.md` —— Phase 1 设计调研（P0/P1/P2 清单）。
 - `docs/optimization-plan.md` —— 19 项优化方案（已落地）及增量增强。
-- `docs/gap-analysis-2026-08-12.md` —— 代码级交叉核对，确认工程缺口基本清零，剩余硬缺口仅 fast-apply（依赖外部小模型端点）。
+- `docs/gap-analysis-2026-08-12.md` —— 代码级交叉核对，确认工程缺口基本清零。
 
 ---
 
 ## 📜 版本
 
-当前：**v3.7.1** —— 体验与观感收口：多会话网格视图重做（一屏更多卡片、间距收敛、点击稳定）、任务计划胶囊宽度收口（不再超过主对话区）、上下文窗口放开至模型真实上限（agnes-3.0-flash 实测 512K，`model-presets.js` 26 条预设自动带出，压缩线随窗口缩放，告别「两个问题就满」）、Agent trace 口径优化（区分「发出的」计费量与「水位」占用量并给出「≈ N 轮问答」参照）、多智能体编排可视化重做（竖向泳道 + 贝塞尔连线 + 输出默认展开 + 跨会话历史可见 + 结论卡 + 复制/重新生成/分支）、文件预览与编辑器**双向滚动同步**、全新「清雅薄荷」图标（SVG→PNG/ICO 七尺寸）。验证口径：vitest 1300+ 项 + 55 支探针 + smoke 全绿，安装包 `pancode Setup 3.7.1.exe`（Electron-builder NSIS）26/26 校验通过。
+当前：**v3.7.1** —— 体验与观感收口：多会话网格视图重做（一屏更多卡片、间距收敛、点击稳定）、任务计划胶囊宽度收口（不再超过主对话区）、上下文窗口放开至模型真实上限（26 条预设自动带出，压缩线随窗口缩放，告别「两个问题就满」）、Agent trace 口径优化（区分「发出的」计费量与「水位」占用量并给出「≈ N 轮问答」参照）、多智能体编排可视化重做（竖向泳道 + 贝塞尔连线 + 输出默认展开 + 跨会话历史可见 + 结论卡 + 复制/重新生成/分支）、文件预览与编辑器**双向滚动同步**、全新「清雅薄荷」图标与 README Banner。验证口径：vitest 1300+ 项 + 55 支探针 + smoke 全绿，安装包 26/26 校验通过。
 
 更早：**v3.0.0** —— 完成代际跃迁：Plan Mode、MCP、LSP 诊断、实时增量代码索引、逐 hunk 补丁审阅、/undo 检查点、多智能体编排、目标驱动 + 工作流模板、会话结算记忆、会话持久化与按会话隔离、命令面板、首次引导、深浅主题、中英 i18n 等。详见 `docs/` 与 `CHANGELOG.md`。
 
@@ -261,4 +283,10 @@ MIT License —— 详见 [LICENSE](LICENSE) 文件。
 
 ---
 
+<div align="center">
+
 **pancode** —— 真实、高效、可控，越用越懂你的 AI 编程伙伴。
+
+**中文** · [English](README.md)
+
+</div>
