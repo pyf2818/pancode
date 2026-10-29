@@ -136,7 +136,9 @@ async function wbLoadModelPresets() {
   try {
     const r = await fetch("/api/llm/presets").then((x) => x.json());
     if (r && r.ok && Array.isArray(r.presets)) {
-      _wbModelPresets = { list: r.presets, defaultWindow: r.defaultWindow || 128000 };
+      /* defaultWindow 必须和出厂的 llm.contextWindow 同一个数：
+         下面"这个窗口用户没动过"的判据靠两者相等才成立，换模型时才会自动带出预设值。 */
+      _wbModelPresets = { list: r.presets, defaultWindow: r.defaultWindow || 256000 };
     }
   } catch (e) { /* 拉不到就保持不联动 */ }
 }
@@ -672,7 +674,7 @@ async function wbRenderModel(box) {
      等于别的值 → 用户手改过，绝不覆盖。 */
   const modelRow = wbInput(t("wbWtAddRowwbInputT71"), t("wbWtAddRowwbInputT72"), e.model === t("engineDemo") ? "" : e.model,
     (v) => v && wbSave("llm", { model: v }), { wide: true, placeholder: t("wbWtAddRowplaceholderT73") }, "model 模型 id");
-  const ctxRow = wbInput(t("wbWtAddRowwbInputT74"), t("wbWtAddRowwbInputT75"), e.contextWindow || 128000,
+  const ctxRow = wbInput(t("wbWtAddRowwbInputT74"), t("wbWtAddRowwbInputT75"), e.contextWindow || 256000,
     (v) => wbSave("llm", { contextWindow: v }), { min: 4096, max: 2000000, step: 1024 }, "context window token 上下文");
   g.appendChild(modelRow);
   g.appendChild(ctxRow);
@@ -689,7 +691,7 @@ async function wbRenderModel(box) {
       srcTxt + " · 当前生效 " + cwInfo.effective + (cwInfo.effective !== cwInfo.detected ? "（配置更小，尊重配置）" : ""));
     ctxRow.ctrl.appendChild(hint);
   }
-  g.appendChild(wbInput(t("wbWtAddRowwbInputT76"), t("wbWtAddRowwbInputT77"), e.maxToolRounds || 100,
+  g.appendChild(wbInput(t("wbWtAddRowwbInputT76"), t("wbWtAddRowwbInputT77"), e.maxToolRounds || 200,
     (v) => wbSave("llm", { maxToolRounds: v }), { min: 5, max: 500 }, "rounds max 轮次 预算"));
   g.appendChild(wbInput(t("wbWtAddRowwbInputT78"), t("wbWtAddRowwbInputT79"), e.maxOutputTokens || 0,
     (v) => wbSave("llm", { maxOutputTokens: v }), { min: 0, max: 1000000, step: 1024 }, "max output tokens 输出 预留 budget"));

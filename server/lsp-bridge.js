@@ -55,7 +55,7 @@ function encodeLsp(obj) {
 
 /* ---------- 默认语言服务器定义（可被 pancode.config.json 的 lsp.servers 覆盖） ---------- */
 const DEFAULT_SERVERS = {
-  python: { command: "pyright-langserver", args: ["--stdio"], enabled: true,  docs: "npm i -g pyright（需已装 Python）" },
+  python: { command: "pyright-langserver", args: ["--stdio"], enabled: true,  docs: "npm i -g pyright" },
   go:     { command: "gopls",              args: [],         enabled: false, docs: "go install golang.org/x/tools/gopls@latest" },
   rust:   { command: "rust-analyzer",      args: [],         enabled: false, docs: "随 Rust 工具链安装" },
   cpp:    { command: "clangd",             args: [],         enabled: false, docs: "系统安装 clangd" },

@@ -49,6 +49,12 @@ describe("_boundToolResult — 未超限就不加任何 framing", () => {
 });
 
 describe("_boundToolResult — 超限时的信封", () => {
+  /* P6-#7 口径变更：预览上限不再对所有工具统一 24000，而是「该工具的契约上限」与
+     「水位闸门 8000/4000」取小。未登记/未声明的工具仍是 24000，行为逐字不变。
+     所以这里的期望值一律从契约表读，不再硬编数字 —— 数字换了地方住，判据就该跟着走。 */
+  const CEIL_RUN = require("../server/tools/contract").contractOf("run_command").maxResultSizeChars;
+  const CEIL_READ = require("../server/tools/contract").contractOf("read_file").maxResultSizeChars;
+
   it("头尾都保留，中间被省略的字符数说得很准", () => {
     const a = agent();
     const s = "H".repeat(50000);
@@ -57,12 +63,13 @@ describe("_boundToolResult — 超限时的信封", () => {
     expect(m).toBeTruthy();
     const head = Number(m[1]);
     const tail = Number(m[2]);
-    expect(head).toBe(Math.floor(24000 * 0.7));
-    expect(head + tail).toBe(24000);
+    expect(head).toBe(Math.floor(CEIL_RUN * 0.7));
+    expect(head + tail).toBe(CEIL_RUN);
     expect(out.startsWith("H".repeat(head))).toBe(true);
     expect(out.endsWith("H".repeat(tail))).toBe(true);
     const n = out.match(/原 (\d+) 字符，中间 (\d+) 字符未随本条结果返回/);
     expect(Number(n[1])).toBe(50000);
+
     expect(Number(n[2])).toBe(50000 - head - tail);   // 报的省略数必须等于真的没给的那部分
   });
 
@@ -91,9 +98,20 @@ describe("_boundToolResult — 超限时的信封", () => {
       const m = o.match(/上面是前 (\d+) 字符，下面是末尾 (\d+) 字符/);
       return Number(m[1]) + Number(m[2]);
     };
-    expect(span(low._boundToolResult("run_command", big))).toBe(24000);
+    expect(span(low._boundToolResult("run_command", big))).toBe(CEIL_RUN);
     expect(span(mid._boundToolResult("run_command", big))).toBe(8000);
     expect(span(high._boundToolResult("run_command", big))).toBe(4000);
+  });
+
+  it("read_file 的低水位上限更高（一次符号读取不该被砍成碎片），但仍是有限值", () => {
+    const a = agent();
+    expect(a._boundToolResult("read_file", pad(60000))).toBe(pad(60000));   // 60k 原样返回
+    const out = a._boundToolResult("read_file", pad(CEIL_READ + 5000));
+    expect(out).toMatch(new RegExp("收起到 " + CEIL_READ + " 字符"));
+    // 高水位照样压到 4000：契约里的数字大不等于可以无视上下文压力
+    const b = agent({ llm: { contextWindow: 128000 }, context: { budgetTokens: 128000, autoCompact: true } });
+    b.history = [{ role: "user", content: pad(360000) }];
+    expect(b._boundToolResult("read_file", pad(CEIL_READ + 5000))).toMatch(/收起到 4000 字符/);
   });
 });
 
@@ -115,7 +133,8 @@ describe("_spillToolResult — 落盘本身", () => {
   it("路径穿越被挡：会话名里的斜杠与点都进不了目录结构", () => {
     const a = agent();
     a._currentConv = "../../etc/passwd";
-    const out = a._boundToolResult("read_file", pad(60000));
+    // 用 run_command 而不是 read_file：后者的低水位上限是 100000，60000 字符根本不会触发落盘
+    const out = a._boundToolResult("run_command", pad(60000));
     const fp = out.match(/全文已保存到：(.+)/)[1].trim();
     const rel = path.relative(path.join(TMP, "spill"), path.dirname(fp));
     expect(rel.startsWith("..")).toBe(false);

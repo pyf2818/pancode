@@ -597,13 +597,18 @@ async function main() {
       const r3 = btns.getBoundingClientRect();
       return {
         visible: getComputedStyle(btns).opacity,
-        pinned: Math.abs(r1.top - r2.top) < 4 && Math.abs(r2.top - r3.top) < 4,
+        /* 钉没钉在窗口上，要比**锚点那一侧**：这组按钮是 bottom:12px 锚定的竖排容器，
+           而两个按钮按滚动位置各自显隐（在顶部就不显示「回到顶部」），
+           容器高度会随之变 —— top 移动是这件事的正常结果，不是跟着内容滚。
+           真跟着内容滚的话 bottom 才会动，所以判据量 bottom（容差 4px）。 */
+        pinned: Math.abs(r1.bottom - r2.bottom) < 4 && Math.abs(r2.bottom - r3.bottom) < 4,
         insideViewport: r3.bottom <= sr.bottom + 2 && r3.top >= sr.top - 2,
         parent: btns.parentElement.id,
+        bottoms: [Math.round(r1.bottom), Math.round(r2.bottom), Math.round(r3.bottom)],
         tops: [Math.round(r1.top), Math.round(r2.top), Math.round(r3.top)],
       };
     });
-    ok("滚动按钮钉在对话窗口上（内容滚动时位置不变）", scr.pinned === true, JSON.stringify(scr));
+    ok("滚动按钮钉在对话窗口上（内容滚动时锚点位置不变）", scr.pinned === true, JSON.stringify(scr));
     ok("滚动按钮始终落在可视区内", scr.insideViewport === true, JSON.stringify(scr));
     ok("滚动按钮不挂在滚动容器 #chatStream 内部", scr.parent !== "chatStream", "父节点=" + scr.parent);
     await page.screenshot({ path: path.join(OUT, "layout_scroll_btns.png") }).catch(() => {});
@@ -982,7 +987,10 @@ async function main() {
         const rects = {};
         [...host.querySelectorAll(".orch-step")].forEach((el) => {
           const r = el.getBoundingClientRect();
-          rects[el.dataset.id] = { left: r.left, right: r.right, cy: r.top + r.height / 2 };
+          /* 层=先后的竖排泳道：边的两个端点分别是上游的**底边中点**和下游的**顶边中点**。
+             （原先横排画法比的是右缘/左缘，改成竖排后那套坐标永远对不上——
+             426px 那种偏差不是画歪，是判据还在量上一个方向。） */
+          rects[el.dataset.id] = { top: r.top, bottom: r.bottom, cx: r.left + r.width / 2 };
         });
         const ids = Object.keys(rects);
         const num = (d) => (d.match(/-?\d+(\.\d+)?/g) || []).map(Number);
@@ -990,13 +998,14 @@ async function main() {
         let worst = 0;
         edges.forEach((p) => {
           const n = num(p.getAttribute("d") || "");
-          /* 路径形状 M x1,y1 C mx,y1 mx,y2 (x2-7),y2 —— 首点是源节点右缘，末点回退 7px 是目标节点左缘 */
+          /* 路径形状 M x1,y1 C x1,my x2,my x2,(y2-7)：首点是上游节点底边中点，
+             末点回退 7px 是箭头尖端与下游顶边的间距。 */
           const a = { x: ctm.a * n[0] + ctm.e, y: ctm.d * n[1] + ctm.f };
-          const b = { x: ctm.a * (n[n.length - 2] + 7) + ctm.e, y: ctm.d * n[n.length - 1] + ctm.f };
+          const b = { x: ctm.a * n[n.length - 2] + ctm.e, y: ctm.d * (n[n.length - 1] + 7) + ctm.f };
           /* 容差 4px：flex 等分宽度和滚动条能让布局差 1~2px；这条抓的是"边连没连到节点上"，
-             连错节点差的是整列宽（>100px），混用坐标空间差的是 1.5%×列位（实测 4.3 / 8.7px）。 */
-          const d1 = Math.min(...ids.map((k) => Math.max(Math.abs(rects[k].right - a.x), Math.abs(rects[k].cy - a.y))));
-          const d2 = Math.min(...ids.map((k) => Math.max(Math.abs(rects[k].left - b.x), Math.abs(rects[k].cy - b.y))));
+             连错节点差的是整列高/列宽（>100px），混用坐标空间差的是 1.5%×列位（实测 4.3 / 8.7px）。 */
+          const d1 = Math.min(...ids.map((k) => Math.max(Math.abs(rects[k].cx - a.x), Math.abs(rects[k].bottom - a.y))));
+          const d2 = Math.min(...ids.map((k) => Math.max(Math.abs(rects[k].cx - b.x), Math.abs(rects[k].top - b.y))));
           worst = Math.max(worst, d1, d2);
         });
         return { count: edges.length, worst: Math.round(worst * 10) / 10, ok: edges.length > 0 && worst <= 4 };
@@ -1005,8 +1014,9 @@ async function main() {
       window.handleEvent({ type: "orch.step.fail", stepId: "s2", name: "左支", elapsed: 2, error: "子智能体超时" });
       await wait(60);
       const afterFail = read();
-      /* 实时那一步的结果原先写 style.display=""，被 CSS 的 display:none 赢回去，等于从来没显示过。
-         现在默认收起、点标题展开——展开必须是真展开，不然这一步的产出在界面上无处可看。 */
+      /* 步骤结果现在**默认展开**（app.js orchSetOutput：标题条只有 40px 时满屏都是框、看不到内容），
+         点标题折叠、再点展开。判据跟着改成钉"这两下都真的换了状态"——
+         折叠若是空操作（写 display="" 被 CSS 赢回去那一类），界面上就永远摊着整段输出。 */
       const s1El = host.querySelector('[data-id="s1"]');
       const beforeClick = getComputedStyle(s1El.querySelector(".orch-step-out")).display;
       s1El.querySelector(".orch-step-head").click();
@@ -1016,7 +1026,7 @@ async function main() {
          不是又一个"完成"。 */
       const s1Status = (s1El.querySelector(".orch-step-status") || {}).textContent || "";
       s1El.querySelector(".orch-step-head").click();
-      const reCollapsed = getComputedStyle(s1El.querySelector(".orch-step-out")).display;
+      const reExpanded = getComputedStyle(s1El.querySelector(".orch-step-out")).display;
       // 反向对照：单批、无依赖
       window.handleEvent({ type: "orch.start", title: "平铺对照", steps: [{ id: "f1", name: "F1", layer: 0, depends_on: [] }, { id: "f2", name: "F2", layer: 0, depends_on: [] }] });
       await wait(60);
@@ -1050,7 +1060,7 @@ async function main() {
       await wait(80);
       const releasedJoin = snapJoin(); // 放开后必须仍连着 —— 只有按布局空间画的实现过得了这一眼
       document.getElementById("orchClose").click();
-      return { first, afterS1, afterFail, flat, join, scaledJoin, releasedJoin, kApplied, click: { beforeClick, afterClick, outText, reCollapsed }, s1Status };
+      return { first, afterS1, afterFail, flat, join, scaledJoin, releasedJoin, kApplied, click: { beforeClick, afterClick, outText, reExpanded }, s1Status };
     });
     ok("多批依赖画成泳道图（3 列，节点数 1/2/1）",
       dag.first.graphed === true && dag.first.lanes.length === 3 && dag.first.lanes.map((l) => l.nodes).join(",") === "1,2,1",
@@ -1059,7 +1069,7 @@ async function main() {
     ok("泳道标题说明这一批是并行还是单独一步", /2 步并行/.test(dag.first.lanes[1].head) && /单独一步/.test(dag.first.lanes[0].head),
       JSON.stringify(dag.first.lanes.map((l) => l.head)));
     ok("依赖边数量等于边数（s1→s2,s1→s3,s2→s4,s3→s4 共 4 条）", dag.first.edges.length === 4, "实际 " + dag.first.edges.length);
-    ok("边的端点落在源节点右缘与目标节点左缘（不是凭空画的装饰线）",
+    ok("边的端点落在上游节点底边中点与下游节点顶边中点（不是凭空画的装饰线）",
       dag.join.ok === true,
       "边数=" + dag.join.count + " 最大偏差=" + dag.join.worst + "px（容差 4px）");
     /* 混用屏幕/布局坐标空间的破口只在"缩放变化之后"才显形：本机抢不到入场动画那一帧，
@@ -1069,8 +1079,9 @@ async function main() {
     ok("框被缩着画完再放开，边仍跟着节点（不许把屏幕坐标当布局坐标写进 svg）",
       dag.scaledJoin.ok === true && dag.releasedJoin.ok === true,
       "缩着时最大偏差=" + dag.scaledJoin.worst + "px，放开后=" + dag.releasedJoin.worst + "px（容差 4px，边数 " + dag.releasedJoin.count + "）");
-    ok("点开步骤标题真能看到结果（实时那一步原先永远展不开）",
-      dag.click.beforeClick === "none" && dag.click.afterClick === "block" && /起点结论/.test(dag.click.outText) && dag.click.reCollapsed === "none",
+    ok("点标题真能折叠、再点真能展开（结果文本在这一步的节点里）",
+      dag.click.beforeClick === "block" && dag.click.afterClick === "none" &&
+      dag.click.reExpanded === "block" && /起点结论/.test(dag.click.outText),
       JSON.stringify(dag.click));
     /* P5：并行分工的现场要看得出"谁改了盘、谁被挡回"，不然两个并行节点长得一模一样。 */
     ok("完成的步骤节点上标出改动归属与挡回次数",
@@ -1119,7 +1130,20 @@ async function main() {
     ok("回放同样画成泳道图（3 批 2 条依赖）", replay.graphed === true && replay.lanes === 3 && replay.edges === 2, JSON.stringify(replay).slice(0, 220));
     ok("从失败步骤出发的那条边是失败色（下游为什么过不去，一眼看出）", replay.fromFail === 1, JSON.stringify(replay.edgeCls));
     ok("回放里中断未回收的步骤不谎称「执行中」", /未回收/.test(replay.statuses.join("|")), replay.statuses.join(" / "));
-    ok("回放结果默认收起（泳道里不摊开整段输出）", replay.collapsed === "none", "display=" + replay.collapsed);
+    ok("回放结果与实时一致：默认展开（同一段输出在两处不能一个摊开一个收着）", replay.collapsed === "block", "display=" + replay.collapsed);
+    /* 探针残渣当场清：replayOrchRun 会把编排白板（#orchOverlay，z 300）开着留在这儿，
+       后面几段量的是聊天栏里的胶囊 —— 白板盖在同一个点上，"命中胶囊"这类前提判据
+       会红得毫无道理（实测踩过）。开着的东西谁用谁关，并且当场断言它真的关了。 */
+    const overlayLeft = await page.evaluate(() => {
+      const ov = document.getElementById("orchOverlay");
+      const close = document.getElementById("orchClose");
+      if (ov && getComputedStyle(ov).display !== "none" && close) close.click();
+      return new Promise((res) => setTimeout(() => {
+        const o = document.getElementById("orchOverlay");
+        res({ shown: !!(o && getComputedStyle(o).display !== "none"), pill: !!document.getElementById("stepPill") });
+      }, 250));
+    });
+    ok("前提成立：编排白板已关掉，没压在聊天栏上", overlayLeft.shown === false, JSON.stringify(overlayLeft));
 
 
     /* 诊断：胶囊有没有被谁裁掉（临时输出，确认后转断言） */
@@ -1164,6 +1188,14 @@ async function main() {
       const c = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
       const hit = (p) => document.elementFromPoint(p.x, p.y);
       const onPill = !!(hit(c) && hit(c).closest && hit(c).closest("#stepPill"));   // 前提：这个点真的落在胶囊上
+      /* 命中不了胶囊的时候，光知道"没命中"没法定位——把这一摞叠在这个点上的元素
+         连层叠值一起报出来（栈里第一个就是压住它的那一层）。 */
+      const stackAt = (p) => (document.elementsFromPoint ? document.elementsFromPoint(p.x, p.y) : [hit(p)])
+        .filter(Boolean).slice(0, 5).map((el) => ({
+          tag: el.tagName, id: el.id || "", cls: String(el.className || "").slice(0, 40),
+          z: getComputedStyle(el).zIndex, pe: getComputedStyle(el).pointerEvents,
+        }));
+      const stack = stackAt(c);
       window.openWorkbench("agent");
       await new Promise((res) => setTimeout(res, 1200));
       const top1 = hit(c);
@@ -1187,11 +1219,12 @@ async function main() {
       const modalCovered = !!(top3 && top3.closest && top3.closest("#skillModal"));
       sk.style.display = "none";
       return {
-        onPill, pillCovered, popCovered, modalCovered, zPill, zWb, c,
+        onPill, pillCovered, popCovered, modalCovered, zPill, zWb, c, stack,
         topCls: top1 ? String(top1.id || top1.className || top1.tagName).slice(0, 40) : "",
       };
     });
-    ok("前提成立：胶囊那个点确实命中胶囊（不是空测）", leak.onPill === true, JSON.stringify(leak));
+    ok("前提成立：胶囊那个点确实命中胶囊（不是空测）", leak.onPill === true,
+      "压在这个点上的那一摞：" + JSON.stringify(leak.stack));
     ok("打开设置台后聊天栏浮层被压住（右上角不再浮碎片）", leak.pillCovered === true, "命中：" + leak.topCls);
     ok("Skill 下拉在设置台之下（同样不泄漏）", leak.popCovered === true, JSON.stringify(leak.popCovered));
     ok("--z-modal 那层遮罩（技能弹窗）同样压得住栏内浮层", leak.modalCovered === true, JSON.stringify(leak.modalCovered));

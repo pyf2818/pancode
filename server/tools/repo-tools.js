@@ -147,4 +147,48 @@ module.exports = {
     t.done(true, servers.length + " 个服务器");
     return txt;
   },
+  /* 按需取回外部 MCP 工具的完整定义（对齐 openanlan 的 ToolSearchTool）。
+     这些工具默认只以「限定名 + 一句话」出现在系统提示里，完整 inputSchema 不进请求；
+     决定要用哪一条就先查这里，取回后它从**下一次请求**起出现在工具列表里。
+     为什么要这一层：接三台 MCP 服务器动辄上百个工具，全量 schema 每轮白占上万字符。 */
+  tool_search: async (agent, args) => {
+    const t = agent.tool("read", "检索 MCP 工具", "tool_search");
+    const mgr = getMcpManager();
+    const all = mgr ? mgr.deferredCatalog() : [];
+    if (!all.length) {
+      t.body("无可用的外部 MCP 工具");
+      t.done(true, "无 MCP 工具");
+      return "当前没有已连接且提供工具的 MCP 服务器。要查看配置与连接状态请调 list_mcp。";
+    }
+    const q = String((args && args.query) || "").trim().toLowerCase();
+    /* 空 query 不当"匹配全部"：includes("") 对任何名字都成立，那样会一次解锁几十条，
+       等于把按需暴露又退化成全量。找不到关键词就如实说，并给几个例子。 */
+    if (!q) {
+      const sample = all.slice(0, 8).map((r) => "  - " + r.name).join("\n");
+      t.body("缺少 query 参数");
+      t.done(true, "缺参数");
+      return "tool_search 需要 query（工具名或其描述里的关键词），不会一次给出全部 schema。\n"
+        + "当前可用 " + all.length + " 条，前 8 条：\n" + sample
+        + "\n（完整清单在系统提示的【外部 MCP 工具】段里；要按服务器看状态用 list_mcp）";
+    }
+    const hits = all.filter((r) => (r.name + " " + r.description).toLowerCase().includes(q));
+    if (!hits.length) {
+      t.body("无匹配：" + q);
+      t.done(true, "0 条匹配");
+      return "没有匹配「" + q + "」的 MCP 工具（共 " + all.length + " 条可用）。"
+        + "换个更宽的关键词再试，或用 list_mcp 看各服务器都提供什么。";
+    }
+    const take = hits.slice(0, 5);
+    const defs = new Map(mgr.toolDefs().map((d) => [d.function.name, d]));
+    for (const r of take) agent.unlockMcp(r.name);
+    const txt = take.map((r) => {
+      const d = defs.get(r.name);
+      const schema = d ? JSON.stringify(d.function.parameters) : "{}";
+      return "### " + r.name + "\n" + r.description + "\n参数 schema：" + schema;
+    }).join("\n\n");
+    const more = hits.length > take.length ? "\n\n（另有 " + (hits.length - take.length) + " 条也匹配，关键词再具体一点）" : "";
+    t.body(txt.slice(0, 4000));
+    t.done(true, take.length + " 条已解锁");
+    return "以下 " + take.length + " 条已解锁，下一次请求起你可以直接调用：\n\n" + txt + more;
+  },
 };

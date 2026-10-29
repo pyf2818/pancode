@@ -199,13 +199,18 @@ describe("预览分级读当前会话的水位，不读 this.history", () => {
     expect(a._ctxUsed(a.history) / a._ctxLimit()).toBeGreaterThan(0.8);
     return a;
   }
+  /* 用 list_files 而不是 read_file：P6-#7 之后每工具有自己的预览上限，
+     read_file 的低水位上限是 100000（一次符号读取不该被砍成碎片），30000 字符根本触发不了截断，
+     那 tierOf 会恒为 null —— 这条测试钉的是"水位分级按会话走"，与具体工具无关，
+     所以要挑一个仍走通用 24000 上限的工具。 */
   const BIG = "z".repeat(30000);
+
 
   it("后台会话按自己的低水位放行更多原文", async () => {
     const a = setup();
     const own = histOf(2, 40);
-    const inBg = await convContext.run({ convId: "bg", getHist: () => own }, () => a._boundToolResult("read_file", BIG));
-    const byStale = a._boundToolResult("read_file", BIG);          // 没有 convContext → 退回 this.history
+    const inBg = await convContext.run({ convId: "bg", getHist: () => own }, () => a._boundToolResult("list_files", BIG));
+    const byStale = a._boundToolResult("list_files", BIG);          // 没有 convContext → 退回 this.history
     expect(tierOf(inBg)).toBe(24000);
     expect(tierOf(byStale)).toBe(4000);
     // 真正多留下的就是这两档的差：头 70% + 尾 30%
@@ -217,8 +222,8 @@ describe("预览分级读当前会话的水位，不读 this.history", () => {
     const a = setup();
     const before = a.history;
     const compacted = histOf(3, 40);                                // 压缩后的新数组
-    const r1 = await convContext.run({ convId: "c", getHist: () => before }, () => a._boundToolResult("run_command", BIG));
-    const r2 = await convContext.run({ convId: "c", getHist: () => compacted }, () => a._boundToolResult("run_command", BIG));
+    const r1 = await convContext.run({ convId: "c", getHist: () => before }, () => a._boundToolResult("list_files", BIG));
+    const r2 = await convContext.run({ convId: "c", getHist: () => compacted }, () => a._boundToolResult("list_files", BIG));
     expect(tierOf(r1)).toBe(4000);
     expect(tierOf(r2)).toBe(24000);
   });
@@ -231,7 +236,7 @@ describe("预览分级读当前会话的水位，不读 this.history", () => {
 
   it("getHist 返回非数组时不能把水位算成 NaN（NaN 参与比较恒 false → 分级静默失灵）", async () => {
     const a = setup();
-    const r = await convContext.run({ convId: "x", getHist: () => null }, () => a._boundToolResult("read_file", BIG));
+    const r = await convContext.run({ convId: "x", getHist: () => null }, () => a._boundToolResult("list_files", BIG));
     expect(r).toContain("水位约");
     expect(r).not.toContain("NaN");
     expect(tierOf(r)).toBe(4000);          // 退回 this.history 的那一档，而不是因为 NaN 落到 24000

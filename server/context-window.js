@@ -11,7 +11,7 @@
    解法：引擎启动时直接问本网关的 /v1/models，读条目里的 n_ctx（one-api /
    new-api 会把它写进模型元数据；部分 llama.cpp 版本也在 /v1/models 里带）。
    探测到就信它（这是该部署实际加载的窗口，最权威）；探测不到（多为云端，
-   网关不返回窗口字段）就退回 model-presets 的预设，再退回 128K 兜底。
+   网关不返回窗口字段）就退回 model-presets 的预设，再退回出厂默认窗口兜底。
 
    单位：token。数值口径与上游报错的 "maximum context length" 同一口径
    （input+output 共享窗口）。 */

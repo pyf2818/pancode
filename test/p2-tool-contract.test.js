@@ -28,7 +28,11 @@ const OLD_READONLY = [
   "board",
   /* 电脑控制的"看"那一半：只读 UIA 属性，不发送任何输入。 */
   "desktop_windows", "desktop_snapshot", "desktop_read",
+  /* P6-#10 新增：tool_search 只把已在内存里的 MCP 工具定义抄给模型看，
+     自己既不连服务器也不发请求 → 与 list_mcp 同档算只读。 */
+  "tool_search",
 ];
+
 /* 带跨调用游标的只读工具：agent-browser 一个会话只有一个活跃标签页，ref 属于快照那一刻的那一页，
    并行两发会让后一发读到前一发的页面 —— 结论不是"过时"而是"错"。
    桌面的 ref 缓存在常驻 worker 里是进程级一份，且"看到的界面"与"点下去的界面"必须同帧，同理。
@@ -39,6 +43,9 @@ const OLD_MICROCOMPACTABLE = [
   "read_file", "list_files", "search_code", "search_symbol", "repo_map", "code_graph",
   "get_diagnostics", "run_command", "run_tests", "read_process", "check_port",
   "git_diff", "git_log", "git_status", "git_fetch", "git_blame", "web_fetch", "web_search", "list_mcp",
+  /* P6-#10 tool_search 的结果是"某几条 MCP 工具的 schema 快照"，服务器没变就能重查回来 → 可再生，
+     与 list_mcp 同档收进可清理集合。 */
+  "tool_search",
   "find_references",
   /* 浏览器结果全部可再生（重拍一次快照 / 重点一次截图就行），唯独 browser_close 不收：
      它之后页面就没了，清掉那条结果等于清掉"什么时候关的"。 */
@@ -109,9 +116,9 @@ describe("契约表与注册表互为定义域", () => {
     expect(contract.auditContract(toolNames)).toBeNull();
   });
 
-  it("覆盖全部 74 个工具（漏一个就会静默降级成「需要人工确认」）", () => {
+  it("覆盖全部 75 个工具（漏一个就会静默降级成「需要人工确认」）", () => {
     expect(Object.keys(contract.CONTRACT)).toHaveLength(toolNames.length);
-    expect(toolNames).toHaveLength(74);
+    expect(toolNames).toHaveLength(75);
   });
 
   it("auditContract 真的会报出漏登记与孤儿（否则这条自检形同不存在）", () => {
@@ -382,3 +389,127 @@ describe("调度判定与权限判定共用一条判据", () => {
     expect(a._approvalDecision("read_process", {}).action).toBe("allow");   // 但仍然是只读免确认
   });
 });
+
+/* ============================================================
+   对齐 openanlan（Claude Code 范式）补进来的三个契约字段：
+     maxResultSizeChars  每工具的结果上限（它的 maxResultSizeChars）
+     interruptBehavior   停止时要不要继续等这一发（它的 interruptBehavior: cancel|block）
+     openWorld           会不会伸到这台机器之外（它的 isOpenWorld，喂给权限分类器）
+   这里既钉表里的声明，也钉**引擎真的按声明办事**——只钉表等于没测。
+   ============================================================ */
+describe("契约字段：maxResultSizeChars / interruptBehavior / openWorld", () => {
+  it("未登记工具 = 通用 24000 + block + 非外部（与加这三个字段之前逐字相同）", () => {
+    const c = contract.contractOf("absolutely_not_a_real_tool");
+    expect(contract.DEFAULT_RESULT_CEILING).toBe(24000);
+    expect(c.maxResultSizeChars).toBe(24000);
+    expect(c.interruptBehavior).toBe("block");
+    expect(c.openWorld).toBe(false);
+  });
+
+  it("read_file 的上限要容得下一次合法的符号读取：1200 行常规行宽 > 通用 24000", () => {
+    const oneRead = ("x".repeat(60) + "\n").repeat(1200);   // file-tools.js 的 SYMBOL_MAX_LINES=1200
+    expect(oneRead.length).toBeGreaterThan(contract.DEFAULT_RESULT_CEILING);
+    expect(contract.contractOf("read_file").maxResultSizeChars).toBeGreaterThanOrEqual(oneRead.length);
+  });
+
+  it("检索类与无障碍树单独收一刀（超出部分基本是噪声）", () => {
+    for (const n of ["search_code", "search_symbol", "code_graph", "browser_snapshot", "desktop_snapshot"]) {
+      expect(contract.contractOf(n).maxResultSizeChars).toBe(20000);
+    }
+  });
+
+  it("run_command / run_tests 标 cancel，且它们确实是 waitFree —— 没有超时这条逃生舱，停止才需要它", () => {
+    for (const n of ["run_command", "run_tests"]) {
+      const c = contract.contractOf(n);
+      expect(c.waitFree).toBe(true);
+      expect(c.interruptBehavior).toBe("cancel");
+      expect(c.maxResultSizeChars).toBe(30000);
+    }
+  });
+
+  it("撤不回的动作一律 block：irreversible + cancel 是不成立的声明", () => {
+    const bad = Object.keys(contract.CONTRACT).filter((n) => {
+      const c = contract.contractOf(n);
+      return c.irreversible && c.interruptBehavior === "cancel";
+    });
+    expect(bad).toEqual([]);
+    expect(contract.contractOf("delete_file").irreversible).toBe(true);
+    expect(contract.contractOf("delete_file").interruptBehavior).toBe("block");
+    expect(contract.contractOf("git_push").interruptBehavior).toBe("block");
+  });
+
+  it("openWorld 精确等于网络/浏览器/桌面三家，一个不多一个不少", () => {
+    const want = [
+      "web_search", "web_fetch",
+      "browser_open", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill",
+      "browser_press", "browser_select", "browser_read", "browser_assert", "browser_tabs",
+      "browser_wait", "browser_screenshot", "browser_eval", "browser_close",
+      "desktop_windows", "desktop_snapshot", "desktop_read", "desktop_screenshot",
+      "desktop_click", "desktop_type", "desktop_press", "desktop_scroll", "desktop_window",
+    ].sort();
+    const got = Object.keys(contract.CONTRACT).filter((n) => contract.contractOf(n).openWorld).sort();
+    expect(got).toEqual(want);
+  });
+
+  it("反向对照：字段形状写错会被启动自检点名（否则截断与停止会静默改变）", () => {
+    contract.CONTRACT.__probe_bad = { readOnly: true, maxResultSizeChars: -5, interruptBehavior: "sometimes" };
+    try {
+      const audit = contract.auditContract([...LlmAgent.toolNames(), "__probe_bad"]);
+      expect(audit).toBeTruthy();
+      expect(audit.malformed).toEqual(["__probe_bad"]);
+      expect(audit.missing).toEqual([]);
+      expect(audit.orphan).toEqual([]);
+    } finally {
+      delete contract.CONTRACT.__probe_bad;
+    }
+    expect(contract.auditContract(LlmAgent.toolNames())).toBeNull();   // 撤掉探针后必须回到干净
+  });
+
+  /* ---- 引擎侧接线 ---- */
+  const bound = (ratio, name, text) => {
+    const fake = {
+      _compactSpec: () => ({ thresholdTokens: 100000 }),
+      _ctxUsed: () => 100000 * ratio,
+      _liveHistory: () => [],
+      _spillToolResult: () => null,
+      _traceEvent: () => {},
+    };
+    return LlmAgent.prototype._boundToolResult.call(fake, name, text);
+  };
+
+  it("_boundToolResult：低水位用每工具上限，read_file 的 5 万字符不再被砍", () => {
+    const long = "A".repeat(50000);
+    expect(bound(0.1, "read_file", long)).toBe(long);                 // 100000 容得下
+    expect(bound(0.1, "list_files", long)).toMatch(/persisted-output/); // 未声明 → 24000，照砍
+  });
+
+  it("_boundToolResult：水位只往下压，绝不因为契约写了大数字就放宽", () => {
+    const long = "A".repeat(50000);
+    const high = bound(0.9, "read_file", long);
+    expect(high).toMatch(/收起到 4000 字符/);
+    const mid = bound(0.7, "read_file", long);
+    expect(mid).toMatch(/收起到 8000 字符/);
+    // 检索类即使低水位也停在 20000
+    expect(bound(0.1, "search_code", "A".repeat(30000))).toMatch(/收起到 20000 字符/);
+  });
+
+  it("_raceAbortForAbort：停止能提前结束等待，且明说「只是不再等它」", async () => {
+    const fake = { _abort: false, _raceAbortForAbort: LlmAgent.prototype._raceAbortForAbort };
+    const never = new Promise(() => {});
+    setTimeout(() => { fake._abort = true; }, 300);
+    const r = await Promise.race([
+      fake._raceAbortForAbort(never, null),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("停止信号没能结束等待")), 4000)),
+    ]);
+    expect(r).toMatch(/已中断/);
+    expect(r).toMatch(/后台/);
+  });
+
+  it("_raceAbortForAbort：工具先返回时以真实结果为准，不被停止信号覆盖", async () => {
+    const fake = { _abort: false, _raceAbortForAbort: LlmAgent.prototype._raceAbortForAbort };
+    const p = fake._raceAbortForAbort(Promise.resolve("真实结果"), null);
+    fake._abort = true;                       // 立刻置位，但 250ms 才轮询到
+    expect(await p).toBe("真实结果");
+  });
+});
+

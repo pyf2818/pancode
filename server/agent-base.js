@@ -174,7 +174,24 @@ class AgentBase {
     this.convRisk = this.convRisk || {};
     const _cid = this._convIdNow();
     this.convRisk[_cid] = riskSummary;
-    this.emit({ type: "changes", list, card: !!card, risk: riskSummary, convId: _cid });
+    /* list 是仓库口径（整棵脏工作树），SCM 面板与状态栏要的就是它，一个字都不能改。
+       但界面上还有几句"本次任务改了 N 个文件 +a −d"的话 —— 那些数必须按会话口径算，
+       所以这里额外带一份 task：把仓库列表与本会话真写过的路径求交，
+       文件数与增删行都从同一份交集里加，避免出现"文件按任务、行数按仓库"的混口径。 */
+    const writes = (this._convWrites && this._convWrites.get(_cid)) || null;
+    const task = writes && writes.size ? list.filter((p) => writes.has(p.path)) : [];
+    this.emit({
+      type: "changes", list, card: !!card, risk: riskSummary, convId: _cid,
+      task: {
+        files: task.length,
+        add: task.reduce((s, p) => s + (p.add || 0), 0),
+        del: task.reduce((s, p) => s + (p.del || 0), 0),
+        /* 逐条也带上（含每个文件的增删行）：界面想列出"本轮动了哪些文件"时，
+           不该去摊 ev.list（那是整棵脏树），也就不用在渲染层自己加
+           "本轮有没有改盘工具"这种开关来替这里擦屁股。 */
+        entries: task.map((p) => ({ path: p.path, status: p.status, add: p.add, del: p.del })),
+      },
+    });
     return list;
   }
 

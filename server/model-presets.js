@@ -55,9 +55,12 @@ const PRESETS = [
   { match: "doubao", contextWindow: 256000, note: "Doubao · 256K" },
 ];
 
-/* 兜底：没命中任何预设时用什么。128K 是绝大多数模型的保守下限，
-   配小了只是早压缩（不报错），配大了才会撞上游 400 —— 所以兜底取小。 */
-const DEFAULT_CONTEXT_WINDOW = 128000;
+/* 兜底：没命中任何预设、也没探测到时用哪个数。
+   和 config.js 出厂的 llm.contextWindow 必须是同一个数 —— 前端的"这个窗口用户没动过"
+   判据（换模型时自动带出预设值）靠两者相等才成立，改一处不改另一处会让那条自动带出失效。
+   256K 是当下接入面（Agnes/Kimi/Doubao 一档）的常见量级；配小了只是早压缩（不报错），
+   配大了才会撞上游 400，所以命中预设表的模型一律以预设为准，探测得到的也以探测为准。 */
+const DEFAULT_CONTEXT_WINDOW = 256000;
 
 /* 按模型 id 猜窗口。命中返回 { contextWindow, note, matched }，
    没命中返回 { contextWindow: DEFAULT, note: "", matched: false }。 */

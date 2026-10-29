@@ -131,7 +131,23 @@ function mountPane(id) {
 function hydratePane(id, html) {
   const ctx = ensureConvCtx(id);
   if (!ctx.pane.childNodes.length && html) ctx.pane.innerHTML = html;
+  sweepEmptyRoundChildren(ctx.pane);
   return ctx.pane;
+}
+
+/* 扫掉轮次组里完全空的子节点：历史会话快照里可能存着空占位 div（实时渲染时
+   finalizeRoundGrp 已清，但旧快照是清理前存的），恢复时再清一遍。 */
+function sweepEmptyRoundChildren(pane) {
+  if (!pane) return;
+  pane.querySelectorAll(".round-grp").forEach((g) => {
+    const body = g.querySelector(".rg-body");
+    if (!body) return;
+    Array.from(body.children).forEach((c) => {
+      if ((c.textContent || "").trim()) return;
+      if (c.querySelector("img,video,canvas,svg")) return;
+      c.remove();
+    });
+  });
 }
 
 /* 后台会话节流持久化：写消息后 800ms 内保存一次 pane 内容 */
@@ -151,7 +167,7 @@ const chatScrollBtns = document.createElement("div");
 chatScrollBtns.id = "chatScrollBtns";
 chatScrollBtns.innerHTML =
   '<button id="btnScrollTop" class="chat-scroll-btn" data-i18n-title="scrollTopTip" title="滚动到顶部">' + ico("arrowUp") + "</button>" +
-  '<button id="btnScrollBottom" class="chat-scroll-btn" data-i18n-title="scrollBottomTip" title="滚动到底部">' + ico("arrowDown") + "</button>";
+  '<button id="btnScrollBottom" class="chat-scroll-btn" data-i18n-title="scrollBottomTip" title="滚动到底部">' + ico("arrowDown") + '<span class="scroll-badge"></span></button>';
 // 滚动按钮钉在 .chat-slot（不随内容滚动的祖先）上，见 mountShared：
 // 挂在 #chatStream 里时它是滚动容器的绝对定位子节点，会跟着内容一起滚，
 // 结果两个按钮跑到某条回答中间，既挡字也点不到。
@@ -163,7 +179,7 @@ inputBox.innerHTML =
 
   '<div id="ciChips" class="ci-chips"></div>' +
   '<div id="ciSkillActive" class="ci-skill-active" style="display:none"></div>' +
-  '<textarea id="chatInput" rows="3" data-i18n-ph="inputPlaceholder" placeholder="描述你要 Agent 完成的改动，Enter 发送 / Shift+Enter 换行；@ 引用文件，/ 唤起命令…" spellcheck="false"></textarea>' +
+  '<textarea id="chatInput" rows="3" autocomplete="off" autocorrect="off" data-i18n-ph="inputPlaceholder" placeholder="描述你要 Agent 完成的改动，Enter 发送 / Shift+Enter 换行；@ 引用文件，/ 唤起命令…" spellcheck="false"></textarea>' +
   '<div class="ci-bottom">' +
     '<div class="ci-left">' +
       '<button id="btnAttach" class="ci-tool" data-i18n-title="attachTip" title="添加附件（图片可直接粘贴 / 拖拽）">' + ico("plus") + "</button>" +
@@ -176,7 +192,10 @@ inputBox.innerHTML =
         '<select id="ciPerm" class="ci-perm">' +
           '<option value="ask" data-i18n="permOptAsk">每次问我</option>' +
           '<option value="semi" data-i18n="permOptSemi">半自动</option>' +
+          '<option value="acceptEdits" data-i18n="permOptAcceptEdits">接受编辑</option>' +
+          '<option value="smart" data-i18n="permOptSmart">智能判定</option>' +
           '<option value="auto" data-i18n="permOptAuto">完全访问</option>' +
+          '<option value="dontAsk" data-i18n="permOptDontAsk">不再询问</option>' +
         "</select>" +
       "</span>" +
     "</div>" +
@@ -667,6 +686,7 @@ const PALETTES = [
   { id: "whisky",    name: "威士忌", mode: "dark",  desc: t("apSaveActiveFiledescT13"),   sw: ["#100c08", "#a8641f", "#e0a050", "#6fb6c8"] },
   { id: "pine",      name: "松墨",   mode: "dark",  desc: t("apSaveActiveFiledescT14"),     sw: ["#080d0b", "#2c6e55", "#6fbf9a", "#5aa8b8"] },
   { id: "slate",     name: "岩灰",   mode: "dark",  desc: t("apSaveActiveFiledescT15"),       sw: ["#0d0d0e", "#5a6674", "#9fb0c2", "#7fa8c8"] },
+  { id: "matrix",    name: "矩阵",   mode: "dark",  desc: t("apSaveActiveFiledescT21"), sw: ["#050807", "#00d4aa", "#00ffcc", "#0088ff"] },
   { id: "contrast",  name: "高对比", mode: "both",  desc: t("apSaveActiveFiledescT16"),   sw: ["#000000", "#2f7bff", "#ffd400", "#43e08a"] },
   { id: "celadon",   name: "青瓷",   mode: "light", desc: t("apSaveActiveFiledescT17"),   sw: ["#f6faf7", "#2f8a6a", "#1f7a5c", "#2b7f9e"] },
   { id: "parchment", name: "羊皮纸", mode: "light", desc: t("apSaveActiveFiledescT18"),     sw: ["#fbf7ef", "#9a6b30", "#7d5320", "#3f7a94"] },
@@ -1573,6 +1593,7 @@ $("bpToggle").onclick = () => $("bottomPanel").classList.toggle("collapsed");
 
 /* ---------------- 改动面板（Git 状态：M/A/D） ---------------- */
 const ST_TXT = { M: "M", A: "U", D: "D" };
+let _lastChangesFingerprint = "";
 function renderChanges(list) {
   const items = list || Array.from(modifiedSet()).map((p) => {
     const f = state.files[p];
@@ -1580,6 +1601,10 @@ function renderChanges(list) {
     return { path: p, status: f.isNew ? "A" : "M", add: st.add, del: st.del };
   });
   const n = items.length;
+  // 内容指纹：跳过完全相同的重复渲染（文件监听自循环修复的配套防线）
+  const fp = items.map((it) => it.path + ":" + it.status + ":" + (it.add || 0) + ":" + (it.del || 0) + ":" + (it.risk || "")).join("|");
+  if (fp === _lastChangesFingerprint) return;
+  _lastChangesFingerprint = fp;
   state.lastChangeTotals = {
     files: n,
     add: items.reduce((s, it) => s + (it.add || 0), 0),
@@ -1618,6 +1643,17 @@ function renderChanges(list) {
     ag.appendChild(row);
   });
 }
+
+/* 状态栏「N 处改动」、Agents 面板「N 个文件」和 SCM 标题只在 renderChanges 里写，
+   而那条路带内容指纹早退（同列表不重渲染，文件监听自循环的防线）。
+   后果是切语言时这三处不重念，屏幕上留着 index.html 的中文种子 —— EN 态实测残留里
+   26 条都是同一条文字被各面板重复数出来的。onLang 注册即执行一次，所以开机首帧也走这里。 */
+if (typeof onLang === "function") onLang(() => {
+  const n = (state.lastChangeTotals && state.lastChangeTotals.files) || 0;
+  const head = $("scmHead"); if (head) head.textContent = t("changesCount", { n });
+  const sb = $("sbChangesTxt"); if (sb) sb.textContent = t("sbChanges", { n });
+  const ag = $("agChangeCount"); if (ag) ag.textContent = t("nFiles", { n });
+});
 
 /* ---------- W6 产物视图：卡片化交付物（点击复用 openFile 全预览链路） ---------- */
 function renderArtifacts() {
@@ -1810,8 +1846,13 @@ function scrollChat(force) {
   // Sticky scroll：用户上翻查看历史时不强制拉回底部；force=true 时无条件滚到底（新消息/审批/选项卡）
   // 网格模式下滚动容器是各会话 pane 自身（chatStream 不滚），滚"当前写入的那个"
   const box = (gridMode ? (convPanes[_boundConvId || convId] || chatStream) : chatStream);
-  if (force || box.scrollHeight - box.scrollTop - box.clientHeight < 80) {
+  const wasAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  if (force || wasAtBottom) {
     box.scrollTop = box.scrollHeight;
+    _newMsgCount = 0;
+  } else {
+    /* 用户不在底部，新消息到达时递增未读计数 */
+    _newMsgCount++;
   }
   updateScrollBtns();
   if (_ctxRaf) return;
@@ -1830,29 +1871,67 @@ function buildMsgNav() {
 function _doBuildMsgNav() {
   const rail = msgNavRail;
   if (!rail) return;
-  /* 节点只记录用户输入消息；分布由 CSS space-evenly 均匀排列，不随消息实际位置 */
-  const userMsgs = [];
-  chatPane().querySelectorAll(":scope > .msg-user").forEach((el) => { userMsgs.push(el); });
+  /* 节点记录所有消息（用户 + AI），用不同颜色区分；分布由 CSS space-evenly 均匀排列 */
+  const allMsgs = [];
+  chatPane().querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { allMsgs.push(el); });
   _hideNavPop();
   rail.innerHTML = "";
-  if (!userMsgs.length) { rail.classList.remove("nav-visible"); return; }
-  userMsgs.forEach((el) => {
+  if (!allMsgs.length) { rail.classList.remove("nav-visible"); return; }
+  allMsgs.forEach((el) => {
     const dot = document.createElement("div");
-    dot.className = "msg-nav-item user";
-    /* 点击任意节点 → 弹出全部输入记录窗口，在窗口里点击具体条目跳转 */
+    dot.className = "msg-nav-item " + (el.classList.contains("msg-user") ? "user" : "ai");
+    /* hover tooltip：显示消息内容预览 */
+    dot.addEventListener("mouseenter", () => {
+      _showNavTooltip(dot, el);
+      _navHoverTimer = setTimeout(() => {
+        _showNavPop(dot, allMsgs);
+      }, 800);
+    });
+    dot.addEventListener("mouseleave", () => {
+      _hideNavTooltip();
+      clearTimeout(_navHoverTimer);
+    });
+    /* 单击直接跳转到对应消息 */
     dot.onclick = (e) => {
       e.stopPropagation();
+      _hideNavTooltip();
+      clearTimeout(_navHoverTimer);
       if (_navPop && _navPop.classList.contains("show")) { _hideNavPop(); return; }
-      _showNavPop(dot, userMsgs);
+      chatStream.scrollTo({ top: el.offsetTop - 10, behavior: "smooth" });
+      el.classList.add("msg-jump-flash");
+      setTimeout(() => el.classList.remove("msg-jump-flash"), 1400);
     };
     rail.appendChild(dot);
   });
-  rail.classList.add("nav-visible"); /* 有输入记录时常驻显示 */
+  rail.classList.add("nav-visible"); /* 有消息时常驻显示 */
   updateMsgNavActive();
 }
+let _navHoverTimer = null;
+let _navTooltip = null;
+/* hover 圆点时显示的消息内容预览 tooltip */
+function _showNavTooltip(anchor, msgEl) {
+  if (!_navTooltip) {
+    _navTooltip = document.createElement("div");
+    _navTooltip.className = "msg-nav-tooltip";
+    document.body.appendChild(_navTooltip);
+  }
+  const text = (msgEl.textContent || "").trim().replace(/\s+/g, " ").slice(0, 120) || "（空消息）";
+  const isUser = msgEl.classList.contains("msg-user");
+  _navTooltip.innerHTML =
+    '<div class="mnt-role">' + (isUser ? "用户" : "AI") + '</div>' +
+    '<div class="mnt-txt">' + text + '</div>';
+  _navTooltip.classList.add("show");
+  const r = anchor.getBoundingClientRect();
+  const pw = _navTooltip.offsetWidth, ph = _navTooltip.offsetHeight;
+  const top = Math.max(8, Math.min(r.top + r.height / 2 - ph / 2, window.innerHeight - ph - 8));
+  const left = Math.max(8, r.left - pw - 10);
+  _navTooltip.style.left = left + "px";
+  _navTooltip.style.top = top + "px";
+}
+function _hideNavTooltip() { if (_navTooltip) _navTooltip.classList.remove("show"); }
 let _navPop = null;
-/* 点击节点弹出的小窗口：列出本会话全部用户输入，点击条目跳转到对应消息 */
-function _showNavPop(anchor, userMsgs) {
+/* hover 延迟后弹出的小窗口：列出本会话全部消息，点击条目跳转到对应消息 */
+function _showNavPop(anchor, allMsgs) {
   if (!_navPop) {
     _navPop = document.createElement("div");
     _navPop.className = "msg-nav-pop";
@@ -1860,12 +1939,12 @@ function _showNavPop(anchor, userMsgs) {
   }
   _navPop.innerHTML =
     '<div class="mnp-head"><span class="mnp-role">' + t("ap_showNavPopH14") + '</span>' +
-    '<span class="mnp-idx">' + userMsgs.length + " 条</span></div>" +
+    '<span class="mnp-idx">' + allMsgs.length + " 条</span></div>" +
     '<div class="mnp-list"></div>';
   const listBox = _navPop.querySelector(".mnp-list");
-  userMsgs.forEach((el, i) => {
+  allMsgs.forEach((el, i) => {
     const item = document.createElement("div");
-    item.className = "mnp-item";
+    item.className = "mnp-item " + (el.classList.contains("msg-user") ? "mnp-user" : "mnp-ai");
     const no = document.createElement("span");
     no.className = "mnp-no";
     no.textContent = String(i + 1);
@@ -1897,6 +1976,7 @@ function _hideNavPop() { if (_navPop) _navPop.classList.remove("show"); }
 /* 点击弹窗外部区域关闭 */
 document.addEventListener("click", (e) => {
   if (_navPop && _navPop.classList.contains("show") && !_navPop.contains(e.target)) _hideNavPop();
+  if (_navTooltip && _navTooltip.classList.contains("show") && !_navTooltip.contains(e.target)) _hideNavTooltip();
 });
 function updateMsgNavActive() {
   const rail = msgNavRail;
@@ -1905,30 +1985,49 @@ function updateMsgNavActive() {
   const viewH = chatStream.clientHeight;
   let activeIdx = -1;
   const dots = Array.from(rail.children);
-  const userMsgs = [];
-  chatPane().querySelectorAll(":scope > .msg-user").forEach((el) => { userMsgs.push(el); });
-  for (let i = 0; i < userMsgs.length; i++) {
-    if (userMsgs[i].offsetTop - 10 <= scrollTop + viewH * 0.3) activeIdx = i;
+  const allMsgs = [];
+  chatPane().querySelectorAll(":scope > .msg-user, :scope > .msg-ai").forEach((el) => { allMsgs.push(el); });
+  for (let i = 0; i < allMsgs.length; i++) {
+    if (allMsgs[i].offsetTop - 10 <= scrollTop + viewH * 0.3) activeIdx = i;
   }
   dots.forEach((d, i) => d.classList.toggle("active", i === activeIdx));
 }
-/* 只要内容可滚动就常驻显示快速按钮，不再依赖「滚动后 800ms 内」的临时可见 */
+/* 智能滚动按钮：只在需要时显示对应按钮（不在顶部时显示"到顶"，不在底部时显示"到底"） */
+let _newMsgCount = 0;
 function updateScrollBtns() {
   const hasOverflow = chatStream.scrollHeight > chatStream.clientHeight + 40;
-  chatScrollBtns.classList.toggle("csb-visible", hasOverflow);
+  const isAtTop = chatStream.scrollTop <= 10;
+  const isAtBottom = chatStream.scrollHeight - chatStream.scrollTop - chatStream.clientHeight <= 40;
   const btnTop = $("btnScrollTop"), btnBot = $("btnScrollBottom");
-  if (btnTop) btnTop.style.display = "flex";
-  if (btnBot) btnBot.style.display = "flex";
+  if (btnTop) btnTop.style.display = (hasOverflow && !isAtTop) ? "flex" : "none";
+  if (btnBot) btnBot.style.display = (hasOverflow && !isAtBottom) ? "flex" : "none";
+  /* 有新消息且不在底部时，底部按钮显示未读计数 */
+  if (btnBot) {
+    if (_newMsgCount > 0 && !isAtBottom) {
+      btnBot.classList.add("has-unread");
+      const badge = btnBot.querySelector(".scroll-badge");
+      if (badge) badge.textContent = _newMsgCount > 9 ? "9+" : String(_newMsgCount);
+    } else {
+      btnBot.classList.remove("has-unread");
+      if (isAtBottom) _newMsgCount = 0;
+    }
+  }
+  chatScrollBtns.classList.toggle("csb-visible", hasOverflow && (!isAtTop || !isAtBottom));
 }
 chatStream.addEventListener("scroll", () => {
   msgNavRail.classList.add("nav-visible");
   updateMsgNavActive();
   updateScrollBtns();
   _hideNavPop();
+  _hideNavTooltip();
 });
 /* 按钮自身是容器，用 querySelector 取内层按钮（元素可能还在分离树上） */
 chatScrollBtns.querySelector("#btnScrollTop").onclick = () => chatStream.scrollTo({ top: 0, behavior: "smooth" });
-chatScrollBtns.querySelector("#btnScrollBottom").onclick = () => chatStream.scrollTo({ top: chatStream.scrollHeight, behavior: "smooth" });
+chatScrollBtns.querySelector("#btnScrollBottom").onclick = () => {
+  chatStream.scrollTo({ top: chatStream.scrollHeight, behavior: "smooth" });
+  _newMsgCount = 0;
+  updateScrollBtns();
+};
 
 /* 过程块（思考 / 工具步骤 / 审批 / 记忆卡）归进同一条 .step-flow 时间轴。
    竖线只由分组画一条：以前每张卡片各自 ::before + border-left，同一列上叠三四条线，
@@ -1954,6 +2053,14 @@ function chatFlow(pane) {
 function finalizeRoundGrp(grp, opts) {
   grp.classList.remove("live");
   const body = grp.querySelector(".rg-body");
+  /* 清理空块：某些轮次会留下没有内容的占位 div（think.start 发了但正文为空、
+     或渲染竞态留下空壳），展开后是一条纯灰色空条，没存在价值。
+     think-block 折叠态有"思考 Xs"文字、tool-card 有工具名，都不会被误删。 */
+  Array.from(body.children).forEach((c) => {
+    if ((c.textContent || "").trim()) return;
+    if (c.querySelector("img,video,canvas,svg")) return;
+    c.remove();
+  });
   /* 含截图的轮组不自动折叠：截图是"用户想立刻看到的证据"，tool.image 特意不收进
      .tool-body（折叠卡里 display:none）就是为了它常显——轮组折叠会把这层设计整个
      推翻（shotui 探针抓的就是这个）。头部仍可手动收起。 */
@@ -2773,8 +2880,9 @@ function handleEventInner(ev) {
         }
         /* 结论卡：加「结论」角标 + 操作条（复制/重新生成/分支）。
            只有最终答案块（.ans-row）才挂 —— 过程叙述（tool 前的那些）
-           不该有"重新生成"，用户要重跑的是整轮任务，不是某句话。 */
-        if (row) markFinalAnswer(row);
+           不该有"重新生成"，用户要重跑的是整轮任务，不是某句话。
+           demoted：tool.start 已判定这块是过程叙述（后面又跟了工具），不再挂结论效果。 */
+        if (row && !b.demoted) markFinalAnswer(row);
         scrollChat();
         send({ type: "ctx.query" });   // 回答结束拉一次服务端实测水位，校正圆圈进度
       };
@@ -2786,6 +2894,12 @@ function handleEventInner(ev) {
     case "tool.start": {
       // 工具调用一旦开始，之前那段话就是"过程叙述"，应当独立成泡；
       // 否则叙述与最终回答会被跨轮聚合成同一个气泡，读起来像被截断的句子。
+      // 它也不是"最终结论" —— 一轮里只有最后一个 ans-row 才是最终结论，
+      // 中间被工具打断的 ans-row 撤掉结论卡效果（角标 + 操作条）。
+      if (answerBlock) {
+        answerBlock.demoted = true;
+        if (answerBlock.row) unmarkFinalAnswer(answerBlock.row);
+      }
       answerBlock = null;
       const el = document.createElement("div");
       el.className = "tool-card step " + stepKindCls(ev.name || "");
@@ -2893,7 +3007,12 @@ function handleEventInner(ev) {
 
     case "changes": {
       if (ev.risk) { state.riskSummary = ev.risk; if (typeof renderEnvPanel === "function") renderEnvPanel(); }
-      if (!ev.convId || ev.convId === convId) renderChanges(ev.list);
+      if (!ev.convId || ev.convId === convId) {
+        /* ev.task 是引擎按"本会话真写过的路径"求交出来的任务口径；
+           ev.list 仍是仓库口径（整棵脏树），给 SCM 面板和状态栏用。两者不能混。 */
+        state.lastTaskTotals = ev.task || null;
+        renderChanges(ev.list);
+      }
 
       break;
     }
@@ -3261,7 +3380,10 @@ function planTotalSteps() {
 function renderStepPill() {
   const p = ensureStepPill();
   const sp = getStepProg();
-  const ch = (typeof state !== "undefined" && state.lastChangeTotals) || { files: 0, add: 0, del: 0 };
+  /* 这颗胶囊说的是"本次任务"，所以优先用引擎给的任务口径（本会话写过的路径与它们的增删行）。
+     退到 lastChangeTotals 只在老引擎没发 ev.task 的时候 —— 那是整棵脏工作树的数，
+     和"步骤 x/y"拼在一起读起来就像"这一步改了 1291 行"，是它历史上出过的错。 */
+  const ch = (typeof state !== "undefined" && (state.lastTaskTotals || state.lastChangeTotals)) || { files: 0, add: 0, del: 0 };
   sp.total = planTotalSteps();
   /* 本轮一步都没跑过就不该有这颗胶囊。原先条件是"步骤和改动数都为 0 才藏"，
      于是新开对话后会看到「步骤 0 · 1 个文件已修改 +1291 −1287」——
@@ -3562,6 +3684,16 @@ function markFinalAnswer(row) {
 
   el.appendChild(bar);
   replaceIcons(bar);
+}
+
+/* 撤掉一条 ans-row 的结论卡效果：移除「结论」角标 + 操作条。
+   tool.start 调它把"过程叙述"降级 —— 一轮里只有最后一个 ans-row 才是最终结论。 */
+function unmarkFinalAnswer(row) {
+  if (!row || !row.classList || !row.classList.contains("ans-row")) return;
+  const el = row.querySelector(".msg-ai");
+  if (el) el.removeAttribute("data-final-label");
+  const bar = row.querySelector(".msg-actions");
+  if (bar) bar.remove();
 }
 
 /* 找到这条结论之前最近的一条用户消息（重发的对象） */
@@ -4363,7 +4495,14 @@ function bindInput() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ permissions: { mode } }),
       });
-      const label = { ask: "逐项确认", semi: "半自动（安全操作放行，写入仍确认）", auto: "全自动（高危仍会拦截）" }[mode] || mode;
+      const label = {
+        ask: "逐项确认",
+        semi: "半自动（安全操作放行，写入仍确认）",
+        acceptEdits: "接受编辑（文件改动免确认，命令与外部操作仍确认）",
+        smart: "智能判定（拿不准的问模型，判不了仍问你）",
+        auto: "全自动（高危仍会拦截）",
+        dontAsk: "不再询问（该问的一律拒绝，适合无人值守的后台任务）",
+      }[mode] || mode;
       toast(t("apBindInputtoastT155") + label);
     } catch (err) { toast(t("apBindInputtoastT154") + err.message); }
   };

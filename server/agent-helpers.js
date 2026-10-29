@@ -187,6 +187,14 @@ const MICROCOMPACT_CLEARED = "[旧工具结果已清理]";
    数值取"够装下一次完整构建日志，又不至于吃掉磁盘"的量级。 */
 const SPILL_MAX_FILE_CHARS = 4 * 1024 * 1024;
 const SPILL_MAX_FILES_PER_CONV = 60;
+/* —— 压缩时的"最近读过的文件"快照（对齐 openanlan 压缩保留最近 ≤5 个已读文件）
+   摘要把 read_file 的原文压成一句话之后，模型既不知道自己读过、也拿不回那一版内容，
+   只能重读一遍 —— 一次压缩等于一次失忆。所以留一小份原文快照跟着摘要一起进新历史。
+   名额 5 条、单条 8000 字符：一个 1200 行的函数塞满预算会挤掉其它全部条目，
+   总预算另外按上下文窗口比例算（agent-llm.js 的 _keptReadsBudget），这两个数是硬顶。 */
+const KEPT_READS_MAX = 5;
+const KEPT_READS_PER_FILE = 8000;
+
 /* —— 视觉：把截图的像素交给模型 ——
    工具结果通道装不了图：OpenAI 规范的 role:"tool" content 只能是字符串，硬塞数组会被上游 400。
    所以走"工具落盘 + 下一次请求前附一条多模态 user 消息"，而且只在模型显式要（for_model:true）时喂。
@@ -297,6 +305,7 @@ module.exports = {
   MICROCOMPACT_KEEP_RECENT_ROUNDS, MICROCOMPACT_MIN_TOKEN_SAVINGS, MICROCOMPACT_THRESHOLD_RATIO,
   MICROCOMPACT_THRESHOLD_BUFFER_TOKENS, MICROCOMPACT_CLEARED, MICROCOMPACTABLE_TOOLS,
   SPILL_MAX_FILE_CHARS, SPILL_MAX_FILES_PER_CONV,
+  KEPT_READS_MAX, KEPT_READS_PER_FILE,
   VISION_MAX_BYTES, VISION_MAX_PER_ROUND, VISION_IMAGE_TOKEN_ESTIMATE,
   SUMMARY_PREFIX, COMPACT_SECTIONS,
   RULE_READ_CAP, RULE_MAX_FILE_CHARS, RULE_MAX_STABLE, RULE_MAX_CONDITIONAL,

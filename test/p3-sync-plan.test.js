@@ -75,7 +75,12 @@ describe("接线：watch 回调真的按批走判据，并喂语义索引", () =
   });
 
   it("files.js 把整批路径交给回调，而不是最后一个 rel", () => {
-    expect(files).toMatch(/this\._pendingChanges\.add\(rel \|\| ""\)/);
+    /* 这条钉的是口径，不是某一行写法：① 攒下来的是**一批**路径；② 目录事件（fname 为 null）
+       在这批里有一个可辨识的记号（空串），调用方据此走全量；③ 交出去的是 batch 而不是单个 rel。
+       写法有两种都行：老的一律 `add(rel || "")`，新的把目录事件拆成 _pendingFullSync 标记、
+       防抖时再 `batch.push("")` —— 只认字面量的话，等价改写会把这条判据点红（这轮就是这么红的）。 */
+    expect(files).toMatch(/this\._pendingChanges\.add\(/);
+    expect(files).toMatch(/batch\.push\(""\)|this\._pendingChanges\.add\(rel \|\| ""\)/);
     expect(files).toMatch(/onExternalChange\(batch\)/);
     expect(files).not.toMatch(/onExternalChange\(rel\)/);
   });

@@ -28,8 +28,17 @@ if (!process.env.PANCODE_DATA_DIR && (process.env.AGENT_FAST === "1" || process.
 }
 
 /* permissions.mode 的唯一合法取值。写在这里而不是只写在注释里，是为了让"配错了"这件事
-   在落盘前就被拦下 —— 非法 mode 存进去之后不会报错，只会让权限语义静默退化。 */
-const PERMISSION_MODES = ["ask", "semi", "auto"];
+   在落盘前就被拦下 —— 非法 mode 存进去之后不会报错，只会让权限语义静默退化。
+   P6-#11/#12 对齐 openanlan（Claude Code）补了三档，**旧三档的语义一字未改**：
+   改了等于把用户机器上已经在用的配置悄悄换掉含义。
+     ask         每次都问（= Claude Code 的 default）
+     semi        只读免确认，写与命令仍问
+     acceptEdits 文件改动免确认，命令/浏览器/桌面/网络类仍问（= acceptEdits）
+     smart       拿不准的交给模型分类器判，判不过回落问人（= 它的 auto，pancode 里 auto 已被占）
+     auto        全自动，仅不可逆与 deny 规则硬拦（= bypassPermissions 的弱化版）
+     dontAsk     该问的一律拒绝，用于无人可问的后台任务（= dontAsk） */
+const PERMISSION_MODES = ["ask", "semi", "acceptEdits", "smart", "auto", "dontAsk"];
+
 
 const DEFAULTS = {
   port: 8766,
@@ -44,10 +53,18 @@ const DEFAULTS = {
   llm: {
     baseURL: "",          // 例如 https://api.openai.com/v1 或任何 OpenAI 兼容网关
     apiKey: "",
-    model: "gpt-4o-mini",
+    model: "",
     temperature: 0.2,
-    maxToolRounds: 100,   // 单次任务最多工具调用轮数
-    contextWindow: 128000, // 模型真实上下文窗口（tokens）：上下文进度条分母 + 自动压缩依据，按所用模型调整
+    /* 单次任务最多工具调用轮数。出厂 200：判据在 server/agent-llm.js 的轮次闸口，
+       到顶会在这里停下并告诉用户怎么继续。以前出厂 100，而实际任务（并行改盘 + 跑测试 + 修失败）
+       轻松吃掉上百轮，等于把"跑长任务"这条路在设计上掐掉。
+       上限 500（saveLlm 的校验口径），想更长按 500 调。 */
+    maxToolRounds: 200,
+    /* 模型真实上下文窗口（tokens）：上下文进度条的分母 + 自动压缩依据。
+       出厂 256K（和 model-presets 的 DEFAULT_CONTEXT_WINDOW 同一个数，前端的"没动过"
+       判据靠这两个相等才成立）。它是**兜底**不是硬约束：
+       命中预设表的模型由预设带出真实窗口，能探测的网关由在线探测钳回真值。 */
+    contextWindow: 256000,
     // 输出预留（tokens）：窗口是 input+output 共享的，自动压缩只能让出输入侧，
     // 所以阈值要先从窗口里扣掉"本轮模型最多还要写多少"。不发给上游，纯本地预算量。
     // 留空 = 按窗口 10% 自动取。
@@ -265,7 +282,7 @@ function saveLlm(cfg, patch) {
   // 它只影响本地压缩预算（阈值 = 窗口 - 预留 - headroom），不发给上游，所以上限放宽到半个窗口。
   if (patch.maxOutputTokens !== undefined) {
     const n = Number(patch.maxOutputTokens);
-    if (Number.isFinite(n) && n >= 0) cfg.llm.maxOutputTokens = Math.min(Math.round(n), Math.round((cfg.llm.contextWindow || 128000) * 0.5));
+    if (Number.isFinite(n) && n >= 0) cfg.llm.maxOutputTokens = Math.min(Math.round(n), Math.round((cfg.llm.contextWindow || DEFAULTS.llm.contextWindow) * 0.5));
   }
   // P-M2：reasoningEffort 白名单校验
   if (patch.reasoningEffort !== undefined) {

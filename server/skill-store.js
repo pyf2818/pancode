@@ -489,6 +489,84 @@ class SkillStore {
       + "不相关就不要取，也不要为了用而用。";
   }
 
+  /* ---------- 全量技能目录（对齐 openanlan / Claude Code 的 skill_listing attachment）
+     为什么需要这一份：上面的 match() 是"引擎按触发词替模型挑"，挑不中的技能对模型来说
+     就等于**不存在** —— 而工具面只有 use_skill（按名字取正文），没有任何"列一下都有什么"的入口。
+     于是"我装了个技能但触发词没写对"这件事，模型永远发现不了，只能等用户去面板里点名。
+
+     预算阶梯（超预算时逐级降，内置项永不降 —— 与 openanlan 的 bundled 永不截同一条理由：
+     内置那几条是出厂承诺的能力，截成只剩名字等于没承诺）：
+       0 全文：名字 + 描述(160 字) + 触发词(前 6 个)
+       1 短描述：名字 + 描述(60 字)
+       2 只留名字
+     降到第 2 级还装不下的条目整条丢掉，并在末尾如实报数（不假装列全了）。
+     预算只量条目，末尾那句用法提示是固定开销，不计入 —— 它是每次都要付的一行。 */
+  allForListing() {
+    const seen = new Set();
+    const out = [];
+    const push = (list, builtin) => {
+      for (const s of list || []) {
+        // 面板里关掉的技能不进目录（与 match() 同一语义：关 = 别主动推给我）
+        if (!s || s.disabled) continue;
+        const k = String(s.name || "").toLowerCase().trim();
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        out.push({ skill: s, builtin });
+      }
+    };
+    // 名字撞车时的取舍与 findByName 同一条优先级：市场 > 用户 > 本地 > 内置
+    push(this._marketSkills, false);
+    push(this._mergedUserSkills(), false);
+    push(this._localSkills, false);
+    push(BUILTIN_WORKFLOWS, true);
+    push(this._builtinSkills, true);
+    return out;
+  }
+
+  formatCatalog(entries, budgetChars) {
+    const list = entries || this.allForListing();
+    const budget = Math.max(0, Math.floor(budgetChars || 0));
+    const oneLine = (x) => String(x).replace(/\s+/g, " ").trim();
+    const row = (e, level) => {
+      const s = e.skill;
+      let t = "- " + s.name + (s.version ? " v" + s.version : "");
+      if (level === 0) {
+        if (s.description) t += "：" + oneLine(s.description).slice(0, 160);
+        if (s.trigger) {
+          const tr = String(s.trigger).split(/[,;，；]/).map(oneLine).filter(Boolean).slice(0, 6).join("、");
+          if (tr) t += "（触发词：" + tr + "）";
+        }
+      } else if (level === 1 && s.description) {
+        t += "：" + oneLine(s.description).slice(0, 60);
+      }
+      return t;
+    };
+    const must = list.filter((e) => e.builtin);
+    const rest = list.filter((e) => !e.builtin);
+    const head = must.map((e) => row(e, 0));
+    let used = head.join("\n").length;
+    let rows = [];
+    let dropped = 0;
+    for (const level of [0, 1, 2]) {
+      const cand = rest.map((e) => row(e, level));
+      const total = cand.reduce((a, t) => a + t.length + 1, 0);
+      if (used + total <= budget) { rows = cand; dropped = 0; break; }
+      if (level === 2) {
+        let u = used;
+        for (const t of cand) {
+          if (u + t.length + 1 <= budget) { rows.push(t); u += t.length + 1; }
+        }
+        dropped = cand.length - rows.length;
+      }
+    }
+    const all = head.concat(rows);
+    if (!all.length) return "";
+    let out = all.join("\n");
+    if (dropped > 0) out += "\n（另有 " + dropped + " 条技能因预算未列出）";
+    return out + "\n\n> 上面是技能目录，不是本轮必用清单。决定采用其中某条时，先 use_skill(name) 取回完整步骤与注意事项再动手；"
+      + "不相关就不要取，也不要为了用而用。";
+  }
+
   /* 正文（按需取回） */
   formatBodyFor(skill) {
     if (!skill) return "";

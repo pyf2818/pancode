@@ -171,7 +171,7 @@ describe("④ 子循环防护（与主循环同策略）", () => {
       if (n === 1) return { content: "", toolCalls: [{ id: "s1", name: "read_file", arguments: JSON.stringify({ path: "big.js" }) }] };
       return { content: "done" };
     };
-    a._runToolGuarded = async () => "X".repeat(60000);   // 远超默认预览上限
+    a._runToolGuarded = async () => "X".repeat(130000);   // 超过 read_file 的每工具预览上限（契约表 100000）
     const toolMsgs = [];
     a._chatStream = async (messages) => {
       for (const m of messages) if (m.role === "tool") toolMsgs.push(m.content);
@@ -181,7 +181,8 @@ describe("④ 子循环防护（与主循环同策略）", () => {
     };
     await a.runSubAgent("读大文件", {});
     const body = toolMsgs.join("\n");
-    expect(body.length).toBeLessThan(60000);              // 确实被截了
+    expect(body.length).toBeLessThan(130000);            // 确实被截了（read_file 的契约上限 100000）
+    expect(body).toMatch(/收起到 100000 字符/);           // 收的是这一发的上限，不是随手砍一刀
     expect(body).toContain("persisted-output");           // 截断信封在
     expect(body).toContain("全文已保存到");                // spill 路径给到了
     try { fs.rmSync(a._spillRoot, { recursive: true, force: true }); } catch (e) {}

@@ -400,11 +400,13 @@ async function main() {
 
     r = await req("POST", "/api/config", { section: "agent", patch: { permissions: { mode: "semi" }, memory: { enabled: false } } });
     ok("按段保存 agent", r.json.ok === true && r.json.agent.permissions.mode === "semi", r.json.error);
-    /* 修 C-H3：permissions.mode 走白名单（ask/semi/auto），白名单外的值必须被拒而不是原样存进去。
-       以前这里塞的是 "acceptEdits"/"plan" —— 那正是洞本身：任意字符串能被收下，
-       引擎按未知值当最严处理，配置里却显示一个不存在的模式，用户以为开了别的档。 */
-    r = await req("POST", "/api/config", { section: "agent", patch: { permissions: { mode: "acceptEdits" } } });
+    /* 修 C-H3：permissions.mode 走白名单，白名单外的值必须被拒而不是原样存进去。
+       以前这里塞的是 "acceptEdits"/"plan" —— 那两个当时不在白名单里，而 P6-#11 之后 acceptEdits
+       已经是合法档（六档：ask/semi/acceptEdits/smart/auto/dontAsk），拿它当"非法值"就测不到东西了。
+       所以改用一个永远不会成为档名的字符串：洞的本质是"任意字符串被收下"，与具体写哪个词无关。 */
+    r = await req("POST", "/api/config", { section: "agent", patch: { permissions: { mode: "notARealMode" } } });
     ok("白名单外的权限模式被拒且不落盘", r.json.ok === true && r.json.agent.permissions.mode === "semi", JSON.stringify(r.json.agent.permissions || {}));
+
     r = await req("GET", "/api/settings");
     ok("engine 段读取正常", r.status === 200);
     r = await req("POST", "/api/config", { section: "nonsense", patch: {} });

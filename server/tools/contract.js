@@ -31,16 +31,33 @@
    subAgentOnly    反过来：只给子智能体用，父智能体的工具清单里不出现
                    （白板这类工具对父流程没用，却每次请求都占一份 token）
    readOnlyWhen    名字两用时的判定：满足才算纯读（git_branch 的 list 动作）
+   maxResultSizeChars 低水位时这个工具的结果在上下文里最多占多少字符。
+     不写 = 沿用通用值 24000（与加这个字段之前的行为逐字相同）；写 Infinity =
+     该工具自己已经限了体量，通用截断不要再补一刀。水位升高时仍会按 8000/4000 收。
+   interruptBehavior 用户按停止时，这一发**已经在跑**的工具要不要继续等：
+     block（缺省：等它返回，写盘/不可逆动作必须这样，否则留下半截状态）
+     cancel（停止等待、结果按已中断回填，后台可能仍在推进 —— 与既有"[超时]"同一种诚实）
+   openWorld         会向这台机器之外发请求、或操作真实外部界面（网络 / 浏览器 / 桌面）。
+     今天没有消费方，是给权限分类器与 dontAsk 档准备的输入：外部可见、影响撤不回的动作，
+     判据要和"只在这台机器里动"分开。
 */
+const DEFAULT_RESULT_CEILING = 24000;
+
 const CONTRACT = {
-  // —— 文件读 ——
+  /* —— 文件读 ——
+     read_file 给到 100000 而不是通用 24000：它自己已经按行范围/分段限体量
+     （file-tools.js 的 SYMBOL_MAX_LINES=1200 行是设计上限，一次函数体轻松超过 24k 字符），
+     通用刀砍在合法输出上，等于让"按符号取一段"退化成"再读一次"。
+     检索类相反：命中列表的边际收益掉得很快，20k 之后的行基本是噪声，值得单独收一刀。 */
   list_files:      { readOnly: true, microcompact: true },
-  read_file:       { readOnly: true, microcompact: true },
-  search_code:     { readOnly: true, microcompact: true },
+  read_file:       { readOnly: true, microcompact: true, maxResultSizeChars: 100000 },
+  search_code:     { readOnly: true, microcompact: true, maxResultSizeChars: 20000 },
   repo_map:        { readOnly: true, microcompact: true },
-  search_symbol:   { readOnly: true, microcompact: true },
-  code_graph:      { readOnly: true, microcompact: true },
+  search_symbol:   { readOnly: true, microcompact: true, maxResultSizeChars: 20000 },
+  code_graph:      { readOnly: true, microcompact: true, maxResultSizeChars: 20000 },
   get_diagnostics: { readOnly: true, microcompact: true },
+
+
 
   // —— 文件写 ——
   write_file:  { mutating: true },
@@ -56,13 +73,21 @@ const CONTRACT = {
   find_references: { readOnly: true, microcompact: true },
   rename_symbol:   { mutating: true, readOnlyWhen: (args) => !args || args.apply !== true },
 
-  // —— 命令与进程 ——
-  run_command:   { mutating: true, microcompact: true },
+  /* —— 命令与进程 ——
+     两条与"停止要立刻见效"有关的判断：
+     · 上限给到 30000（比通用 24000 宽）：本文件上面那条 spill 注释自己说了，
+       重跑一次构建日志往往比省下的那点 token 更贵，所以这一类结果值得多留一点头尾。
+     · interruptBehavior: cancel —— mutating 一律派生成 waitFree（不设执行超时），
+       于是"按了停止但命令还在跑"时，超时那条逃生舱是不存在的；标 cancel 才停得下来。
+       代价说清楚：停止只是不再等它，进程可能仍在后台推进（与"[超时]"同一种诚实）。 */
+  run_command:   { mutating: true, microcompact: true, maxResultSizeChars: 30000, interruptBehavior: "cancel" },
   /* P1-B3 run_tests 与 run_command 同档：它起的也是同一个 shell，
      而且测试常往工作区写东西（覆盖率目录、snapshot 文件），所以是 mutating 而不是只读；
-     结果体量大且一次性，microcompact 与 run_command 一样开。 */
-  run_tests:     { mutating: true, microcompact: true },
+     结果体量大且一次性，microcompact 与 run_command 一样开。
+     cancel 的理由更强：一次测试跑 20 分钟，用户按停止不该还要等它跑完。 */
+  run_tests:     { mutating: true, microcompact: true, maxResultSizeChars: 30000, interruptBehavior: "cancel" },
   start_process: { mutating: true },
+
   stop_process:  { mutating: true },
   read_process:  { readOnly: true, stateful: true, microcompact: true },
   check_port:    { readOnly: true, microcompact: true },
@@ -134,9 +159,10 @@ const CONTRACT = {
      只给子智能体：父智能体拿到它只会往一块没人读的板上写字，那份 schema 每轮都白占 token。 */
   board:       { readOnly: true, microcompact: true, subAgentOnly: true },
 
-  // —— 网络 ——
-  web_search: { readOnly: true, microcompact: true },
-  web_fetch:  { readOnly: true, microcompact: true },
+  // —— 网络 ——（openWorld：请求发到这台机器之外，影响不在本地留痕）
+  web_search: { readOnly: true, microcompact: true, openWorld: true },
+  web_fetch:  { readOnly: true, microcompact: true, openWorld: true },
+
 
   /* —— 浏览器自动化（agent-browser / CDP）——
      判读走无障碍树文本，像素只落盘给人看，所以工具结果仍是字符串（不必动消息层）。
@@ -149,26 +175,28 @@ const CONTRACT = {
        互相把对方的页面导航走。要放开得先做到"每个子代理一个 session"，那是另一件事。
      · browser_eval 额外在 handler 里显式要授权（它能以页面身份发任意请求），
        browser_close 即使是 mutating 也必须拦子代理：子代理收尾会把主流程正在用的浏览器一起关掉。 */
-  browser_open:     { mutating: true, microcompact: true, subAgentBlock: true },
-  browser_navigate: { mutating: true, microcompact: true, subAgentBlock: true },
-  browser_snapshot: { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
-  browser_click:    { mutating: true, microcompact: true, subAgentBlock: true },
-  browser_fill:     { mutating: true, microcompact: true, subAgentBlock: true },
-  browser_press:    { mutating: true, microcompact: true, subAgentBlock: true },
-  browser_select:   { mutating: true, microcompact: true, subAgentBlock: true },
-  browser_read:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
+  browser_open:     { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_navigate: { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_snapshot: { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true, openWorld: true, maxResultSizeChars: 20000 },
+  browser_click:    { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_fill:     { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_press:    { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_select:   { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_read:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true, openWorld: true },
+
   /* browser_assert 与 browser_eval 都走 eval，但性质不同，判读值得单列一行：
      eval 执行的是模型现写的 JS（能以页面身份发任意请求 → mutating + 逐次授权）；
      assert 执行的是我们固定写死的一段"读观察值"程序，模型只能塞进 CSS 选择器和期望值
      （它们经 JSON.stringify 成为字面量，塞不进代码），所以它是只读 —— 但同样 stateful：
      读的是"当前活跃标签页在这一刻"的 DOM，和别的手势并发就会验到别人的页面。
      拦子智能体的理由与全家一致：会话名按 convId 派生，两个分支共用同一个浏览器。 */
-  browser_assert:   { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
-  browser_tabs:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
-  browser_wait:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
-  browser_screenshot: { microcompact: true, subAgentBlock: true },
-  browser_eval:     { mutating: true, microcompact: true, subAgentBlock: true },
-  browser_close:    { mutating: true, subAgentBlock: true },
+  browser_assert:   { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_tabs:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_wait:     { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_screenshot: { microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_eval:     { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  browser_close:    { mutating: true, subAgentBlock: true, openWorld: true },
+
 
   /* —— 电脑控制（UI Automation，常驻 PowerShell worker）——
      判读同样是文本（控件树），所以工具结果通道不用动。
@@ -181,18 +209,23 @@ const CONTRACT = {
        所以不标 irreversible —— 标了反而会让 activate/move 这些纯增动作也在 auto 档被拦。
      · 全家拦子智能体：桌面只有一个前台焦点，两个并行分支同时敲键盘必然互相打断，
        而且谁都看不到"现在焦点在谁那儿"。 */
-  desktop_windows:   { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
-  desktop_snapshot:  { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
-  desktop_read:      { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true },
-  desktop_screenshot: { microcompact: true, subAgentBlock: true },
-  desktop_click:     { mutating: true, microcompact: true, subAgentBlock: true },
-  desktop_type:      { mutating: true, microcompact: true, subAgentBlock: true },
-  desktop_press:     { mutating: true, microcompact: true, subAgentBlock: true },
-  desktop_scroll:    { mutating: true, microcompact: true, subAgentBlock: true },
-  desktop_window:    { mutating: true, microcompact: true, subAgentBlock: true },
+  desktop_windows:   { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  desktop_snapshot:  { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true, openWorld: true, maxResultSizeChars: 20000 },
+  desktop_read:      { readOnly: true, stateful: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  desktop_screenshot: { microcompact: true, subAgentBlock: true, openWorld: true },
+  desktop_click:     { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  desktop_type:      { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  desktop_press:     { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  desktop_scroll:    { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+  desktop_window:    { mutating: true, microcompact: true, subAgentBlock: true, openWorld: true },
+
 
   // —— 外部 MCP ——
-  list_mcp: { readOnly: true, microcompact: true },
+  /* tool_search 只是把已在内存里的工具定义抄给模型看（并把它排进下一轮的工具列表），
+     本身不连服务器、不发请求 → 纯读。真正连外的 mcp__* 不在表里，走 contractOf 的
+     fail-closed 默认（需要人工确认），这条纪律迁移前后一致。 */
+  list_mcp:    { readOnly: true, microcompact: true },
+  tool_search: { readOnly: true, microcompact: true },
 
   // —— 交互 ——
   ask_user_choice: { waitFree: true },
@@ -217,8 +250,13 @@ function contractOf(name) {
     subAgentBlock: !!c.subAgentBlock,
     subAgentOnly: !!c.subAgentOnly,
     readOnlyWhen: typeof c.readOnlyWhen === "function" ? c.readOnlyWhen : null,
+    // 未登记 / 未声明 = 通用值，行为与加这三个字段之前逐字相同
+    maxResultSizeChars: typeof c.maxResultSizeChars === "number" ? c.maxResultSizeChars : DEFAULT_RESULT_CEILING,
+    interruptBehavior: c.interruptBehavior === "cancel" ? "cancel" : "block",
+    openWorld: !!c.openWorld,
   };
 }
+
 
 /* 这个工具此刻是否算纯读。名字两用的（git_branch）按参数判。
    权限免确认与并行调度共用这一条判据，两处不会各写一份 while 条件而漂移。 */
@@ -253,12 +291,25 @@ function auditContract(toolNames) {
   const orphan = Object.keys(CONTRACT).filter((n) => !declared.has(n));
   const contradictions = Object.keys(CONTRACT).filter((n) => {
     const c = contractOf(n);
-    // 既是纯读又标了"撤不回来"是不成立的组合，出现即说明表被改坏了
-    return (c.readOnly && c.irreversible) || (c.readOnly && c.mutating);
+    /* 既是纯读又标了"撤不回来"是不成立的组合，出现即说明表被改坏了；
+       irreversible 配 cancel 同样不成立：撤不回的东西不能放弃等待它跑完。 */
+    return (c.readOnly && c.irreversible) || (c.readOnly && c.mutating)
+      || (c.irreversible && c.interruptBehavior === "cancel");
   });
-  if (!missing.length && !orphan.length && !contradictions.length) return null;
-  return { missing, orphan, contradictions };
+  /* 新字段的形状检查：写错一个数字/字符串不会报错，只会静默改变截断与停止行为，
+     所以宁可启动就响亮失败（与本文件"漏登记是静默劣化"的立场一致）。 */
+  const malformed = Object.keys(CONTRACT).filter((n) => {
+    const raw = CONTRACT[n];
+    const ceil = raw.maxResultSizeChars;
+    const badCeil = ceil !== undefined && !(typeof ceil === "number" && (ceil === Infinity || ceil > 0));
+    const badInterrupt = raw.interruptBehavior !== undefined
+      && raw.interruptBehavior !== "cancel" && raw.interruptBehavior !== "block";
+    return badCeil || badInterrupt;
+  });
+  if (!missing.length && !orphan.length && !contradictions.length && !malformed.length) return null;
+  return { missing, orphan, contradictions, malformed };
 }
+
 
 /* 已知偏差（照实记录，不在"纯迁移"这一步偷偷改行为）：
    1. run_command 被标了 microcompact（与迁移前一致）：清掉的是"很久以前的命令输出"，
@@ -270,4 +321,4 @@ function auditContract(toolNames) {
       现在与 agent 同档拦掉：并行改盘的归属与收回按"同层兄弟"设计，嵌套编排会让一份文件的归属有两个主人。
       这是行为变更，改在这里而不是顺手混进迁移那一步 —— 需要深任务请回父智能体重新拆步骤。 */
 
-module.exports = { CONTRACT, contractOf, isReadOnly, DERIVED, auditContract };
+module.exports = { CONTRACT, contractOf, isReadOnly, DERIVED, auditContract, DEFAULT_RESULT_CEILING };

@@ -238,6 +238,32 @@ class McpManager {
     return defs;
   }
 
+  /* 按需暴露的清单（对齐 openanlan 的 deferred tools）。
+     默认不把每台服务器每个工具的完整 inputSchema 塞进请求 —— 接两三台服务器就是上万字符，
+     而且**每一轮都付这份**。这里只给"限定名 + 一句话"，模型要用哪条先 tool_search 取回 schema。
+     按限定名定序：清单顺序一变就打碎系统提示的缓存前缀，所以不能按 Map 的插入序输出。 */
+  deferredCatalog() {
+    const rows = [];
+    for (const [server, client] of this.clients) {
+      if (!client.connected) continue;
+      for (const t of client.tools) {
+        rows.push({
+          name: "mcp__" + server + "__" + t.name,
+          server,
+          description: String(t.description || t.name).replace(/\s+/g, " ").trim().slice(0, 160),
+        });
+      }
+    }
+    rows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return rows;
+  }
+
+  /* 取回若干限定名的完整定义：tool_search 用，也把"已解锁"的那几条排进请求 */
+  toolDefsFor(names) {
+    const want = names instanceof Set ? names : new Set(names || []);
+    return this.toolDefs().filter((d) => want.has(d.function.name));
+  }
+
   /* 按限定名调用：mcp__server__tool */
   async callTool(qualifiedName, args) {
     const rest = qualifiedName.slice("mcp__".length);

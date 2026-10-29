@@ -71,6 +71,7 @@ const {
   MICROCOMPACT_KEEP_RECENT_ROUNDS, MICROCOMPACT_MIN_TOKEN_SAVINGS, MICROCOMPACT_THRESHOLD_RATIO,
   MICROCOMPACT_THRESHOLD_BUFFER_TOKENS, MICROCOMPACT_CLEARED, MICROCOMPACTABLE_TOOLS,
   SPILL_MAX_FILE_CHARS, SPILL_MAX_FILES_PER_CONV,
+  KEPT_READS_MAX, KEPT_READS_PER_FILE,
   VISION_MAX_BYTES, VISION_MAX_PER_ROUND, VISION_IMAGE_TOKEN_ESTIMATE,
   SUMMARY_PREFIX, COMPACT_SECTIONS,
   RULE_READ_CAP, RULE_MAX_FILE_CHARS, RULE_MAX_STABLE, RULE_MAX_CONDITIONAL,
@@ -900,8 +901,26 @@ const TOOLS = [
     type: "function",
     function: {
       name: "list_mcp",
-      description: "列出当前已配置的 MCP 外部工具服务器及各自可用工具（含连接状态）。只读操作。MCP 工具会以 mcp__服务器__工具名 形式出现在你的工具列表中。",
+      description: "列出当前已配置的 MCP 外部工具服务器及各自可用工具（含连接状态）。只读操作。"
+        + "注意：MCP 工具（mcp__服务器__工具名）默认**不在**你的工具列表里，只以「名字 + 一句话」出现在系统提示的"
+        + "【外部 MCP 工具】段；要用哪一条先调 tool_search 取回参数 schema，下一次请求起它才真的可调用。",
       parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "tool_search",
+      description: "按需取回外部 MCP 工具的完整参数 schema。系统提示的【外部 MCP 工具】段只给了限定名和一句话，"
+        + "决定要用其中哪一条时用本工具查它：query 传限定名的一部分（如 \"playwright\" 或 \"browser_navigate\"）即可，"
+        + "命中的工具会解锁，下一次请求起出现在工具列表里。不要用空 query（不会返回全部）。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "要解锁哪些 MCP 工具：限定名或描述里的关键词" },
+        },
+        required: ["query"],
+      },
     },
   },
   /* ---------- Web 搜索与抓取 ---------- */
@@ -1752,6 +1771,15 @@ ${taskSummary}
     } catch (e) { /* git 不可用时 isNew=false，仅影响置顶排序 */ }
   }
 
+  /* 「本次任务改了几个文件」的口径：只数这个会话真写过的路径（W6 的写记录）。
+     不要用 pushChanges() 的返回长度来回答这句话 —— 那是整棵脏工作树（git 差异），
+     里面装着别的会话、别的 agent、以及用户自己在编辑器里改的东西。
+     实测一台机器上只说一句"你好"就报出「本次任务改动 46 个文件」，那 46 就是 git status 的行数。 */
+  _writeCount(convId) {
+    const m = (this._convWrites || new Map()).get(convId || this._currentConv || "default");
+    return m ? m.size : 0;
+  }
+
   /* W6：聚合会话产物（可预览交付物）→ emit + 持久化 .pancode/artifacts/<convId>.json */
   _emitArtifacts(convId) {
     try {
@@ -2549,7 +2577,20 @@ ${taskSummary}
   }
 
   /* 返回 { action: "allow" | "ask" | "block", reason } */
+  /* dontAsk（openanlan 同名档）：任何"本来要问人"的出口都变成拒绝。
+     包一层而不是在每个出口前加分支 —— 这条链上有好几个 ask 出口（不可逆守卫、各档兜底），
+     漏改一个的下场是"无人可问的场景里弹出一张没人能点的卡"，任务就此冻死。
+     这一档是给后台自动化 / goal 长任务用的，不是给坐在屏幕前的人用的。 */
   _approvalDecision(toolName, args) {
+    const dec = this._approvalDecisionRaw(toolName, args);
+    const mode = ((this.cfg && this.cfg.permissions) || {}).mode || "ask";
+    if (dec.action === "ask" && mode === "dontAsk") {
+      return { action: "block", reason: "权限档为「不再询问」：" + dec.reason + "；本档不弹确认，已拒绝" };
+    }
+    return dec;
+  }
+
+  _approvalDecisionRaw(toolName, args) {
     const perm = this.cfg.permissions || { mode: "ask", allow: [], deny: [] };
     const mode = perm.mode || "ask";
     const subject = this._hookSubject(toolName, args);
@@ -2605,10 +2646,92 @@ ${taskSummary}
       return { action: "ask", reason: noun + "不可逆，需人工确认" };
     }
 
+    /* acceptEdits（对齐 openanlan 同名档）：只免"文件改动"这一格的确认。
+       判据用 isPath —— 它的来源是 _subjectForms：能算出路径形态的工具才是文件类，
+       run_command / git_* / 浏览器 / 桌面这些算不出路径，照样问人。
+       前置的 deny 规则、allow 覆盖、会话授权、不可逆守卫都已经在上面跑完了。 */
+    if (mode === "acceptEdits" && isPath && TOOL.contractOf(toolName).mutating) {
+      return { action: "allow", reason: "权限档为「接受编辑」，文件改动免确认" };
+    }
+
     if (mode === "auto") return { action: "allow", reason: "权限档为「全自动」" };
+    /* smart：确定性的几道（deny / allow 覆盖 / 会话授权 / 只读免检 / 不可逆守卫）都过了，
+       剩下这一发要问模型。但本方法是同步的（file-tools.js 也直接调它），
+       所以这里只出一个哨兵，真正等模型的地方在 _gate。 */
+    if (mode === "smart") return { action: "classify", reason: "权限档为「智能判定」，这一步交分类器" };
     if (mode === "semi") return { action: "ask", reason: "权限档为「半自动」，写操作需确认" };
+    if (mode === "acceptEdits") return { action: "ask", reason: "权限档为「接受编辑」：这一步不是文件改动，仍需确认" };
+    if (mode === "dontAsk") return { action: "ask", reason: "权限档为「不再询问」，但本步本来要问你" };
     return { action: "ask", reason: "权限档为「每次都问」" }; // ask
   }
+
+  /* 分类器（对齐 openanlan 的 auto 档；pancode 里 auto 这个名字已被"全放行"占用，故叫 smart）。
+     三条硬规矩，都是实测里会真出事的那种：
+       · 判不了就是判不了。调用失败 / 超时 / 回答不像判定，一律 unknown → 由 _gate 回落弹卡。
+         把"没判成"当成"放行"的话，smart 会比 auto 还松，那不如不设这一档。
+       · 同一发不重复问：按「工具 + 主体」缓存 60 秒 —— 模型重试同一操作时不该再花一次钱。
+       · 连续拒 3 次自动停手回落问人：分类器连着拒多半是它跟用户的目标对不上，
+         继续拒只会把长任务卡死在同一步（openanlan 的 denialTracking 同一条理由）。 */
+  async _smartVerdict(toolName, args) {
+    const cid = this._convIdNow();
+    const subject = String(this._hookSubject(toolName, args) || "").slice(0, 200);
+    const key = toolName + " :: " + subject;
+    this._smartCache = this._smartCache || {};
+    const hit = this._smartCache[key];
+    if (hit && Date.now() - hit.at < 60000) return hit.v;
+    this._smartDenials = this._smartDenials || {};
+    if ((this._smartDenials[cid] || 0) >= 3) {
+      this._smartDenials[cid] = 0;
+      return { verdict: "unknown", reason: "分类器已连续拒绝 3 次，本档不再自判，回落人工确认" };
+    }
+    let v;
+    try {
+      const r = await this._chatStream([
+        { role: "system", content: "你是编程 Agent 的权限分类器。给你一段最近对话和一步待执行的工具调用，"
+          + "判断这一步是否明显偏离用户的目标、或会造成用户没预期的破坏（删数据、推远端、改系统、往外发东西）。\n"
+          + "第一行只写 ALLOW 或 DENY，第二行给一句理由。拿不准就写 DENY。不要多余的话。" },
+        { role: "user", content: this._smartBrief(toolName, args, subject) },
+      ], undefined, {});
+      v = this._parseSmartVerdict(r && r.content);
+    } catch (e) {
+      v = { verdict: "unknown", reason: "分类器调用失败：" + String((e && e.message) || e).slice(0, 120) };
+    }
+    if (v.verdict === "deny") this._smartDenials[cid] = (this._smartDenials[cid] || 0) + 1;
+    else if (v.verdict === "allow") this._smartDenials[cid] = 0;
+    if (v.verdict !== "unknown") this._smartCache[key] = { at: Date.now(), v };
+    return v;
+  }
+
+  /* 喂给分类器的那一段要短：整局转写塞进去，省下的确认钱会从这次请求里加倍还回来。 */
+  _smartBrief(toolName, args, subject) {
+    const hist = (this._liveHistory() || []).slice(-8).map((m) => {
+      const role = m.role === "user" ? "用户" : m.role === "assistant" ? "AI" : m.role === "tool" ? "工具结果" : "";
+      if (!role) return "";
+      return role + ": " + String(typeof m.content === "string" ? m.content : "").replace(/\s+/g, " ").slice(0, 200);
+    }).filter(Boolean).join("\n");
+    const c = TOOL.contractOf(toolName);
+    const flags = [c.mutating ? "会改动" : "", c.irreversible ? "撤不回" : "", c.openWorld ? "伸到本机之外" : ""]
+      .filter(Boolean).join("、") || "性质未登记";
+    return "【最近对话】\n" + (hist || "（无）")
+      + "\n\n【待判定的下一步】\n工具：" + toolName
+      + "\n对象：" + subject
+      + "\n参数：" + JSON.stringify(args || {}).slice(0, 400)
+      + "\n契约性质：" + flags;
+  }
+
+  /* 只认开头的 ALLOW / DENY。模型多写一句前言、或用中文说"拒绝"，都不该被当成放行 ——
+     认不出来就是 unknown（回落问人），不是猜一个。 */
+  _parseSmartVerdict(text) {
+    const s = String(text || "").trim();
+    if (!s) return { verdict: "unknown", reason: "分类器没给回答" };
+    const head = s.slice(0, 24).toUpperCase();
+    const reason = s.split("\n").slice(1).join(" ").replace(/\s+/g, " ").trim().slice(0, 200);
+    if (/^(DENY|驳回|拒绝)/.test(head)) return { verdict: "deny", reason: reason || "分类器判定这一步该拦" };
+    if (/^(ALLOW|放行|允许)/.test(head)) return { verdict: "allow", reason: reason || "分类器判定与用户目标一致" };
+    return { verdict: "unknown", reason: "分类器回答无法判定（开头不是 ALLOW/DENY）：" + s.slice(0, 80) };
+  }
+
+
 
   _ruleLabel(r) {
     if (!r) return "";
@@ -2654,6 +2777,23 @@ ${taskSummary}
       /* allow 也记：决策链要能回答"这一步为什么没问我"——答案就是这条（只读免检 / allow 规则 / 会话授权 / 模式）。 */
       this._decision({ kind: "gate", action: "allow", tool: toolName, subject, reason: dec.reason });
       return { blocked: false, approved: true };
+    }
+    /* smart 档：确定性的几道都在 _approvalDecision 里过完了，这里才是真正等模型的地方。
+       unknown（判不了）既不拦也不放 —— 继续往下走弹卡：桌面端有人，
+       分类器没把握时替用户做"拒绝"的决定，比多做"放行"的决定更容易毁掉一个长任务。 */
+    if (dec.action === "classify") {
+      const v = await this._smartVerdict(toolName, args);
+      if (v.verdict === "allow") {
+        writeAudit("gate", toolName + " 分类器放行 " + subject);
+        this._decision({ kind: "gate", action: "allow", tool: toolName, subject, reason: "分类器：" + v.reason });
+        return { blocked: false, approved: true };
+      }
+      if (v.verdict === "deny") {
+        writeAudit("gate", toolName + " 分类器拦截 " + subject);
+        this._decision({ kind: "gate", action: "block", tool: toolName, subject, reason: "分类器：" + v.reason });
+        return { blocked: true, reason: "「智能判定」档下分类器拒绝这一步：" + v.reason + "。请换个做法，或让用户改权限档。" };
+      }
+      this._decision({ kind: "gate", action: "fallback-ask", tool: toolName, subject, reason: "分类器：" + v.reason });
     }
     const ap = await this.requestApproval(toolName, args, danger);
     writeAudit("gate", toolName + (ap.approved ? " 用户批准" : " 用户拒绝") + " " + subject);
@@ -3055,6 +3195,16 @@ ${taskSummary}
       }
       this._usedMemory = used;
     }
+    /* 技能目录：让"模型自己知道有哪些技能"不依赖触发词命中。
+       放在 stable（只在技能集合变化时才动）而不是 turn —— 每轮重算会让缓存前缀每次都不一样。
+       预算按上下文窗口取 1%（字符近似 = token × 0.04），并夹在 1200~16000 之间：
+       本地模型常有 1M 窗口，不夹上限的话一份目录能白占四万字符。 */
+    if (this.skills && typeof this.skills.formatCatalog === "function") {
+      try {
+        const cat = this.skills.formatCatalog(null, this._skillCatalogBudget());
+        if (cat) stable.push("【技能目录（不是必用清单；要用哪条先 use_skill 取正文）】\n" + cat);
+      } catch (e) { /* 目录读不到不影响主流程，与规则/仓库结构同一口径 */ }
+    }
     if (this.cfg.repoMap !== false) {
       const ov = repoMap.repoOverview(this.files);
       if (ov) stable.push("【仓库结构】\n" + ov);
@@ -3214,17 +3364,33 @@ ${taskSummary}
       .catch(() => {});
   }
 
-  /* 有效上下文窗口（token）：综合「在线探测 / 手填 / 预设 / 兜底」后的最终值。
-     - 探测到本网关真实窗口（detected>0）：最权威，直接采用；若用户手填了更大的值则钳到
-       真实窗口（防止「以为很大、上游却 400/500」），手填更小则尊重用户。
-     - 探测不到（多为云端，网关不返回窗口元数据）：退回手填 → 预设表 → 128K 兜底。 */
-  _effectiveWindow() {
+  /* 上下文窗口的四个来源，一次算清给 _effectiveWindow / _ctxWindowInfo 共用。
+     分两处各写一遍的话，两处会漂（前端秀的"来源"和真正用的分母就不是一个数）。
+     关键一条：出厂默认**不算手填**。以前只要非 0 就当手填，于是默认值把预设表顶掉了——
+     出厂窗口抬到 256K 之后这条会真咬人：gpt-4o 预设明明写着 128K，被出厂的 256K 顶上去，
+     我们自己算着没满、上游回 400；反过来真实 512K 的模型（agnes）也被出厂值钳住，白扔一半窗口。 */
+  _ctxWindowParts() {
     const llm = (this.cfg && this.cfg.llm) || {};
-    const userSet = Number(llm.contextWindow) || 0;
-    const detected = this._detectedWindow || 0;
-    const preset = (mp && mp.presetFor ? mp.presetFor(llm.model).contextWindow : 0) || 0;
-    if (detected > 0) return userSet > 0 ? Math.min(detected, userSet) : detected;
-    return userSet > 0 ? userSet : (preset > 0 ? preset : 128000);
+    const factory = (mp && mp.DEFAULT_CONTEXT_WINDOW) || 256000;
+    const raw = Number(llm.contextWindow) || 0;
+    const presetInfo = (mp && mp.presetFor) ? mp.presetFor(llm.model) : { contextWindow: 0, matched: false };
+    return {
+      factory,
+      configured: raw > 0 && raw !== factory ? raw : 0,
+      detected: this._detectedWindow || 0,
+      preset: presetInfo.contextWindow || 0,
+      presetMatched: !!presetInfo.matched,
+    };
+  }
+
+  /* 有效上下文窗口（token）：综合「在线探测 / 手填 / 预设 / 兜底」后的最终值。
+     - 探测到本网关真实窗口（detected>0）：最权威，直接采用；若用户**手填**了更大的值则钳到
+       真实窗口（防止「以为很大、上游却 400/500」），手填更小则尊重用户。
+     - 探测不到（多为云端，网关不返回窗口元数据）：退回手填 → 预设表 → 出厂兜底。 */
+  _effectiveWindow() {
+    const p = this._ctxWindowParts();
+    if (p.detected > 0) return p.configured > 0 ? Math.min(p.detected, p.configured) : p.detected;
+    return p.configured > 0 ? p.configured : (p.preset > 0 ? p.preset : p.factory);
   }
 
   /* 模型真实上下文窗口（进度条分母 / 压缩依据）：综合探测与手填后的有效窗口。 */
@@ -3235,17 +3401,13 @@ ${taskSummary}
   /* 上下文窗口的来龙去脉：前端用来显示「窗口：163840（自动探测）」之类，
      让用户知道这个数到底怎么来的、要不要手改。 */
   _ctxWindowInfo() {
-    const llm = (this.cfg && this.cfg.llm) || {};
-    const userSet = Number(llm.contextWindow) || 0;
-    const detected = this._detectedWindow || 0;
-    const pr = (mp && mp.presetFor) ? mp.presetFor(llm.model) : { contextWindow: 0, matched: false };
-    const preset = pr.contextWindow || 0;
+    const p = this._ctxWindowParts();
     const effective = this._effectiveWindow();
     let source;
-    if (detected > 0) source = userSet > 0 ? (userSet > detected ? "auto-clamped" : "configured") : "detected";
-    else if (userSet > 0) source = "configured";
-    else source = pr.matched ? "preset" : "default";
-    return { configured: userSet, detected, preset, effective, source };
+    if (p.detected > 0) source = p.configured > 0 ? (p.configured > p.detected ? "auto-clamped" : "configured") : "detected";
+    else if (p.configured > 0) source = "configured";
+    else source = p.presetMatched ? "preset" : "default";
+    return { configured: p.configured, detected: p.detected, preset: p.preset, effective, source };
   }
 
   /* ---------------- 压缩预算 ----------------
@@ -3541,21 +3703,39 @@ ${taskSummary}
     if (!summary) {
       return this._compactAbandoned(history, "摘要没能生成（模型没回或调用失败）", { before: beforeEst, forced: !!opts.force });
     }
-    const newHist = [
+    /* 快照排在摘要与台账之后、被保留的原文之前：模型读历史的顺序就是"结论 → 沿革 →
+       手上还有什么 → 最近几轮说了什么"。放在最末尾反而会离本轮输入太远。 */
+    const keptReads = this._keptReadsBlock(ck);
+    const headMsgs = [
       /* 提醒和摘要挂在同一条消息上，不另起一条：多一条 system 就多一个可能被上游挑刺的位置，
          而这条提醒的作用域本来就只到「读懂上面那段摘要」。 */
       { role: "system", content: SUMMARY_PREFIX + summary + "\n\n" + COMPACT_POST_REMINDER },
       ...(ledgerText ? [{ role: "system", content: ledgerText }] : []),
-      ...picked.keep,
-      ...recent,
     ];
-    const after = this._estTokens(newHist);
+    const readsMsg = keptReads.count ? [{ role: "system", content: keptReads.text }] : [];
+    const tailMsgs = [].concat(picked.keep, recent);
+    let newHist = headMsgs.concat(readsMsg, tailMsgs);
+    let after = this._estTokens(newHist);
+    /* 快照装不下就先丢快照 —— 压缩本身优先。这不是"稳妥起见加的兜底"，是实测踩出来的：
+       带着文件快照的 newHist 会 >= beforeEst，于是整次压缩被判"摘要不比原文短"而放弃，
+       水位原地不动、下一轮再试再放弃，最后一路涨到上游 400（_verify_ctxpair 抓到这条）。 */
+    let readsDropped = 0;
+    if (after >= beforeEst && readsMsg.length) {
+      readsDropped = keptReads.count;
+      newHist = headMsgs.concat(tailMsgs);
+      after = this._estTokens(newHist);
+    }
+    const keptFiles = keptReads.count - readsDropped;
     /* shrink 检查：摘要完全可能比原文更长（模型啰嗦、或 user 消息被整批保留）。
        不判这一条，「压缩」会退化成「放大器」——下一轮水位更高，然后一路撞上游 400。 */
     if (after >= beforeEst) {
       return this._compactAbandoned(history, "摘要不比原文短", { before: beforeEst, after, forced: !!opts.force });
     }
     this._compactNoop[ck] = 0;   // 这一次真压下来了，本会话的连续计数清零（别人的不清）
+    /* 快照真的进了新历史才清 —— 被空间挤掉的那些下次压缩还想用；
+       而"压成了但没进历史"就把它们删掉，等于白丢一份原文。 */
+    if (keptFiles > 0 && this._recentReads) delete this._recentReads[ck];
+
     /* 压掉的是原文、留下的是摘要——这条记录是"为什么现在看不见第 N 轮说过的话"的唯一答案。
        不写进决策链，事后只能看到一段摘要，分不清是模型忘了还是被压了。
        降级成台账行的那些用户消息也算"压掉了"，但 ledgerLines/ledgerFolded 说清它们去了哪里。 */
@@ -3571,13 +3751,15 @@ ${taskSummary}
       before: used, after, budget: spec.thresholdTokens,
       dropped: droppedCount,
       keptCritical: picked.keep.length,
+      keptFiles,
+      readsDropped,
       ledgerLines: ledNow.lines.length,
       ledgerFolded: ledNow.folded,
       keptRecent: recent.length,
       forced: !!opts.force,
       summary: summary.slice(0, 1200),
     });
-    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(after/1000) + "k，保留最近 " + sel.recentGroups + " 轮共 " + recent.length + " 条 + " + picked.keep.length + " 条用户原文" + (ledNow.lines.length ? " + 沿革台账 " + ledNow.lines.length + " 行" : "") + "）", cls: "tl-info" });
+    this.emit({ type: "term.line", text: "[Agent] 上下文已自动压缩（" + Math.round(used/1000) + "k -> " + Math.round(after/1000) + "k，保留最近 " + sel.recentGroups + " 轮共 " + recent.length + " 条 + " + picked.keep.length + " 条用户原文" + (ledNow.lines.length ? " + 沿革台账 " + ledNow.lines.length + " 行" : "") + (keptFiles ? " + 压缩前读过的文件 " + keptFiles + " 条" : "") + (readsDropped ? "（本轮空间不够，未附文件快照）" : "") + "）", cls: "tl-info" });
     // 压缩后同时归纳记忆（拿掉台账那条：它是我们自己写的摘要产物，不该再被提炼成记忆）
     if (this.cfg.memory && this.cfg.memory.enabled) {
       this._consolidateMemory(headNoLedger);
@@ -3906,7 +4088,15 @@ ${taskSummary}
     const aborted = ctx ? ctx.abortRef.value : this._abort;
     if (aborted) return Promise.resolve("[已中断] 用户停止了本次任务，工具未执行。");
     // MCP 工具不在契约表里，但同样可能等人工审批（默认 20 分钟）——按 waitFree 同口径处理
-    if (WAIT_FREE_TOOLS.has(name) || name.startsWith("mcp__")) return Promise.resolve().then(() => this.execTool(name, args));
+    if (WAIT_FREE_TOOLS.has(name) || name.startsWith("mcp__")) {
+      const started = Promise.resolve().then(() => this.execTool(name, args));
+      /* cancel 档（run_command / run_tests）：它们因为 mutating 派生成 waitFree，
+         于是"不设超时"这条路上原本没有任何逃生舱 —— 用户按了停止，界面还得等一条
+         20 分钟的测试命令跑完。让停止信号能提前结束等待。
+         代价按实话说清：只是不再等它，命令可能仍在后台推进（与"[超时]"同一种口径）。 */
+      if (TOOL.contractOf(name).interruptBehavior !== "cancel") return started;
+      return this._raceAbortForAbort(started, ctx);
+    }
     const p = Promise.resolve().then(() => this.execTool(name, args));
     const MS = Math.max(15000, ((this.cfg && this.cfg.timeouts && this.cfg.timeouts.toolSec) || 120) * 1000);
     return new Promise((resolve, reject) => {
@@ -3915,6 +4105,21 @@ ${taskSummary}
       p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
     });
   }
+
+  /* 停止信号 vs 一个已经在跑的工具：谁先到算谁。
+     abortRef 是个普通布尔（没有事件可挂），所以按 250ms 轮询 —— 与停滞看门狗同一口径，
+     且 promise 一结算就 clear，不会留下悬着的定时器。 */
+  _raceAbortForAbort(p, ctx) {
+    return new Promise((resolve, reject) => {
+      const tick = setInterval(() => {
+        if (!(ctx ? ctx.abortRef.value : this._abort)) return;
+        clearInterval(tick);
+        resolve("[已中断] 用户停止了本次任务：已停止等待该工具，但它可能仍在后台推进（结果不再采用）。");
+      }, 250);
+      p.then((v) => { clearInterval(tick); resolve(v); }, (e) => { clearInterval(tick); reject(e); });
+    });
+  }
+
 
   /* tool 消息的统一构造点：id 与工具名在这里绑定，不散在各分支手拼 */
   _toolMsg(id, name, text) {
@@ -3991,6 +4196,110 @@ ${taskSummary}
     return Array.isArray(this.history) ? this.history : [];
   }
 
+  /* 技能目录的字符预算：上下文窗口的 1%（token × 0.04 字符近似），夹在 1200~16000。
+     单独一个方法是为了让探针能直接问它，而不是从提示词文本里反推。 */
+  _skillCatalogBudget() {
+    const tokens = this._ctxLimit() || 8000;
+    return Math.max(1200, Math.min(16000, Math.floor(tokens * 0.04)));
+  }
+
+  /* 最近读过的文件快照（对齐 openanlan 压缩时保留最近已读文件）。
+     存的是**当时的工具结果原文**，不是回头再读一次文件：
+     中间可能已经有 write_file 改过它，重读会拿到与那份摘要不一致的版本，
+     模型据此动手就会改错地方。 */
+  _noteFileRead(convId, args, result) {
+    const p = args && typeof args.path === "string" ? args.path.trim() : "";
+    if (!p) return;                                   // 没路径（参数错/被拒）不配占名额
+    const text = String(result == null ? "" : result);
+    /* 失败与中断的结果不是"读到的内容"，塞进快照等于让模型把错误文本当文件正文。
+       工具侧的错误是返回字符串而不是抛异常（见 tools/file-tools.js），所以只能按前缀认。 */
+    if (!text || /^(错误|〔错误|\[已中断\]|\[超时\])/.test(text)) return;
+    const scope = (args.root ? String(args.root) + "::" : "") + p
+      + (args.symbol ? "#" + args.symbol : "") + (args.startLine ? "@" + args.startLine : "");
+    this._recentReads = this._recentReads || {};
+    const list = this._recentReads[convId] = this._recentReads[convId] || [];
+    const hit = list.findIndex((r) => r.scope === scope);
+    if (hit >= 0) list.splice(hit, 1);                // 同一段重读只留最新一份，不占两个名额
+    list.push({ scope, path: p, text });
+    while (list.length > KEPT_READS_MAX) list.shift();
+  }
+
+  /* 快照预算：上下文窗口的 10%（token × 0.4 字符近似），夹在 2000~40000。
+     下限给到 2000 而不是 0 —— 8K 窗口的小模型更需要"别失忆"，一份都不留省不了多少 token。 */
+  _keptReadsBudget() {
+    const tokens = this._ctxLimit() || 8000;
+    return Math.max(2000, Math.min(40000, Math.floor(tokens * 0.4)));
+  }
+
+  /* 从最新一条往回收，装不下就停：宁可少给最新的那几段，也不把老的排在前面。 */
+  _keptReadsBlock(convId) {
+    const list = (this._recentReads && this._recentReads[convId]) || [];
+    if (!list.length) return { text: "", count: 0 };
+    const budget = this._keptReadsBudget();
+    const parts = [];
+    let used = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const r = list[i];
+      const body = r.text.length > KEPT_READS_PER_FILE
+        ? r.text.slice(0, KEPT_READS_PER_FILE) + "\n…（这条快照本身也被截到 " + KEPT_READS_PER_FILE + " 字符）"
+        : r.text;
+      const t = "—— " + r.path + " ——\n" + body;
+      if (used + t.length + 2 > budget) break;
+      parts.unshift(t);
+      used += t.length + 2;
+    }
+    if (!parts.length) return { text: "", count: 0 };
+    return {
+      count: parts.length,
+      text: "【压缩前你读过的文件（当时的原文快照，不是本轮新读的）】\n"
+        + "这些读取结果刚才被摘要压掉了，这里给回原文。它们可能已被这中间的改动改掉，"
+        + "要基于它们动手前先用 read_file 复核当前内容；只是回顾上下文就不必重读。\n\n"
+        + parts.join("\n\n"),
+    };
+  }
+
+  /* 已解锁的 MCP 工具按会话记：模型查过一次，之后每轮都在工具列表里，不必反复 search。
+     上限 12 是防一个长任务把上百条全解锁 —— 那样比当初的全量还贵（还多付了 tool_search 那几轮）。
+     Set 按插入序迭代，所以"删第一个"就是"删最老的"。 */
+  unlockMcp(name) {
+    const cid = this._convIdNow();
+    this._mcpUnlocked = this._mcpUnlocked || {};
+    const set = this._mcpUnlocked[cid] = this._mcpUnlocked[cid] || new Set();
+    set.add(name);
+    while (set.size > 12) set.delete(set.values().next().value);
+  }
+
+  _mcpUnlockedNow() {
+    const set = this._mcpUnlocked && this._mcpUnlocked[this._convIdNow()];
+    return set instanceof Set ? set : new Set();
+  }
+
+  /* 未解锁的 MCP 工具清单：只给"限定名 + 一句话"，够模型判断有没有它要的那条，
+     不够直接拼参数调用 —— 那必须先 tool_search。
+     整块再受一个 6000 字符的闸：超了就退化成只列名字（描述是这里最贵、也最可省的部分）。 */
+  _mcpDeferredBlock() {
+    const mgr = getMcpManager();
+    if (!mgr) return "";
+    const unlocked = this._mcpUnlockedNow();
+    const rest = mgr.deferredCatalog().filter((r) => !unlocked.has(r.name));
+    if (!rest.length) return "";
+    const build = (withDesc) => {
+      const byServer = new Map();
+      for (const r of rest) {
+        if (!byServer.has(r.server)) byServer.set(r.server, []);
+        byServer.get(r.server).push(withDesc ? r.name + "（" + r.description.slice(0, 60) + "）" : r.name);
+      }
+      return [...byServer.entries()]
+        .map(([server, items]) => "· " + server + "：" + items.join("、"))
+        .join("\n");
+    };
+    let body = build(true);
+    if (body.length > 6000) body = build(false);
+    return "【外部 MCP 工具（未解锁：这里只有名字和一句话，没有参数 schema）】\n"
+      + "要用其中某一条，先调 tool_search(query=限定名或其关键词) 取回参数，下一次请求起才可直接调用。\n"
+      + body;
+  }
+
   /* 超长工具结果的收口：分级截断 + 全文落盘（spill）。
      以前只砍中段就把剩下的丢掉 —— 模型想看全文只能把命令重跑一遍，
      用户也拿不到那份输出，而重跑一次构建日志往往比省下的 token 更贵。
@@ -4000,7 +4309,13 @@ ${taskSummary}
   _boundToolResult(name, str) {
     const spec = this._compactSpec();
     const ratio = spec.thresholdTokens > 0 ? this._ctxUsed(this._liveHistory()) / spec.thresholdTokens : 0;
-    const MAX = ratio > 0.8 ? 4000 : ratio > 0.6 ? 8000 : 24000;
+    /* 上限有两个来源，取较小的那个：
+       · 契约表里的每工具上限（未登记 = 通用 24000，与加这个字段之前的行为逐字相同）
+       · 水位闸门 8000 / 4000：水位只往下压，绝不因为某行契约写了大数字就放宽
+       所以 read_file 的 100000 只在低水位生效，高水位照样收到 4000。 */
+    const ceil = TOOL.contractOf(name).maxResultSizeChars;
+    const water = ratio > 0.8 ? 4000 : ratio > 0.6 ? 8000 : ceil;
+    const MAX = Math.min(ceil, water);
     const s = String(str == null ? "" : str);
     if (s.length <= MAX) return s;
     const head = Math.floor(MAX * 0.7);
@@ -4016,7 +4331,8 @@ ${taskSummary}
         : "全文未能落盘（写入失败或被上限拦下），以下仅保留头尾预览。",
       "上面是前 " + head + " 字符，下面是末尾 " + tail + " 字符（报错与结论通常在末尾）。",
       "要继续定位内容：用 search_code 找关键片段，或让工具带更窄的查询范围重跑；不要盲目重跑同一条命令。",
-      "（当前上下文水位约 " + Math.round(Math.min(ratio, 3) * 100) + "%，预览上限已按水位收起到 " + MAX + " 字符）",
+      "（预览上限已按「该工具契约上限 " + ceil + " 与水位闸门 " + water + " 取小」收起到 " + MAX
+        + " 字符；当前上下文水位约 " + Math.round(Math.min(ratio, 3) * 100) + "%）",
       "</persisted-output>",
       "",
     ].join("\n");
@@ -4318,7 +4634,8 @@ ${taskSummary}
       if (ca) {
         if (ca.missing.length) log.tag("agent").warn("缺工具契约行（会被当成需要人工确认的非只读工具）：" + ca.missing.join(", "));
         if (ca.orphan.length) log.tag("agent").warn("契约表里有已不存在的工具：" + ca.orphan.join(", "));
-        if (ca.contradictions.length) log.tag("agent").warn("契约声明自相矛盾（既纯读又改盘/不可逆）：" + ca.contradictions.join(", "));
+        if (ca.contradictions.length) log.tag("agent").warn("契约声明自相矛盾（既纯读又改盘/不可逆，或不可逆却标 cancel）：" + ca.contradictions.join(", "));
+        if (ca.malformed && ca.malformed.length) log.tag("agent").warn("契约字段形状不合法（结果上限/停止行为写错，会静默改变截断与停止）：" + ca.malformed.join(", "));
       }
       return { missing, orphan, contract: ca };
     } catch (e) { return { missing: [], orphan: [], contract: null }; }
@@ -4557,9 +4874,16 @@ ${taskSummary}
       for (const s of aug.stable) sysBlocks.push({ role: "system", content: s });
       for (const t of aug.turn) sysBlocks.push({ role: "system", content: t });
       if (smartCtx) sysBlocks.push({ role: "system", content: smartCtx });
-      // 外部 MCP 工具：从管理器取当前已连接的工具定义；规划模式下不暴露（避免改动外部服务）
+      /* 外部 MCP 工具改为按需暴露：默认只给名字清单（下面那条 system 块），
+         完整 schema 要先 tool_search 解锁。ask/plan 档仍旧一个都不给（连名字清单也不给），
+         与迁移前"规划模式不暴露 MCP"的同一条理由：那些工具会改外部服务的状态。 */
       const asking = this.cfg.agentMode === "ask";
-      const mcpDefs = (!asking && !this.cfg.planMode && getMcpManager()) ? getMcpManager().toolDefs() : [];
+      const mcpOn = !asking && !this.cfg.planMode && !!getMcpManager();
+      const mcpDefs = mcpOn ? getMcpManager().toolDefsFor(this._mcpUnlockedNow()) : [];
+      if (mcpOn) {
+        const deferred = this._mcpDeferredBlock();
+        if (deferred) sysBlocks.push({ role: "system", content: deferred });
+      }
       let baseTools = LlmAgent.toolsForMode({ asking, planMode: !!this.cfg.planMode });
       const activeTools = baseTools.concat(mcpDefs);
 
@@ -4858,6 +5182,11 @@ ${taskSummary}
             const e = byIdx.get(ci);
             if (!e) continue;
             this._traceEvent("tool.call", { name: e.callName, len: String(e.result == null ? "" : e.result).length });
+            /* 攒一份"最近读过的文件"，供摘要压缩时把原文带回 —— 见 _noteFileRead */
+            if (e.callName === "read_file") this._noteFileRead(convId, e.args, e.result);
+            /* 模型也可能从名字清单里直接猜着调（没先 tool_search）：不拦，但顺手解锁，
+               下一轮它的 schema 就在工具列表里 —— 比拒掉重来省一轮。 */
+            if (String(e.callName).startsWith("mcp__")) this.unlockMcp(e.callName);
 
             // P1-5：连续失败干预 —— 工具连续报错时注入反思提示，打破"报错→重试"惯性
             const head = String(e.result == null ? "" : e.result).slice(0, 300);
@@ -4899,7 +5228,12 @@ ${taskSummary}
         if (this.cfg.memory && this.cfg.memory.enabled && (changes.length || round >= 2)) {
           const taskTopic = this._topicFromUserText(text);
           const sediment = [];
-          if (changes.length) sediment.push("改动 " + changes.length + " 个文件");
+          /* 这句是"本次任务"的口径 → 只能数本会话真写过的路径。
+             以前用 changes.length（= pushChanges 的整棵脏工作树），
+             于是工作区里躺着别人的 46 个未提交文件时，一句"你好"也会报
+             「本次任务改动 46 个文件」。 */
+          const wroteN = this._writeCount(convId);
+          if (wroteN) sediment.push("改动 " + wroteN + " 个文件");
           /* 决策链先沉：这一段不花 LLM 调用、也不看模型心情，
              所以"模型忘了调 save_session_memory"那一整类漏沉在这里兜住。 */
           const settle = this._settleFromDecisions(convId);

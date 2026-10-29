@@ -30,7 +30,7 @@ const EXPECT_TOOLS = [
   /* P1-B2 Git 工作流 */
   "git_fetch", "git_push", "git_pull", "git_stash", "git_blame", "git_reset", "git_worktree",
   /* Web / 浏览器自动化 / MCP / 编排 / 交互 */
-  "web_search", "web_fetch", "list_mcp", "orchestrate", "ask_user_choice",
+  "web_search", "web_fetch", "list_mcp", "tool_search", "orchestrate", "ask_user_choice",
   /* 浏览器自动化（agent-browser 驱动本机 Chrome/Edge）：判读走无障碍树文本，截图只落盘给人看 */
   "browser_open", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill",
   "browser_press", "browser_select", "browser_read", "browser_screenshot", "browser_wait",

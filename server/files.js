@@ -541,6 +541,7 @@ class FileStore {
   startWatch(onChange) {
     this.onExternalChange = onChange;
     this._pendingChanges = new Set();
+    this._pendingFullSync = false;   // null fname（目录事件）单独标记，不再用空串混入路径集
     const watchDir = (dir) => {
       if (this.watchers.has(dir) || this.watchers.size >= MAX_WATCH_DIRS) return;
       let w;
@@ -548,16 +549,20 @@ class FileStore {
         w = fs.watch(dir, (eventType, fname) => {
           if (fname && isIgnored(String(fname).split(/[\\/]/)[0])) return;
           const rel = fname ? this.rel(path.join(dir, String(fname))) : null;
-          // 忽略 2 秒内自身写入
-          if (rel && this._selfWrites.has(rel) && Date.now() - this._selfWrites.get(rel) < 2000) return;
-          this._pendingChanges.add(rel || "");
+          // 忽略 5 秒内自身写入（Windows 文件刷新可能超过 2 秒）
+          if (rel && this._selfWrites.has(rel) && Date.now() - this._selfWrites.get(rel) < 5000) return;
+          if (rel) this._pendingChanges.add(rel);
+          else this._pendingFullSync = true;   // 目录事件：说不清改了谁，标记走全量
           clearTimeout(this._debounce);
           this._debounce = setTimeout(() => {
-            // 目录结构可能变化，重扫并补挂监听
-            this._watchAllDirs(watchDir);
+            // 注意：不再在防抖回调里重扫目录——_watchAllDirs 会触发新的 fs.watch 事件，
+            // 在 Windows 上形成自循环（每次防抖到期 → 重扫 → 新事件 → 再次防抖 → 永不停）。
+            // 目录结构变化由 _rescanTimer 定期补挂，不靠每次事件驱动。
             if (this.onExternalChange) {
               const batch = Array.from(this._pendingChanges);
               this._pendingChanges = new Set();
+              // 全量标记通过空串传给调用方（保持向后兼容）
+              if (this._pendingFullSync) { batch.push(""); this._pendingFullSync = false; }
               this.onExternalChange(batch);
             }
           }, 120);
@@ -567,6 +572,8 @@ class FileStore {
       } catch (e) { /* 目录可能已删除 */ }
     };
     this._watchAllDirs(watchDir);
+    // 定期补挂新目录的 watcher（不再靠每次文件事件驱动重扫）
+    this._rescanTimer = setInterval(() => { this._watchAllDirs(watchDir); }, 30000);
   }
 
   _watchAllDirs(watchDir) {
@@ -584,6 +591,7 @@ class FileStore {
   }
 
   stopWatch() {
+    if (this._rescanTimer) { clearInterval(this._rescanTimer); this._rescanTimer = null; }
     if (this._sweepTimer) { clearInterval(this._sweepTimer); this._sweepTimer = null; }
     for (const w of this.watchers.values()) { try { w.close(); } catch (e) {} }
     this.watchers.clear();
