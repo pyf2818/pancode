@@ -1,0 +1,21 @@
+{
+  "name": "pancode-cli",
+  "version": "1.0.0",
+  "description": "终端 AI 编程 Agent — 自包含 CLI",
+  "main": "cli.js",
+  "bin": {
+    "pancode-cli": "cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node cli.js"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "@inquirer/prompts": "^7.0.0"
+  },
+  "keywords": ["cli", "ai", "agent", "coding", "assistant"],
+  "license": "MIT"
+}
