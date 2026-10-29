@@ -1,8 +1,18 @@
 {
   "name": "pancode",
-  "version": "3.7.2",
+  "version": "3.7.3",
   "description": "本地优先的 AI 编程工作台 —— Monaco 可写编辑器 + 集成终端 + 真实 LLM Agent 工具循环（OpenAI 兼容 / Anthropic 原生），无 Key 时演示引擎保底",
-  "keywords": ["ai", "coding-agent", "llm", "monaco-editor", "electron", "developer-tools", "react", "mcp", "local-first"],
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "llm",
+    "monaco-editor",
+    "electron",
+    "developer-tools",
+    "react",
+    "mcp",
+    "local-first"
+  ],
   "license": "MIT",
   "author": "pyf2818",
   "repository": {
@@ -14,7 +24,11 @@
   },
   "homepage": "https://github.com/pyf2818/pancode#readme",
   "main": "electron/main.js",
+  "bin": {
+    "pancode": "cli/cli.js"
+  },
   "scripts": {
+    "cli": "node cli/cli.js",
     "start": "node server/index.js",
     "start:bg": "node _start.js",
     "dev": "node server/index.js",
@@ -22,7 +36,7 @@
     "dist": "node scripts/dist.js",
     "smoke": "node scripts/smoke-test.js",
     "test:fileops": "node scripts/fileops-test.js",
-    "test:verify": "node scripts/_verify_dataroot.js mark && node scripts/_verify_render.js && node scripts/_verify_repo_map.js && node scripts/_verify_codegraph.js && node scripts/_verify_readseg.js && node scripts/_verify_vision.js && node scripts/_verify_tools.js && node scripts/_verify_testrunner.js && node scripts/_verify_cost.js && node scripts/verify-git-async.js && node scripts/_verify_gitworkflow.js && node scripts/_verify_worktree.js && node scripts/_verify_agentflow.js && node scripts/_verify_ctxpair.js && node scripts/_verify_parallel.js && node scripts/_verify_subboard.js && node scripts/_verify_promptctx.js && node scripts/_verify_wskey.js && node scripts/_verify_tasks.js && node scripts/_verify_fswatch.js && node scripts/_verify_roots.js && node scripts/_verify_multiroot.js && node scripts/_verify_roots_ui.js && node scripts/_verify_choice.js && node scripts/_verify_assets.js && node scripts/_verify_rulehistory.js && node scripts/_verify_preview.js && node scripts/_verify_editorasync.js && node scripts/_verify_skilluse.js && node scripts/_verify_skillmarket.js && node scripts/_verify_workbench.js && node scripts/_verify_longtask.js && node scripts/_verify_auth.js && node scripts/_verify_eventscope.js && node scripts/_verify_logger.js && node scripts/_verify_editfiles.js && node scripts/_verify_refactor.js && node scripts/_verify_decisions.js && node scripts/_verify_settle.js && node scripts/_verify_memjudge.js && node scripts/_verify_ruleevo.js && node scripts/_verify_undo.js && node scripts/_verify_i18n.js && node scripts/_verify_gearmenu.js && node scripts/_verify_plandock.js && node scripts/_verify_streambreak.js && node scripts/_verify_listeners.js && node scripts/_verify_diagnostics.js && node scripts/_verify_layout.js && node scripts/_verify_uitaste.js && node scripts/_verify_trayjump.js && node scripts/_verify_bootperf.js && node scripts/_verify_browser.js && node scripts/_verify_computer.js && node scripts/_verify_shotui.js && node scripts/_verify_dataroot.js check",
+    "test:verify": "node scripts/_verify_dataroot.js mark && node scripts/_verify_render.js && node scripts/_verify_repo_map.js && node scripts/_verify_codegraph.js && node scripts/_verify_readseg.js && node scripts/_verify_vision.js && node scripts/_verify_tools.js && node scripts/_verify_testrunner.js && node scripts/_verify_cost.js && node scripts/verify-git-async.js && node scripts/_verify_gitworkflow.js && node scripts/_verify_worktree.js && node scripts/_verify_agentflow.js && node scripts/_verify_ctxpair.js && node scripts/_verify_parallel.js && node scripts/_verify_subboard.js && node scripts/_verify_promptctx.js && node scripts/_verify_wskey.js && node scripts/_verify_tasks.js && node scripts/_verify_fswatch.js && node scripts/_verify_roots.js && node scripts/_verify_multiroot.js && node scripts/_verify_roots_ui.js && node scripts/_verify_choice.js && node scripts/_verify_assets.js && node scripts/_verify_rulehistory.js && node scripts/_verify_preview.js && node scripts/_verify_editorasync.js && node scripts/_verify_skilluse.js && node scripts/_verify_skillmarket.js && node scripts/_verify_workbench.js && node scripts/_verify_longtask.js && node scripts/_verify_auth.js && node scripts/_verify_eventscope.js && node scripts/_verify_logger.js && node scripts/_verify_editfiles.js && node scripts/_verify_refactor.js && node scripts/_verify_decisions.js && node scripts/_verify_settle.js && node scripts/_verify_memjudge.js && node scripts/_verify_ruleevo.js && node scripts/_verify_undo.js && node scripts/_verify_i18n.js && node scripts/_verify_cliui.js && node scripts/_verify_gearmenu.js && node scripts/_verify_plandock.js && node scripts/_verify_streambreak.js && node scripts/_verify_listeners.js && node scripts/_verify_diagnostics.js && node scripts/_verify_layout.js && node scripts/_verify_uitaste.js && node scripts/_verify_trayjump.js && node scripts/_verify_bootperf.js && node scripts/_verify_browser.js && node scripts/_verify_computer.js && node scripts/_verify_shotui.js && node scripts/_verify_dataroot.js check",
     "test:integration": "node scripts/integration-runner.js",
     "test:lsp": "node scripts/test-lsp.js",
     "test:code-index": "node scripts/test-code-index.js",
@@ -74,9 +88,13 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@inquirer/prompts": "^7.0.0",
     "agent-browser": "0.39.1",
+    "cli-highlight": "^2.1.11",
     "express": "^4.19.2",
+    "highlight.js": "^11.10.0",
     "mammoth": "^1.12.0",
+    "marked": "^14.0.0",
     "ws": "^8.17.0"
   },
   "devDependencies": {
