@@ -48,6 +48,7 @@ function ok(name, cond, detail) {
 }
 function section(t) { console.log("\n\x1b[1m" + t + "\x1b[0m"); }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const J = (v) => { try { return JSON.stringify(v === undefined ? "<undefined>" : v).slice(0, 300); } catch (e) { return String(v).slice(0, 300); } };
 
 const PORT = Number(process.env.PORT || 8841);
 const REPO = path.resolve(__dirname, "..");
@@ -186,17 +187,26 @@ async function snapshotNew(g, f) {
         try { m = JSON.parse(raw.toString()); } catch (e) { return; }
         if (m && m.type === "hello") {
           clearTimeout(timer);
+          /* F15 之后 hello 不再把整棵树的正文一次塞进首屏：带的是"一页条目 + 全量计数"，
+             剩下的靠 tree.load 按偏移翻。所以这里量的口径跟着换 ——
+             原来那句"hello 里文件是全的"（files ≥ 100）测的是旧协议，在新协议下必然红。
+             首屏要成立的三件事：全量数对得上、这一页非空、翻页要的游标在。 */
+          const t = m.tree || {};
           const n = Object.keys(m.files || {}).length;
           ws.close();
-          resolve({ ms: Date.now() - start, n });
+          resolve({ ms: Date.now() - start, n, total: t.total, listed: t.entries ? t.entries.length : 0, truncated: t.truncated, more: t.more, nextOffset: t.nextOffset });
         }
       });
       ws.on("error", (e) => { clearTimeout(timer); reject(e); });
     }).catch((e) => { console.log("  hello 取数失败：" + e.message); return null; });
     if (helloMs) {
-      console.log("  hello 到达 " + helloMs.ms + "ms，带 " + helloMs.n + " 个文件");
+      console.log("  hello 到达 " + helloMs.ms + "ms，正文 " + helloMs.n + " 个 / 全量 " + helloMs.total + " 个（这一页 " + helloMs.listed + " 条）");
       ok("首屏数据在 6 秒内到达（旧算法同规模实测 22s）", helloMs.ms < 6000, helloMs.ms + "ms");
-      ok("hello 里文件是全的", helloMs.n >= 100, "拿到 " + helloMs.n);
+      ok("hello 报得出全量文件数（夹具 ≥100 个，计数不许被分页吞掉）",
+        typeof helloMs.total === "number" && helloMs.total >= 100, J(helloMs));
+      ok("这一页真的有条目（首屏不是空壳）", helloMs.listed >= 1, "listed=" + helloMs.listed);
+      ok("被截断时翻页游标齐（more + nextOffset，缺一个就补不回全量）",
+        helloMs.truncated !== true || (helloMs.more === true && typeof helloMs.nextOffset === "number"), J(helloMs));
     } else {
       ok("hello 能取到", false, "取数失败");
     }

@@ -175,21 +175,21 @@
 /* 青瓷：冷月白 + 龙泉青，pancode 浅色招牌 */
 :root[data-palette="celadon"][data-theme="light"]{
   --bg:#f6faf7; --bg2:#eef5f0; --bg3:#e3ede6; --bg4:#d5e3db;
-  --border:#cfe0d5; --text:#1d3a2e; --text-dim:#5f7d6f;
+  --border:#cfe0d5; --text:#1d3a2e; --text-dim:#546f64;
   --accent:#2f8a6a; --accent-hi:#1f7a5c; --blue:#2b7f9e; --purple:#6f5fae;
   --green:#2f8f66; --ok:#1f8f52; --warn:#a8760f; --err:#c0483f;
 }
 /* 羊皮纸：暖米白 + 赭石，读长文不刺眼 */
 :root[data-palette="parchment"][data-theme="light"]{
   --bg:#fbf7ef; --bg2:#f5efe2; --bg3:#ece3d2; --bg4:#e0d4bd;
-  --border:#ddd0b8; --text:#3a2f22; --text-dim:#7d6c54;
+  --border:#ddd0b8; --text:#3a2f22; --text-dim:#77654e;
   --accent:#9a6b30; --accent-hi:#7d5320; --blue:#3f7a94; --purple:#7a5a8e;
   --green:#5f7d3f; --ok:#4f7a35; --warn:#a8760f; --err:#b0432f;
 }
 /* 亚麻：中性浅灰白 + 灰蓝，最接近"没有风格"的克制 */
 :root[data-palette="linen"][data-theme="light"]{
   --bg:#fafafa; --bg2:#f2f3f4; --bg3:#e9eaec; --bg4:#dddee1;
-  --border:#dcdde0; --text:#2a2c30; --text-dim:#6f7479;
+  --border:#dcdde0; --text:#2a2c30; --text-dim:#666b70;
   --accent:#4a6b8a; --accent-hi:#33566f; --blue:#2f7ba8; --purple:#6f5f96;
   --green:#3f8a6a; --ok:#2f8352; --warn:#9a7410; --err:#bc4346;
 }
@@ -218,7 +218,7 @@
 }
 :root[data-theme="light"]:not([data-palette]){
   --bg:#f6faf7; --bg2:#eef5f0; --bg3:#e3ede6; --bg4:#d5e3db;
-  --border:#cfe0d5; --text:#1d3a2e; --text-dim:#5f7d6f;
+  --border:#cfe0d5; --text:#1d3a2e; --text-dim:#546f64;
   --accent:#2f8a6a; --accent-hi:#1f7a5c; --blue:#2b7f9e; --purple:#6f5fae;
   --green:#2f8f66; --ok:#1f8f52; --warn:#a8760f; --err:#c0483f;
 }
@@ -468,6 +468,12 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .ft-dir-toggle .ico{width:11px;height:11px;color:var(--text-dim)}
 .ft-dir-head:not(.collapsed) .ft-dir-toggle{transform:rotate(90deg)}
 .ft-dir-count{font-size:10px;color:var(--text-dim);margin-left:auto;background:var(--bg4);padding:0 5px;border-radius:8px;flex-shrink:0}
+/* F15 目录分页的树尾：把"还有多少没列出"明写出来，点一下才要下一页。
+   刻意做成和文件行同宽同高的一行（不是浮层），这样它在两栏/网格视图里都不会盖住别的字。 */
+.ft-more{color:var(--text-dim);font-size:11.5px;border-top:1px dashed var(--border);border-radius:0;margin-top:2px;padding-top:6px}
+.ft-more:hover{color:var(--accent)}
+.ft-more b{font-weight:600;color:var(--accent)}
+.ft-more-ico{display:inline-flex;width:12px;height:12px;margin-right:4px;vertical-align:-2px}
 
 /* Skills 面板 */
 .skills-list{display:flex;flex-direction:column;gap:2px}
@@ -1123,8 +1129,13 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .ag-cap-ic .ico{width:14px;height:14px}
 
 #agCenter{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border);position:relative;z-index:0}
-.ag-chat-head{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,var(--bg2),color-mix(in srgb,var(--bg2) 86%,var(--bg)));flex-shrink:0}
-.ag-head-left{display:flex;align-items:center;gap:11px}
+.ag-chat-head{height:56px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 18px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,var(--bg2),color-mix(in srgb,var(--bg2) 86%,var(--bg)));flex-shrink:0}
+/* F19：这两块文字以前没有 min-width:0，也没有 nowrap ——
+   中间列被左右栏挤窄时，"Agent 会话 / AI 空闲"会一个字竖着一行（实测 900 宽）。
+   现在让它们截断（带省略号），而不是把标题拆成竖排。 */
+.ag-head-left{display:flex;align-items:center;gap:11px;min-width:0}
+.ag-head-txt{min-width:0;overflow:hidden}
+.ag-head-name,.ag-head-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 /* 轨道标记：不带底色方块，纯描边 + currentColor，跟着配色走（旧的渐变底 + 白 P
    在浅色档会整块发白，且与标题栏品牌图形重复）。空闲时轨道是静止的半透明线，
    Agent 真在跑任务时轨道转起来、核心与信号点交替呼吸——状态一眼可辨，不靠文字。 */
@@ -1177,6 +1188,9 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 
 #agRight{width:430px;display:flex;flex-direction:column;flex-shrink:0;background:var(--bg2)}
 #agSessions.collapsed, #agRight.collapsed{display:none}
+/* F19：视口不够时由 fitMainSpace() 临时收起辅助栏（data-auto-hide），
+   跟用户自己折叠（.collapsed）是两件事：偏好不动，窗口拉宽就还原。 */
+#agSessions[data-auto-hide],#agRight[data-auto-hide],.resizer[data-auto-hide]{display:none}
 #sidebar.fully-collapsed{display:none;width:0!important}
 #activitybar.sidebar-hidden .ab-btn[data-view="explorer"],#activitybar.sidebar-hidden .ab-btn[data-view="search"],#activitybar.sidebar-hidden .ab-btn[data-view="scm"],#activitybar.sidebar-hidden .ab-btn[data-view="skills"]{pointer-events:auto}
 #sidebarResizer:has(+ .fully-collapsed),#sidebar.fully-collapsed + #sidebarResizer{display:none}
@@ -1487,6 +1501,8 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .bp-img-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%}
 .bp-img-wrap img{max-width:92%;max-height:72vh;object-fit:contain;border-radius:3px;box-shadow:var(--shadow)}
 .bp-pdf{width:100%;height:calc(100vh - 220px);border:none;border-radius:3px;background:#fff}
+.bp-doc-frame{width:100%;height:calc(100vh - 240px);border:none;border-radius:3px;background:#f2f2f2}
+.bp-doc-warn{color:var(--warn,#b8860b)}
 
 /* ---------- Markdown 预览基础样式（注入 iframe srcdoc） ---------- */
 .md-body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.75;color:#222;max-width:860px;margin:0 auto;padding:32px 40px}

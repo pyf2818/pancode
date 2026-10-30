@@ -72,23 +72,55 @@ function broadcast(ev, userKey) {
   for (const c of evScope.recipients(clients, userKey)) {
     try { c.send(s); } catch (e) { /* 连接正在关：心跳那一轮会把它摘掉 */ }
   }
+  /* 被延后的引擎重建在这里补上（审查项 F08）。
+     必须排到下一个 check 阶段：agent.done 是在 runningConvs.delete 之前 emit 的，
+     同步去查"还有没有在跑的会话"永远会查到"还有"，重建就再也不会发生。 */
+  if (ev && (ev.type === "agent.done" || ev.type === "agent.error") && _rebuildPending) {
+    setImmediate(maybeFinishRebuild);
+  }
 }
 
 /* W11：事件循环延迟（ELD）探针
-   每 1s 用 setImmediate 实测"从排定到执行"的偏差，反映主进程是否繁忙 / 被重计算阻塞。
-   用途：(1) 前端状态栏提示用户感知卡顿源；(2) 为"进程隔离"改造提供量化基线。 */
-let _eldMs = 0, _eldMaxMs = 0;
+   原写法是"每 1s 起一个 setImmediate，量排定到执行的差"。这个口径有两处漏：
+     · 那个 1s 的 interval 自己也会被卡住迟发 —— 迟发之后才排下的 setImmediate 量到的
+       是"已经晚了之后还排队排了多久"，最长的一次阻塞反而看不见；
+     · 一次采样只代表一个瞬时点，1s 之外的短阻塞（几十毫秒的同步循环）会整段漏掉。
+   换成 Node 自带的 monitorEventLoopDelay：它在原生层按 resolution 粒度记整段分布，
+   min/mean/p99/max 都有；再配 eventLoopUtilization() 的增量算出"这段时间里有多少比例是不空闲"。
+   口径变化要说清楚：eld 现在是"上一个采样窗口内的 p99 延迟"（原来是单次 setImmediate 偏差），
+   eldMax 是"进程启动以来所有窗口的最大值"。前端那根状态条只把 eld 当"越大越卡"用，不受影响。 */
+let _eldMs = 0, _eldMaxMs = 0, _eluPct = 0;
+const _eld = perf_monitor();
+function perf_monitor() {
+  try {
+    if (typeof require("perf_hooks").monitorEventLoopDelay !== "function") return null;
+    const h = require("perf_hooks").monitorEventLoopDelay({ resolution: 20 });
+    h.enable();
+    return h;
+  } catch (e) { return null; }   // 老 runtime 上没这个 API：退回"只报 0"，不装成一个能测的样子
+}
+let _eluPrev = null;
 setInterval(() => {
-  const s = process.hrtime.bigint();
-  setImmediate(() => {
-    const ms = Number(process.hrtime.bigint() - s) / 1e6;
-    _eldMs = ms;
-    if (ms > _eldMaxMs) _eldMaxMs = ms;
-  });
+  if (_eld) {
+    const p99 = Number(_eld.percentile(99)) / 1e6;
+    const max = Number(_eld.max) / 1e6;
+    _eld.reset();
+    _eldMs = p99;
+    if (max > _eldMaxMs) _eldMaxMs = max;
+  }
+  /* ELU 的增量要用 eventLoopUtilization(reference) 传参照对象，不是两个对象相减 ——
+     后者在 JS 里得到的是 NaN，那样忙比会永远显示 0，看着像"这条链很闲"。
+     比例字段在这台 Node 上叫 utilization（不是 elu），读错名字同样是静默显示 0。 */
+  const elu = require("perf_hooks").performance.eventLoopUtilization();
+  if (_eluPrev) {
+    const d = require("perf_hooks").performance.eventLoopUtilization(_eluPrev);
+    _eluPct = d.utilization ? Math.round(d.utilization * 1000) / 10 : 0;
+  }
+  _eluPrev = elu;
 }, 1000);
 // 周期性把 ELD 推到前端（不依赖会话轮询）
 setInterval(() => {
-  broadcast({ type: "system.perf", eld: Math.round(_eldMs * 10) / 10, eldMax: Math.round(_eldMaxMs * 10) / 10, uptime: Math.round(process.uptime()) });
+  broadcast({ type: "system.perf", eld: Math.round(_eldMs * 10) / 10, eldMax: Math.round(_eldMaxMs * 10) / 10, elu: _eluPct, uptime: Math.round(process.uptime()) });
 }, 3000);
 
 /* ---------- 工作区挂载（核心：任意本地文件夹都可以成为工作区） ---------- */
@@ -109,6 +141,37 @@ const rootStore = new RootStore({
 let automationStore = null, schedulerInst = null; // W4 自动化任务（随工作区重建）
 const userEngines = new Map();   // userKey -> LlmAgent（每个登录用户一份，会话/目标/trace 独立）
 const _engineAssets = {};        // 共享资产（memory/skills/plan/... 按工作区一份，跨用户共用）
+
+/* ---------- 引擎重建的"任务在跑就不换"闸（审查项 F08） ----------
+   原先改一次配置就 buildEngine() 一次：正在跑的会话手里那份旧引擎还在往旧 files/git 闭包上写，
+   而 userEngines 已经被清空 —— 表现是"改了模型之后这条任务的结果进不了会话、
+   界面也再看不到它的进度"。
+   这里不拒绝用户改配置（那会逼人在跑任务时什么都不能调），而是把重建排到
+   最后一个会话收口之后：要么立刻换，要么如实告诉调用方"稍后自动生效"。 */
+let _rebuildPending = false;
+function anyConvRunning() {
+  for (const eng of userEngines.values()) {
+    if (!eng) continue;
+    if (eng.runningConvs && eng.runningConvs.size) return true;
+    if (typeof eng.isRunning === "function" && eng.isRunning()) return true;
+    if (eng.running) return true;
+  }
+  return false;
+}
+function requestEngineRebuild() {
+  if (anyConvRunning()) { _rebuildPending = true; return false; }
+  _rebuildPending = false;
+  buildEngine();
+  return true;
+}
+/* 会话收口时补一次被推迟的重建。判据用 runningConvs（多会话并行时停掉一个不等于全停）。 */
+function maybeFinishRebuild() {
+  if (!_rebuildPending || anyConvRunning()) return false;
+  _rebuildPending = false;
+  try { buildEngine(); } catch (e) { log.tag("boot").warn("延后的引擎重建失败: " + e.message); return false; }
+  try { broadcast({ type: "engine.info", engine: configMod.publicInfo(cfg) }); } catch (e) {}
+  return true;
+}
 
 /* 构建共享资产（不创建 LlmAgent），再由 ensureUserEngine 按 userKey 分片。
    项目级资产（记忆/技能/计划/灵魂/进度）跨用户共享——它们是"项目知识"而非"个人会话"。 */
@@ -240,11 +303,24 @@ function ensureUserEngine(userKey) {
   userEngines.set(userKey, eng);
   // 上限：最多 20 个用户实例（与 CONV_MAX 对齐，防止恶意/异常大量连接撑爆内存）
   if (userEngines.size > 20) {
-    const oldest = userEngines.keys().next().value;
-    if (oldest && oldest !== userKey) {
-      const old = userEngines.get(oldest);
+    /* 淘汰必须跳过还在跑的那个：原先按插入顺序取最旧的一支直接清掉，
+       而它可能正带着一条长任务 —— 引擎被清出表后没人再持有它的会话状态，
+       在跑的工具循环变成孤儿（表现是"任务卡住不动、进度再也不更新"）。
+       找不到可淘汰的就先不淘汰：宁可多留一个实例，也不要掐断用户的活。 */
+    let victim;
+    for (const k of userEngines.keys()) {
+      if (k === userKey) continue;
+      const cand = userEngines.get(k);
+      if (cand && cand.runningConvs && cand.runningConvs.size) continue;
+      if (cand && cand.running) continue;
+      victim = k;
+      break;
+    }
+    if (victim) {
+      const old = userEngines.get(victim);
+      userEngines.delete(victim);
+      try { if (old && typeof old.abortAll === "function") old.abortAll(); } catch (_) {}
       try { if (old && typeof old.flushConversations === "function") old.flushConversations(); } catch (_) {}
-      userEngines.delete(oldest);
     }
   }
   return eng;
@@ -356,6 +432,89 @@ async function snapshotFilesIncremental(paths) {
   return out;
 }
 
+/* ============================================================
+   F15：首屏发「目录元数据」，正文按页、按文件、按 diff 现取
+   ------------------------------------------------------------
+   旧 hello 把 ≤500 个文件的 content + original 整包发出去，代价是：
+     · 传输与 JSON.parse 随文件数线性膨胀（大项目首屏就是几十 MB 字符串）；
+     · 第 501 个之后的文件在界面上根本不存在 —— 找不到也点不开。
+   现在：
+     · hello.tree   = 一页目录元数据 + 真实总数 + 还有没有下一页；
+     · hello.files  = 只有"需要正文的那一撮"——git 变更集（徽标、Diff、审阅都要现读内容，
+                      但改动的文件通常个位数到几十，不是全树）；
+     · 打开文件才要正文（file.read），打开 Diff 才要基线（file.baseline），
+     · 翻目录才要下一页（tree.load）。
+   上限刻意做小：一页 500 条 ≈ 一屏能看完的量；warm 200 个文件的正文是"改动面板"的合理规模。
+   ============================================================ */
+const TREE_FIRST_PAGE = 500;
+const WARM_MAX = 200;
+
+/* 一次 git status 拿到的变更集：[{path,status}]。
+   没有 git 的降级口径（快照比对）在 GitLayer.changes 里，行为与旧代码一致。 */
+async function changedList() {
+  try { return (await git.changes()) || []; } catch (e) { return []; }
+}
+
+/* 一页目录元数据（带 lang/isNew）。isNew 只从变更集里读，不发逐文件的 git show。 */
+async function treePage(opts) {
+  const p = files.page(opts || {});
+  const st = new Map((await changedList()).map((c) => [c.path, c.status]));
+  p.entries = p.entries.map((e) => Object.assign({}, e, { lang: langOf(e.path), isNew: st.get(e.path) === "A" }));
+  return p;
+}
+
+/* warm：给"界面此刻需要正文"的文件读出 content/original。
+   读不出来的路径（刚被删、越界）直接跳过 —— 旧的 snapshotFiles 也是这个语义（catch continue）。 */
+async function warmFiles(paths) {
+  const list = [];
+  for (const p of paths || []) {
+    if (list.length >= WARM_MAX) break;
+    if (files.exists(p)) list.push(p);
+  }
+  return list.length ? snapshotFilesIncremental(list) : {};
+}
+
+/* 一次对外广播的公共形状：增量元数据 + 被删的路径 + 变更集。
+   file.save / create / delete / rename / mkdir / reset 都从这里出去，
+   不再各自重读整棵树（旧写法每次一个 snapshotFiles() = 全树逐个 readFileSync）。 */
+async function fsDeltaPayload(paths, removed) {
+  const alive = (paths || []).filter((p) => p && files.exists(p));
+  const gone = (removed || []).filter(Boolean);
+  const files2 = alive.length ? await snapshotFilesIncremental(alive) : {};
+  const changed = await changedList();
+  return {
+    type: "fs.sync",
+    incremental: true,
+    files: files2,
+    removed: gone,
+    changed,
+    total: (() => { try { return files.page({ limit: 1 }).total; } catch (e) { return 0; } })(),
+  };
+}
+
+async function broadcastFsDelta(paths, removed) {
+  try {
+    const p = await fsDeltaPayload(paths, removed);
+    broadcast(p);
+    // 前端手里那份集合的"是否变过"判据靠全量分支维护；这里只更新它，别让下一次外部改动多走一次全量
+    if (p.files) { for (const k of Object.keys(p.files)) _syncedPaths && _syncedPaths.add(k); }
+    for (const k of (p.removed || [])) _syncedPaths && _syncedPaths.delete(k);
+  } catch (e) { log.tag("files").warn("增量同步广播失败: " + (e && e.message)); }
+}
+
+/* 不知道具体改了哪些文件的那两条路（跑完一条终端命令、一键回退到基线）只能重发目录。
+   重发的是**一页元数据 + 变更集正文**，不是全树正文 —— 这就是 F15 省下来的那部分。 */
+async function broadcastTreeFull(extra) {
+  try {
+    const tree = await treePage({ limit: TREE_FIRST_PAGE });
+    const changed = await changedList();
+    const warm = await warmFiles(changed.map((c) => c.path));
+    const removed = goneSince(_syncedPaths, files);
+    _syncedPaths = noteSyncedPaths(_syncedPaths, removed, tree.entries);
+    broadcast(Object.assign({ type: "fs.sync", incremental: false, tree, files: warm, changed, removed }, extra || {}));
+  } catch (e) { log.tag("files").warn("目录重同步失败: " + (e && e.message)); }
+}
+
 /* 外部改盘之后的同步：能只读被点名的那几个文件，就绝不重读整棵树。
 
    判据只有一个问题——**文件集合变了吗**。没变（用户在别的编辑器里改、测试写回既有文件、
@@ -380,23 +539,51 @@ async function syncAfterExternalChange(batch) {
   if (plan.mode === "incremental") {
     const out = await snapshotFilesIncremental(plan.changed);
     _syncedPaths = cur;
-    broadcast({ type: "fs.sync", files: out, incremental: true });
+    broadcast({ type: "fs.sync", incremental: true, files: out, removed: [], changed: await changedList() });
     return;
   }
-  const out = await snapshotFiles();
-  _syncedPaths = cur;
-  broadcast({ type: "fs.sync", files: out });
+  /* 全量分支现在也只发"一页元数据 + 变更集正文"：集合变了要重发的是目录，不是每个文件的正文。
+     前端不再整包替换（那会把用户已经翻出来的后面几页一起丢掉），
+     所以这里必须点名"哪些是真的没了"——拿已经报给前端的那份集合逐个问盘。 */
+  const tree = await treePage({ limit: TREE_FIRST_PAGE });
+  const changed = await changedList();
+  const warm = await warmFiles(changed.map((c) => c.path));
+  const removed = goneSince(_syncedPaths, files);
+  _syncedPaths = noteSyncedPaths(_syncedPaths, removed, tree.entries);
+  broadcast({ type: "fs.sync", incremental: false, tree, files: warm, changed, removed });
+}
+
+/* 我们已经报给前端的集合里，现在盘上不存在的那些 = 真的被删掉了。 */
+function goneSince(prev, store) {
+  const out = [];
+  if (!prev) return out;
+  for (const p of prev) { try { if (!store.exists(p)) out.push(p); } catch (e) { /* 越界/读不到就按没有 */ } }
+  return out;
+}
+
+/* "前端手里那份集合"要累计，不能每次重发一页就把后面几页忘了：
+   忘了的那几页里如果有文件被外部删掉，下一次全量同步就不会把它报成 removed，
+   界面上就留着一个点得开的幽灵文件。 */
+function noteSyncedPaths(prev, removed, entries) {
+  const s = new Set(prev || []);
+  for (const p of (removed || [])) s.delete(p);
+  for (const e of (entries || [])) s.add(e.path);
+  return s;
 }
 
 async function helloPayload(eng, userKey) {
   const e = eng || engine;
-  const fileMap = await snapshotFiles();
-  /* hello 带的就是全量，顺手把"前端手里那份集合"记下来：
-     不记的话第一条外部改动永远走全量，判据等于白改。 */
-  _syncedPaths = new Set(Object.keys(fileMap));
+  const tree = await treePage({ limit: TREE_FIRST_PAGE });
+  const changed = await changedList();
+  /* 正文只带变更集那一批（改动面板/Diff/审阅要现读内容）；其余文件点开时再单独取。
+     这条是 F15 的核心：首屏体积不再等于"前 500 个文件的正文之和"。 */
+  const fileMap = await warmFiles(changed.map((c) => c.path));
+  _syncedPaths = noteSyncedPaths(null, null, tree.entries);
   return {
     type: "hello",
+    tree,
     files: fileMap,
+    changed,
     running: e.running,
     round: e.round,
     engine: configMod.publicInfo(cfg),
@@ -417,7 +604,9 @@ async function helloPayload(eng, userKey) {
        31 项多项式哈希：换算法等于让老用户浏览器里的历史列表凭空消失。磁盘分片键走 wsKey，两码事。 */
     wsId: wsKey.legacyStorageId(WS_DIR),
     workspace: WS_DIR,
-    truncated: !!files.truncated,
+    /* 截断语义跟着目录快照走，不再跟着 files.truncated（那是 list() 顺手写的实例字段，
+       现在 hello 走的是 page()，两者不同步就会报"没截断"而界面上其实少了一半文件）。 */
+    truncated: !!tree.truncated,
     tabs: term.list(),          // 还原多标签终端（同一服务进程内刷新可恢复）
     tasks: taskBoard ? taskBoard.snapshot(userKey) : [],   // 进行中/最近收口的任务（关窗回来能查）
   };
@@ -426,9 +615,6 @@ async function helloPayload(eng, userKey) {
 /* ---------- HTTP ---------- */
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-// vendor/（Monaco 等）长缓存 immutable，版本升级时靠 URL 查询参数 ?v= 强制刷新
-app.use("/vendor", express.static(path.join(__dirname, "..", "public", "vendor"), { maxAge: "1y", immutable: true }));
-app.use(express.static(path.join(__dirname, "..", "public")));
 
 /* A8+：本机回环判定的唯一口径（HTTP Host 头与 WS 升级共用）。
    注意必须精确匹配：前缀正则曾是 `^localhost` 无 `$` 锚 —— localhost.evil.com
@@ -447,7 +633,9 @@ function isLocalHostHeader(hostHeader) {
 
 /* DNS rebinding 防护：evil.com 的域名重绑到 127.0.0.1 后，页面发起的请求变"同源"，
    浏览器对同源 GET 不带 Origin —— CORS 整套对它失效，只能靠 Host 头还认不认得出
-   "这不是发给我们这个本机服务的请求"。所有 HTTP 请求（含静态资源）统一过这道闸。 */
+   "这不是发给我们这个本机服务的请求"。所有 HTTP 请求（含静态资源）统一过这道闸。
+   这道闸必须挂在 express.static 之前：原先静态资源排在闸上面，非本机 Host 拿不到
+   /api/* 却能整份取走应用文件，Host 校验就成了半截闸门。 */
 app.use((req, res, next) => {
   if (!isLocalHostHeader(req.headers.host)) {
     return res.status(403).json({ ok: false, error: "非法 Host（本服务仅本机回环可达）" });
@@ -455,19 +643,56 @@ app.use((req, res, next) => {
   next();
 });
 
-/* A8：CORS 收紧——本地优先工具只允许同源或本机回环访问，拒绝跨站请求（防 CSRF 式滥用） */
+/* ---------- 浏览器来源隔离（审查项 F01）----------
+   "回环"不等于"可信来源"。旧 CORS 只看 Origin 的 hostname 是不是回环、不看端口，
+   于是跑在 http://127.0.0.1:9999 上的任意网页（另一个项目的 dev server、
+   恶意依赖的 postinstall 起的页面）都能：
+     1) 读到 /api/auth/auto 免密签发的 userToken —— 反射式 ACAO 让浏览器放行读响应；
+     2) 拿这个 token 调 /api/* 业务接口、建 WS 触发命令执行。
+   浏览器脚本的权限不能等同于"能连上回环 TCP 的原生进程"，后者本来就是
+   /api/bootstrap 那一档信任（见 auth.js 的 autoIdentity 注释），不该被网页继承。
+   现在只认自家来源：Origin 存在却不是本服务自身的 http://<回环主机>:<端口>，
+   就不发 CORS 头，并直接拒绝 /api/* 与 WS 握手。
+   不带 Origin 的请求（curl、原生客户端、浏览器同源 GET/导航）仍按 Host 闸 + token 闸门走。 */
+function ownOrigins() {
+  const ports = new Set();
+  try { const a = server.address(); if (a && a.port) ports.add(Number(a.port)); } catch (e) {}
+  if (cfg && cfg.port) ports.add(Number(cfg.port));
+  const out = new Set();
+  for (const p of ports) {
+    if (!p) continue;
+    out.add("http://127.0.0.1:" + p);
+    out.add("http://localhost:" + p);
+    out.add("http://[::1]:" + p);
+  }
+  return out;
+}
+/* 空 Origin、"null"（file://、不透明源）、别的端口、https 一律不算自家 */
+function isTrustedBrowserOrigin(originHeader) {
+  const o = String(originHeader || "").trim().toLowerCase();
+  if (!o) return false;
+  return ownOrigins().has(o);
+}
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (!origin) return next();                               // 非浏览器（curl/同源）放行
-  let hostname;
-  try { hostname = new URL(origin).hostname; } catch (e) { return res.status(403).json({ ok: false, error: "非法 Origin" }); }
-  if (!LOOPBACK_HOSTS.has(hostname.toLowerCase())) return res.status(403).json({ ok: false, error: "跨站请求被拒绝" });
-  res.setHeader("Access-Control-Allow-Origin", origin);     // 本机 Origin 反射
+  const origin = String(req.headers.origin || "").trim();
+  if (!origin) return next();                                 // 非跨源读取：交给下游 Host + token 闸门
+  if (!isTrustedBrowserOrigin(origin)) {
+    if (req.path.startsWith("/api/")) {
+      return res.status(403).json({ ok: false, error: "来源被拒绝（仅接受本服务自身页面的请求）", code: "BAD_ORIGIN" });
+    }
+    return next();                                            // 静态资源：不回 CORS 头，浏览器读不到内容
+  }
+  res.setHeader("Access-Control-Allow-Origin", origin);       // 只反射自家 Origin
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,x-user-token");
+  res.setHeader("Vary", "Origin");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
+
+// vendor/（Monaco 等）长缓存 immutable，版本升级时靠 URL 查询参数 ?v= 强制刷新
+app.use("/vendor", express.static(path.join(__dirname, "..", "public", "vendor"), { maxAge: "1y", immutable: true }));
+app.use(express.static(path.join(__dirname, "..", "public")));
 
 /* ---------- 本地鉴权 ---------- */
 /* A2：收紧白名单——仅保留本机可匿名访问的引导类端点；业务/敏感端点全部要求登录后的 userToken */
@@ -577,13 +802,12 @@ app.post("/api/undo", (req, res) => {
     if (!steps.length) return res.json({ ok: false, empty: true, error: "没有可撤销的改动了：本次运行没写过文件，本机影子快照里也没有可回退的检查点（初始全量快照不算一步）" });
     const conv = String((req.body && req.body.convId) || "");
     /* 撤销是后进先出的，能撤的只有栈顶那一步。顶上的改动属于另一个会话时直接说明，
-       而不是悄悄把别人的工作回滚掉 —— 那才是这个按钮最危险的误用面。 */
-    if (conv && steps[0].convId && steps[0].convId !== conv) {
-      return res.json({ ok: false, cross: true, error: "最近一步改动属于另一个会话（" + steps[0].label + "），没有替你撤销它" });
-    }
+       而不是悄悄把别人的工作回滚掉 —— 那才是这个按钮最危险的误用面。
+       判据不在这里写第二份：交给 _undoLast 的归属守卫（审查项 F04），
+       它同时服务模型可调的 undo 工具，两个入口不会再厚薄不一。 */
     const top = steps[0];
-    const r = eng._undoLast();
-    if (!r || !r.ok) return res.json({ ok: false, error: (r && r.reason) || "撤销失败" });
+    const r = eng._undoLast({ convId: conv });
+    if (!r || !r.ok) return res.json({ ok: false, cross: !!(r && r.cross), error: (r && r.reason) || "撤销失败" });
     /* removed 那半截也要出去：shadow 回退会删掉那一步新建的文件，
        只报 restored 的话，界面说的数字比真的动过的文件少。 */
     writeAudit("undo", "撤销 " + (r.label || top.label) + " → "
@@ -646,7 +870,13 @@ app.get("/api/agent/trace/history", (req, res) => {
   const id = req.query && req.query.conv;
   const safe = id ? String(id).replace(/[^a-zA-Z0-9_-]/g, "_") : "";
   if (!safe) return res.json({ ok: true, events: [] });
-  const fp = path.join(configMod.ROOT, ".pancode", "agent-traces", safe + ".jsonl");
+  /* F18：写的人按用户分目录（agent-traces/<userKey>/<conv>.jsonl，见 agent-llm 的 _traceDir），
+     读的人以前只看 anon 根目录 —— 登录用户切回会话时历史永远是空的，
+     面板"什么都不显示"就是这么来的。现在两端同源：同一个 token 算同一个目录。 */
+  const uKey = tokenUserKey(tokenOf(req));
+  const traceRoot = path.join(configMod.ROOT, ".pancode", "agent-traces");
+  const dir = uKey === "anon" ? traceRoot : path.join(traceRoot, uKey);
+  const fp = path.join(dir, safe + ".jsonl");
   if (!fs.existsSync(fp)) return res.json({ ok: true, events: [] });
   try {
     const lines = fs.readFileSync(fp, "utf8").split("\n");
@@ -1028,8 +1258,9 @@ app.post("/api/workspace", (req, res) => {
     const dir = String((req.body || {}).dir || "").trim();
     if (!dir) return res.status(400).json({ ok: false, error: "路径不能为空" });
     // 多用户：任一用户引擎运行中都禁止切工作区（其闭包指向旧 files/git/term）
-    if (engine && engine.running) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" });
-    for (const eng of userEngines.values()) { if (eng.running) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" }); }
+    /* 判据按"有没有会话还在跑"问，而不是问引擎上那个粗粒度 running 位：
+       多会话并行时那个位会被别的会话的停止动作误置，切工作区就可能踩在一条活任务上。 */
+    if (anyConvRunning()) return res.status(409).json({ ok: false, error: "AI 任务运行中，请先等待完成" });
     /* 高危目录要人点头才给可写权（修 C-H4）。
        mountWorkspace 里的 rootGrants.ensure(abs) 会把这个目录按 writable:true 登记进授权清单，
        于是"POST 一个任意路径"就等于"AI 拿到了这棵树以及它下面全部内容的写权限"，全程无确认。
@@ -1101,15 +1332,11 @@ app.get("/api/shot", (req, res) => {
 /* docx → HTML 预览（mammoth，与 VS Code Office Viewer 同类方案）。
    mammoth 对超链接 href 原样透传、不做 scheme 过滤 —— 恶意 docx 里塞一条
    javascript: 链接，前端 innerHTML 渲染后点一下就在应用源内执行（可携
-   userToken 调 API，等于接管 Agent）。渲染前在服务端把非 http(s)/mailto/
-   相对路径的 href 摘掉。 */
-function sanitizePreviewHtml(html) {
-  return String(html).replace(/href\s*=\s*(["'])([\s\S]*?)\1/gi, (m, q, url) => {
-    const u = String(url).trim();
-    const safe = /^(https?:|mailto:)/i.test(u) || !/^[a-z][a-z0-9+.\-]*:/i.test(u);
-    return safe ? m : "href=" + q + "#" + q;
-  });
-}
+   userToken 调 API，等于接管 Agent）。
+   清洗实现抽到 preview-sanitize.js：白名单重建 + 与浏览器对齐的 URL 归一化。
+   旧版那句 `trim() + /^scheme:/` 挡不住 `jav&#x0a;ascript:` —— 实体与换行是浏览器
+   解析 URL 时才吃掉的，正则看到的和点下去执行的不是一回事（审查项 F06）。 */
+const { sanitizePreviewHtml, auditPreview } = require("./preview-sanitize");
 app.get("/api/preview/docx", async (req, res) => {
   try {
     const rel = String(req.query.path || "");
@@ -1121,7 +1348,14 @@ app.get("/api/preview/docx", async (req, res) => {
     const result = await mammoth.convertToHtml({ path: abs }, { convertImage: mammoth.images.imgElement((img) =>
       img.read("base64").then((b64) => ({ src: "data:" + img.contentType + ";base64," + b64 })))
     });
-    res.json({ ok: true, html: sanitizePreviewHtml(result.value), warnings: (result.messages || []).length });
+    const html = sanitizePreviewHtml(result.value);
+    const audit = auditPreview(result.value);
+    if (audit.rewritten) {
+      /* 清洗不能是静默的：用户该知道这份文档里埋了几条被改掉的链接。
+         只报计数与截断样本，不把原始 URL 回显到日志里（那本身就是条可疑地址）。 */
+      log.tag("preview").warn("文档预览有 " + audit.rewritten + "/" + audit.links + " 条链接被改写: " + rel);
+    }
+    res.json({ ok: true, html, warnings: (result.messages || []).length, rewrittenLinks: audit.rewritten });
   } catch (e) { res.status(400).json({ ok: false, error: "无法解析该文档: " + e.message }); }
 });
 
@@ -1245,17 +1479,17 @@ app.post("/api/llm/profiles", (req, res) => {
   try {
     const p = configMod.upsertLlmProfile(cfg, req.body || {});
     if (!p) return res.status(400).json({ ok: false, error: "配置需要名称与接口地址" });
-    buildEngine();
-    res.json({ ok: true, profile: p, profiles: (cfg.llmProfiles || []).map(configMod.profilePublic) });
+    const applied = requestEngineRebuild();
+    res.json({ ok: true, profile: p, rebuildDeferred: !applied, profiles: (cfg.llmProfiles || []).map(configMod.profilePublic) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.post("/api/llm/profiles/:id/apply", (req, res) => {
   try {
     const r = configMod.applyLlmProfile(cfg, req.params.id);
     if (!r) return res.status(404).json({ ok: false, error: "配置不存在" });
-    buildEngine();
-    broadcast({ type: "engine.info", engine: configMod.publicInfo(cfg) });
-    res.json({ ok: true, ...r, engine: configMod.publicInfo(cfg) });
+    const applied = requestEngineRebuild();
+    if (applied) broadcast({ type: "engine.info", engine: configMod.publicInfo(cfg) });
+    res.json({ ok: true, ...r, engine: configMod.publicInfo(cfg), rebuildDeferred: !applied });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.delete("/api/llm/profiles/:id", (req, res) => {
@@ -1268,10 +1502,12 @@ app.delete("/api/llm/profiles/:id", (req, res) => {
 app.get("/api/settings", (req, res) => res.json(configMod.publicInfo(cfg)));app.post("/api/settings", (req, res) => {
   try {
     configMod.saveLlm(cfg, req.body || {});
-    buildEngine();
+    const applied = requestEngineRebuild();
     const info = configMod.publicInfo(cfg);
-    broadcast({ type: "engine.info", engine: info });
-    res.json({ ok: true, engine: info });
+    if (applied) broadcast({ type: "engine.info", engine: info });
+    /* rebuildDeferred=true 时界面要说"这条配置在当前任务结束后生效"，不能显示成已生效
+       —— 那是用户判断"我到底连的哪个模型"的唯一依据（审查项 F08）。 */
+    res.json({ ok: true, engine: info, rebuildDeferred: !applied });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.post("/api/settings/test", async (req, res) => {
@@ -1446,7 +1682,12 @@ app.post("/api/config", (req, res) => {
     const { section, patch } = req.body || {};
     const p = patch || {};
     let out = {};
-    if (section === "llm") { configMod.saveLlm(cfg, p); buildEngine(); out = { engine: configMod.publicInfo(cfg) }; broadcast({ type: "engine.info", engine: out.engine }); }
+    if (section === "llm") {
+      configMod.saveLlm(cfg, p);
+      const applied = requestEngineRebuild();
+      out = { engine: configMod.publicInfo(cfg), rebuildDeferred: !applied };
+      if (applied) broadcast({ type: "engine.info", engine: out.engine });
+    }
     else if (section === "agent") { configMod.saveAgentSettings(cfg, p);
       /* 用户亲手改权限档 / Agent 模式，是整局里最该留痕的决定之一：
          它解释了之后所有门的松紧（"那阵子为什么什么都直接放行"）。 */
@@ -1519,8 +1760,8 @@ app.post("/api/config/import", (req, res) => {
       configMod.saveEmbedding(cfg, dropped(d.embedding)); applied.push("embedding");
     }
     if (d.mcp && Array.isArray(d.mcp.servers)) { configMod.saveMcpServers(cfg, { servers: d.mcp.servers }); mcpManager.sync(); applied.push("mcp"); }
-    buildEngine();
-    res.json({ ok: true, applied, skipped, snapshot: configSnapshot() });
+    const rebuilt = requestEngineRebuild();
+    res.json({ ok: true, applied, skipped, rebuildDeferred: !rebuilt, snapshot: configSnapshot() });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
@@ -2554,7 +2795,13 @@ const wss = new WebSocketServer({
     return false;   // 不选任何子协议
   },
 });
-const lspManager = new LspManager(cfg);
+/* F13：语言服务器的运行范围与 Agent 用同一份授权清单。
+   root 以前由前端 query 直接给，桥接层照单全收拿去当子进程 cwd —— 起一个 pyright
+   就能把进程放到机器上任意目录。现在必须命中 .pancode/roots.json 里某个已授权根。 */
+const lspManager = new LspManager(cfg, {
+  findRoot: (abs) => rootGrants.findFor(abs),
+  defaultRoot: () => WS_DIR || "",
+});
 setActiveManager(lspManager);   // 让 Agent 的 get_diagnostics 工具能访问同一实例的诊断缓存
 
 /* A1：业务 WS 仅接受登录后的 userToken（登录闸门）。AUTH_TOKEN 仅用于本机 bootstrap，不再用于 WS
@@ -2574,6 +2821,11 @@ server.on("upgrade", (req, socket, head) => {
   /* rebinding 防护与 HTTP 侧同口径：握手也是一次 HTTP 请求，Host 不是本机回环就销毁。
      LSP 端点一并覆盖（它分流在鉴权之前）。 */
   if (!isLocalHostHeader(req.headers.host)) { socket.destroy(); return; }
+  /* F01：浏览器一定带 Origin 握手 —— 不是自家来源就到此为止。
+     光靠 HTTP 侧的 CORS 挡不住 WS：握手没有"读响应"这一步，token 校验过的连接
+     本身就是命令执行通道，所以来源必须在分流到 LSP / 主聊天 WS 之前判掉。
+     没有 Origin 的是原生客户端（Electron 主进程、CLI、探针），仍走 token 闸门。 */
+  if (req.headers.origin && !isTrustedBrowserOrigin(req.headers.origin)) { socket.destroy(); return; }
   const u = new URL(req.url, "http://localhost");
   // LSP 走独立端点 /lsp，避免与主聊天 WS 混流
   if (u.pathname === "/lsp") { lspManager.handleUpgrade(req, socket, head); return; }
@@ -2749,7 +3001,7 @@ wss.on("connection", (ws) => {
           // C-H2：WS 手敲终端路径按 AI 严档执行（sudo/系统目录写入/全局安装/批量删除等拦截），
           // 与 terminal.js:118 AI 内部路径的 strict 语义对齐。
           term.run(tabId, m.cmd.slice(0, 500), null, { strict: true }).then(() => {
-            snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
+            broadcastTreeFull();
             uEng.pushChanges(false);
           });
         }
@@ -2791,7 +3043,7 @@ wss.on("connection", (ws) => {
           codeIndex.queueFileUpdate(WS_DIR, m.path);
           uEng.fileChanged(m.path);
           uEng.pushChanges(false);
-          snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
+          broadcastFsDelta([m.path]);
         }, ws, m.type);
         break;
       case "file.delete":
@@ -2801,7 +3053,7 @@ wss.on("connection", (ws) => {
           userCheckpoint(uEng, snap, "用户删除 " + m.path);
           codeIndex.removeFile(WS_DIR, m.path);
           uEng.pushChanges(false);
-          snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
+          broadcastFsDelta([], [m.path]);
         }, ws, m.type);
         break;
       case "file.rename":
@@ -2812,13 +3064,59 @@ wss.on("connection", (ws) => {
           codeIndex.removeFile(WS_DIR, m.path);
           codeIndex.queueFileUpdate(WS_DIR, m.newPath);
           uEng.pushChanges(false);
-          snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2, renamed: { from: m.path, to: m.newPath } }));
+          broadcastFsDelta([m.newPath], [m.path]).then(() => broadcast({ type: "fs.renamed", from: m.path, to: m.newPath }));
         }, ws, m.type);
         break;
       case "file.mkdir":
         safe(() => {
           files.mkdir(m.path);
-          snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
+          broadcastTreeFull();
+        }, ws, m.type);
+        break;
+
+      /* ----- F15：目录翻页 / 正文按需 / 基线按需 ----- */
+      case "tree.load":
+        safe(() => {
+          const p = files.page({ offset: Number(m.offset) || 0, limit: Number(m.limit) || TREE_FIRST_PAGE });
+          const st = new Map();
+          changedList().then((changed) => {
+            for (const c of changed) st.set(c.path, c.status);
+            p.entries = p.entries.map((e) => Object.assign({}, e, { lang: langOf(e.path), isNew: st.get(e.path) === "A" }));
+            _syncedPaths = noteSyncedPaths(_syncedPaths, null, p.entries);
+            ws.send(JSON.stringify(Object.assign({ type: "tree.data", sub: m.sub || "" }, p)));
+          }).catch((e) => ws.send(JSON.stringify({ type: "op.error", error: "目录翻页失败：" + e.message })));
+        }, ws, m.type);
+        break;
+      case "file.read":
+        safe(() => {
+          const rel = String(m.path || "");
+          if (!files.exists(rel)) { ws.send(JSON.stringify({ type: "file.error", path: rel, error: "文件不存在或在工作区外" })); return; }
+          if (files.isBinary(rel)) { ws.send(JSON.stringify({ type: "file.error", path: rel, error: "二进制文件没有文本正文", binary: true })); return; }
+          let content;
+          try { content = files.read(rel); } catch (e) {
+            ws.send(JSON.stringify({ type: "file.error", path: rel, error: "读不出来：" + e.message }));
+            return;
+          }
+          let st = null;
+          try { st = fs.statSync(files.safePath(rel)); } catch (e) { st = null; }
+          ws.send(JSON.stringify({
+            type: "file.data", path: rel, content, lang: langOf(rel),
+            size: st ? st.size : content.length, mtimeMs: st ? st.mtimeMs : 0,
+          }));
+        }, ws, m.type);
+        break;
+      case "file.baseline":
+        safe(() => {
+          const rel = String(m.path || "");
+          if (!files.exists(rel)) { ws.send(JSON.stringify({ type: "file.baseline", path: rel, original: "", isNew: true })); return; }
+          let content = "";
+          try { content = files.read(rel); } catch (e) { /* 读不动就按"没有基线"报，别把 Diff 打开弄成整条链路报错 */ }
+          git.baselinePlanner().then((pick) => (pick ? pick(rel, content) : git.baseline(rel))).then((base) => {
+            ws.send(JSON.stringify({
+              type: "file.baseline", path: rel, original: base === null ? "" : base,
+              isNew: base === null, lang: langOf(rel),
+            }));
+          }).catch((e) => ws.send(JSON.stringify({ type: "op.error", error: "取基线失败：" + e.message })));
         }, ws, m.type);
         break;
 
@@ -2841,7 +3139,7 @@ wss.on("connection", (ws) => {
             uEng.pushChanges(false);
             broadcast({ type: "term.line", text: "[pancode] 工作区已恢复到基线状态", cls: "tl-info" }, msgKey);
             broadcast({ type: "agent.reset" }, msgKey);
-            snapshotFiles().then((files2) => broadcast({ type: "fs.sync", files: files2 }));
+            broadcastTreeFull();
           }).catch((e) => log.tag("git").error("reset: discardAll 失败 " + e));
         }, ws, m.type);
         break;
@@ -3030,22 +3328,41 @@ server.listen(cfg.port, "127.0.0.1", () => {
 /* 优雅关闭：中止 Agent → 杀终端子进程 → 关 WS → 停 watch → 关 HTTP，避免孤儿进程 / 端口残留 */
 function shutdown(sig) {
   log.tag("boot").info("收到 " + sig + "，正在优雅关闭…");
+  /* 兜底强退：下面的落盘等待与 server.close 都有各自的上限，这一条是"无论如何别把进程挂住"。
+     窗口比落盘预算宽，免得正常慢盘被自己掐断。 */
+  setTimeout(() => process.exit(0), 6000).unref();
+  /* 退出前把该落盘的都落完（审查项 F02）：flush 现在返回 Promise，
+     而"调用了 flush"不等于"盘上已经是新数据"——以前就是把这个差当成零，
+     进程一 exit，队列里没跑完的写永远丢了。给一个有界等待窗口，超了按原样强退。 */
+  const FLUSH_BUDGET_MS = 2500;
+  const pending = [];
+  const thenable = (v) => { if (v && typeof v.then === "function") pending.push(v.catch(() => {})); };
   // 多用户：中止 + 刷盘所有用户引擎（默认 engine 也在 userEngines 里，anon key）
   for (const eng of userEngines.values()) {
     try { if (eng && typeof eng.abort === "function") eng.abort(); } catch (e) {}
-    try { if (eng && typeof eng.flushConversations === "function") eng.flushConversations(); } catch (e) {}
+    try { if (eng && typeof eng.flushConversations === "function") thenable(eng.flushConversations()); } catch (e) {}
   }
   try { if (term && typeof term.closeAll === "function") term.closeAll(); } catch (e) {}      // 杀掉全部终端子进程，避免孤儿
-  try { auth.flushSessions(); } catch (e) {}                        // 会话同步落盘：合并窗里没来得及写的登录态不能随进程丢
-  try { usageStore.flush(); } catch (e) {}   // 用量账本自己有 5s 合并窗，退出前把最后这一笔推下去（面板"今天花了多少"不能少一段）
+  try { thenable(auth.flushSessions()); } catch (e) {}              // 登录态：合并窗里没来得及写的不能随进程丢
+  try { thenable(usageStore.flush()); } catch (e) {}   // 用量账本自己有 5s 合并窗，退出前把最后这一笔推下去（面板"今天花了多少"不能少一段）
   try { if (mcpManager) mcpManager.disconnectAll(); } catch (e) {}   // 关闭全部 MCP 子进程，避免孤儿
   try { for (const c of wss.clients) { try { c.close(); } catch (e) {} } } catch (e) {}
   try { if (files) files.stopWatch(); } catch (e) {}
   /* 桌面控制的常驻 PowerShell 不会自己走：worker 是子进程，父进程直接 exit 就会留孤儿，
      而它持有 UIA 引用缓存与 ref 序号，下一次开机看到的"上一个进程的窗口"会全是废 ref。 */
   try { require("./computer/uia-worker").stop("服务退出"); } catch (e) {}
-  try { server.close(() => process.exit(0)); } catch (e) { process.exit(0); }
-  setTimeout(() => process.exit(0), 3000).unref();   // 兜底：3s 内未退出则强制退出
+  const budget = new Promise((r) => { const t = setTimeout(r, FLUSH_BUDGET_MS); if (t.unref) t.unref(); });
+  /* 返回值是"数据已尽力落盘"的信号，不是"进程已退出"。
+     桌面端（electron/main.js 的 before-quit）原先是拍一个 1200ms 的固定闹钟再 app.quit()，
+     而这里的落盘预算是 2500ms —— 闹钟先到就等于把落盘掐了。给它一个真信号。 */
+  let settleDone;
+  const settled = new Promise((r) => { settleDone = r; });
+  Promise.race([Promise.allSettled(pending), budget]).then(() => {
+    try { settleDone(); } catch (e) {}
+    try { server.close(() => process.exit(0)); } catch (e) { process.exit(0); }
+    setTimeout(() => process.exit(0), 1500).unref();   // 兜底：端口上有半开连接时 close 不回调，别把退出挂在这
+  });
+  return settled;
 }
 
 /* A3：全局兜底——未捕获的 Promise 拒绝 / 异常不再直接杀死进程，记日志并广播给前端 */

@@ -56,15 +56,23 @@ const state = {
   branchName: "",       // 分支名（hello 事件设置，切语言时要按当前语言重画）
   lsp: null,            // 后端下发的 LSP 能力清单（hello 事件设置）
   lspClients: {},       // 语言 -> LspClient 实例（按需懒加载）
+  /* F15：目录是分页的，正文是按需的。
+     tree = 服务端最近一次告诉我们的目录概况（总数/已列/还有没有下一页），
+     changed = 一次 git status 的变更集，界面所有"改过的"徽标与改动面板都以它为准，
+     files[path].content/original 只有"加载过"才存在——没有它不等于文件是空的。 */
+  tree: { total: 0, listed: 0, more: false, truncated: false },
+  changed: [],
 };
 let editor = null, diffEditor = null;
 const models = {};
 
 function modifiedSet() {
+  /* F15 之前这里是"逐个文件比 content !== original"——那是首屏要拿到全部正文的原因。
+     现在正文按需取，改没改由服务端的变更集（一次 git status）说，本地只看脏标记。
+     两条来源并起来：服务端报的 M/A/D + 用户正在编辑器里没存的东西。 */
   const s = new Set();
-  for (const p in state.files) {
-    if (state.files[p].isNew || state.files[p].content !== state.files[p].original) s.add(p);
-  }
+  for (const c of (state.changed || [])) if (c && c.path) s.add(c.path);
+  state.dirty.forEach((p) => s.add(p));
   return s;
 }
 
@@ -82,6 +90,41 @@ const convBlocks = {};      // convId -> blocks 映射（think/msg/tool DOM 引�
 const convMeta = {};        // convId -> { answerBlock, thinkCount, lastThink }
 const convPersistTimers = {}; // convId -> 后台会话节流持久化定时器
 
+/* F17：热 pane 有界。切过的每一个会话都把整块 DOM 留在 convPanes 里 ——
+   从页面摘下来（隐藏）并不等于释放，24 次往返就是 24 块常驻。
+   这里只保留最近用过的 HOT_PANES 块，其余在摘掉前已经把正文写进快照，
+   切回去时走 hydratePane 复原。正在跑的、当前在看、以及还挂在页面上的（网格）都不摘。 */
+const HOT_PANES = 8;
+const _paneLru = [];
+function notePaneUse(id) {
+  if (!id) return;
+  const i = _paneLru.indexOf(id);
+  if (i >= 0) _paneLru.splice(i, 1);
+  _paneLru.push(id);
+  while (_paneLru.length > 64) _paneLru.shift();   // 索引自身收敛，别变成新的泄漏点
+}
+function dropConvCtx(id) {
+  const p = convPanes[id];
+  if (p && p.parentNode) p.parentNode.removeChild(p);
+  delete convPanes[id]; delete convBlocks[id]; delete convMeta[id];
+  if (convPersistTimers[id]) { clearTimeout(convPersistTimers[id]); delete convPersistTimers[id]; }
+  const i = _paneLru.indexOf(id);
+  if (i >= 0) _paneLru.splice(i, 1);
+}
+function evictHotPanes() {
+  let over = Object.keys(convPanes).length - HOT_PANES;
+  if (over <= 0) return;
+  for (const id of _paneLru.slice()) {
+    if (over <= 0) break;
+    if (id === convId || state.convRunning[id]) continue;
+    const p = convPanes[id];
+    if (!p || p.parentNode) continue;              // 还挂在页面上的（网格里同时显示好几块）不动
+    persistConv(id);                               // 摘之前先落快照，正文不跟着 DOM 一起没
+    dropConvCtx(id);
+    over--;
+  }
+}
+
 function ensureConvCtx(id) {
   const cvid = id || convId || "default";
   if (!convPanes[cvid]) {
@@ -92,6 +135,7 @@ function ensureConvCtx(id) {
   }
   if (!convBlocks[cvid]) convBlocks[cvid] = {};
   if (!convMeta[cvid]) convMeta[cvid] = { answerBlock: null, thinkCount: 0, lastThink: null };
+  notePaneUse(cvid);
   return { pane: convPanes[cvid], blocks: convBlocks[cvid], meta: convMeta[cvid] };
 }
 
@@ -270,8 +314,14 @@ function renderTree() {
     if (state.dirty.has(p)) return '<span class="ft-mod ft-dirty" title="' + escHtml(t("ftDirtyTip")) + '">●</span>';
     if (state.files[p] && state.files[p].isNew) return '<span class="ft-mod ft-new" title="' + escHtml(t("ftNewTip")) + '">U</span>';
     if (mod.has(p)) {
-      const f = state.files[p];
-      const st = diffStat(f.original || "", f.content || "");
+      const f = state.files[p] || {};
+      /* F15：改过的文件里只有"变更集那一撮"带着正文（首屏 warm）。
+         没带正文的就只报"M"，不要拿两份空字符串去 diffStat 算出"+0 −0"骗人。 */
+      if (typeof f.content !== "string" || typeof f.original !== "string") {
+        return '<span class="ft-change" data-path="' + esc(p) + '" title="' + escHtml(t("ftModPendingTip")) + '">' +
+          '<span class="ft-c-add">M</span></span>';
+      }
+      const st = diffStat(f.original, f.content);
       const tip = "已修改 +" + st.add + " −" + st.del + " 行（点击查看 Diff）";
       return '<span class="ft-change" data-path="' + esc(p) + '" title="' + tip + '">' +
         '<span class="ft-c-add">+' + st.add + '</span><span class="ft-c-del">−' + st.del + '</span></span>';
@@ -300,6 +350,20 @@ function renderTree() {
     if (!collapsed) dirs[dir].sort().forEach((p) => mkItem(p, 1));
   });
   roots.forEach((p) => mkItem(p, 0));
+  /* F15：目录是分页的。旧实现撞满 500 就再也不提后面有什么 ——
+     界面上"看起来就是这个项目只有 500 个文件"，而第 501 个既找不到也点不开。
+     现在把差额明写在树尾，点一下才要下一页。 */
+  const tinfo = state.tree || {};
+  const rest = Math.max(0, (Number(tinfo.total) || 0) - Object.keys(state.files).length);
+  if (tinfo.more || rest > 0 || tinfo.truncated) {
+    const more = document.createElement("div");
+    more.className = "ft-item ft-more";
+    more.innerHTML = '<span class="ft-more-ico">' + ico("chevD") + '</span><span>' +
+      (rest > 0 ? "还有 " + rest + " 个文件没列出（共 " + tinfo.total + "）" : "目录可能没列全") +
+      ' · <b>加载更多</b></span>';
+    more.onclick = loadMoreTree;
+    tree.appendChild(more);
+  }
   /* 点击变更 badge 直接查看 Diff */
   tree.querySelectorAll(".ft-change").forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); showDiff(b.dataset.path); };
@@ -590,9 +654,15 @@ function getModel(path) {
     return models[path];
   }
   if (!models[path]) {
-    const m = monaco.editor.createModel(f.content, f.lang, monaco.Uri.parse("inmemory:///" + path));
+    /* F15：正文可能还没读过来（首屏只发目录元数据）。这里先给一个空 model 顶上，
+       同时把读请求发出去；回包落在 onFileData → 文件不脏就 setValue。
+       不做成"await 再建 model"是因为 openFile 是同步调用链上十几处都在用，
+       改成异步会把"点一下标签页"变成有先后顺序的一串Promise，更容易出错。 */
+    const known = typeof f.content === "string" ? f.content : "";
+    const m = monaco.editor.createModel(known, f.lang, monaco.Uri.parse("inmemory:///" + path));
+    if (typeof f.content !== "string" && !f.binary) ensureContent(path);
     m.onDidChangeContent(() => {
-      const disk = state.files[path] ? state.files[path].content : "";
+      const disk = state.files[path] && typeof state.files[path].content === "string" ? state.files[path].content : "";
       const isDirty = m.getValue() !== disk;
       if (isDirty !== state.dirty.has(path)) {
         if (isDirty) state.dirty.add(path); else state.dirty.delete(path);
@@ -913,6 +983,40 @@ function initResizers() {
     }
   });
 
+  /* F19：主任务空间优先。左右两栏能拖到 360 / 620（合计 980px），
+     视口一窄，被挤的是中间那块 —— 实测 900 宽时正文列只剩 200px，一行三五个字，
+     连标题都竖着排。让步顺序固定为"先让辅助栏，最后才动中间"：
+       1 右栏按可用宽度收窄 → 2 右栏临时收起 → 3 左栏收窄 → 4 左栏临时收起，
+     中间那块永远保留 MIN_MAIN。
+     关键是**临时**：状态只写在 DOM 上（data-auto-hide + style.width），
+     不覆盖用户拖出来的偏好（localStorage 原值不动），窗口拉回去就按偏好还原。 */
+  const MIN_MAIN = 480, MIN_AG_RIGHT = 200, MIN_AG_LEFT = 170;
+  function agPrefW(key, dflt) { const n = parseInt(localStorage.getItem(key)); return n > 0 ? n : dflt; }
+  function fitMainSpace() {
+    const vw = document.documentElement.clientWidth;
+    const abar = (($("activitybar") || {}).offsetWidth) || 0;
+    const RES = 6;                                  // 两条 resizer 的占位（.resizer-v 宽 6px）
+    const userOpenS = !agS.classList.contains("collapsed");
+    const userOpenR = !agR.classList.contains("collapsed");
+    let openS = userOpenS, openR = userOpenR;
+    let wS = agPrefW("cw-ag-sessions-w", 250), wR = agPrefW("cw-ag-right-w", 430);
+    const need = () => abar + (openS ? wS + RES : 0) + (openR ? wR + RES : 0) + MIN_MAIN;
+    if (openR && need() > vw) wR = Math.max(MIN_AG_RIGHT, wR - (need() - vw));
+    if (openR && need() > vw) { openR = false; wR = agPrefW("cw-ag-right-w", 430); }
+    if (openS && need() > vw) wS = Math.max(MIN_AG_LEFT, wS - (need() - vw));
+    if (openS && need() > vw) openS = false;
+    agS.style.width = wS + "px"; agR.style.width = wR + "px";
+    const autoS = userOpenS && !openS, autoR = userOpenR && !openR;
+    agS.toggleAttribute("data-auto-hide", autoS);
+    agR.toggleAttribute("data-auto-hide", autoR);
+    if (agSR) agSR.toggleAttribute("data-auto-hide", autoS);
+    if (agRR) agRR.toggleAttribute("data-auto-hide", autoR);
+  }
+  fitMainSpace();
+  window.addEventListener("resize", fitMainSpace);
+  agS.addEventListener("dblclick", () => setTimeout(fitMainSpace, 0));
+  agR.addEventListener("dblclick", () => setTimeout(fitMainSpace, 0));
+
   /* 预览面板：宽度调整 - 完全照搬侧边栏模式 */
   const hp = $("htmlPreview"), pvR = $("previewResizer");
   let px = null, pvSW = 0;
@@ -960,6 +1064,18 @@ const IMG_EXTS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"]);
 
 
 
+/* docx 预览 iframe 自带一份样式：沙箱里的文档读不到主应用的 CSS，
+   不注入就会看到一份没有排版的裸 HTML。值与 .bp-doc-page 那组保持一致。 */
+const DOC_PREVIEW_CSS =
+  "body{margin:0;padding:28px 34px;background:#f2f2f2;color:#222;font-family:'Segoe UI','Microsoft YaHei',sans-serif;font-size:14.5px;line-height:1.8}" +
+  "h1,h2,h3,h4,h5,h6{color:#111;margin:1.1em 0 .5em;line-height:1.4}" +
+  "p{margin:.55em 0}" +
+  "table{border-collapse:collapse;margin:12px 0;max-width:100%}" +
+  "td,th{border:1px solid #bbb;padding:5px 10px;font-size:13.5px}" +
+  "img{max-width:100%;height:auto}" +
+  "ul,ol{padding-left:2em}" +
+  "a{color:#1a6fbf}";
+
 function showBinPreview(path) {
   const host = $("binPreview"), body = $("binPreviewBody");
   $("editorRow").style.display = "none";
@@ -980,7 +1096,17 @@ function showBinPreview(path) {
     fetch("/api/preview/docx?path=" + enc).then((r) => r.json()).then((d) => {
       if (state.activeFile !== path) return;  // 用户已切走
       if (d.ok) {
-        body.innerHTML = '<div class="bp-doc-page">' + d.html + '</div><div class="bp-meta">' + esc(path) + " · " + fmtSize(f.size) + " · 只读预览（编辑请用 Word/WPS）</div>";
+        /* 文档正文不进应用自己的 DOM：服务端清洗之外再隔一层 sandbox。
+           原先是 innerHTML 直插应用文档 —— 那等于把"清洗必须一条不漏"当成唯一防线，
+           漏一条 javascript: 链接就是拿 pancode 的 userToken 执行（审查项 F06）。
+           这里不给 allow-scripts：预览用不到脚本，被沙箱隔开的文档连"点开的链接能读到本页"都做不到；
+           只给 allow-popups，让 target=_blank 的正常外链还能开新窗口。 */
+        body.innerHTML = '<iframe class="bp-doc-frame" sandbox="allow-popups" title="' + esc(path) + '"></iframe>'
+          + '<div class="bp-meta">' + esc(path) + " · " + fmtSize(f.size) + " · 只读预览（编辑请用 Word/WPS）"
+          + (d.rewrittenLinks ? ' · <span class="bp-doc-warn">' + t("apShowBinPreviewWarn").replace("{n}", Number(d.rewrittenLinks)) + "</span>" : "")
+          + "</div>";
+        body.querySelector(".bp-doc-frame").srcdoc =
+          '<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank"><style>' + DOC_PREVIEW_CSS + "</style></head><body>" + d.html + "</body></html>";
       } else {
         body.innerHTML = '<div class="bp-doc-loading">预览失败：' + esc(d.error || "未知错误") + "</div>";
       }
@@ -1317,7 +1443,9 @@ function closeTab(path, ev) {
   _doCloseTab(path);
 }
 function _doCloseTab(path) {
-  if (state.dirty.has(path) && models[path] && state.files[path]) {
+  /* 只有"盘上那份正文真的读过来了"才复位 model：
+     没读过时 content 是 undefined，setValue(undefined) 会把编辑器变成 "undefined" 四个字。 */
+  if (state.dirty.has(path) && models[path] && state.files[path] && typeof state.files[path].content === "string") {
     models[path].setValue(state.files[path].content);
     state.dirty.delete(path);
   }
@@ -1595,20 +1723,31 @@ $("bpToggle").onclick = () => $("bottomPanel").classList.toggle("collapsed");
 const ST_TXT = { M: "M", A: "U", D: "D" };
 let _lastChangesFingerprint = "";
 function renderChanges(list) {
+  const statusOf = (p) => {
+    const hit = (state.changed || []).find((c) => c && c.path === p);
+    if (hit && hit.status) return hit.status;
+    return state.files[p] && state.files[p].isNew ? "A" : "M";
+  };
   const items = list || Array.from(modifiedSet()).map((p) => {
-    const f = state.files[p];
-    const st = diffStat(f.original, f.content);
-    return { path: p, status: f.isNew ? "A" : "M", add: st.add, del: st.del };
+    const f = state.files[p] || {};
+    /* 正文没读过来就没法算行数（F15 之后首屏只带变更集那一撮正文）。
+       这里给 0/0 会撒谎，所以干脆不算 add/del，让列表只说"这个文件改过"。 */
+    const known = typeof f.content === "string" && typeof f.original === "string";
+    const st = known ? diffStat(f.original, f.content) : { add: null, del: null };
+    return { path: p, status: statusOf(p), add: st.add, del: st.del };
   });
   const n = items.length;
   // 内容指纹：跳过完全相同的重复渲染（文件监听自循环修复的配套防线）
   const fp = items.map((it) => it.path + ":" + it.status + ":" + (it.add || 0) + ":" + (it.del || 0) + ":" + (it.risk || "")).join("|");
   if (fp === _lastChangesFingerprint) return;
   _lastChangesFingerprint = fp;
+  /* 有几个改过的文件正文还没读过来，"+N −N" 就只是"读到的那些"的数，不是总量。
+     把 unknown 一起带上，显示层要么老老实实加个"部分"，要么别给数 —— 给个 0 是谎。 */
   state.lastChangeTotals = {
     files: n,
     add: items.reduce((s, it) => s + (it.add || 0), 0),
     del: items.reduce((s, it) => s + (it.del || 0), 0),
+    unknown: items.filter((it) => it.add === null).length,
   };
   if (typeof renderStepPill === "function") renderStepPill();
   if (typeof renderEnvPanel === "function") renderEnvPanel();
@@ -1706,16 +1845,29 @@ function showDiff(path) {
   const f = state.files[path];
   $("diffModal").style.display = "flex";
   $("diffTitle").textContent = path + (f.isNew ? " — 新文件" : " — 相对基线的改动");
-  if (diffEditor) diffEditor.dispose();
-  diffEditor = monaco.editor.createDiffEditor($("diffHost"), {
-    theme: "pancode", readOnly: true, automaticLayout: true, fontSize: 13,
-    renderSideBySide: true, minimap: { enabled: false },
-    ignoreTrimWhitespace: false, renderIndicators: true,
-  });
-  diffEditor.setModel({
-    original: monaco.editor.createModel(f.original, f.lang),
-    modified: monaco.editor.createModel(f.content, f.lang),
-  });
+  /* F15：Diff 要两份内容——当前正文 + 基线。两份都可能是"还没读过"，
+     所以这里按需取，取齐了再建 model。
+     _diffSeq 是用来挡"等回来时用户已经在看另一个文件"的：
+     不加这个号，后到的那份会盖掉当前这个文件的对比，人看到的就是串台的 Diff。 */
+  const seq = (state._diffSeq || 0) + 1;
+  state._diffSeq = seq;
+  const build = () => {
+    if (state._diffSeq !== seq) return;
+    const cur = state.files[path] || {};
+    if (diffEditor) diffEditor.dispose();
+    diffEditor = monaco.editor.createDiffEditor($("diffHost"), {
+      theme: "pancode", readOnly: true, automaticLayout: true, fontSize: 13,
+      renderSideBySide: true, minimap: { enabled: false },
+      ignoreTrimWhitespace: false, renderIndicators: true,
+    });
+    diffEditor.setModel({
+      original: monaco.editor.createModel(typeof cur.original === "string" ? cur.original : "", cur.lang),
+      modified: monaco.editor.createModel(typeof cur.content === "string" ? cur.content : "", cur.lang),
+    });
+  };
+  if (typeof f.content === "string" && (typeof f.original === "string" || f.isNew)) { build(); return; }
+  $("diffHost").innerHTML = '<div style="padding:18px;color:var(--text-dim);font-size:13px">正在读取正文与基线…</div>';
+  Promise.all([ensureContent(path), ensureBaseline(path)]).then(build, build);
 }
 $("diffClose").onclick = () => {
   $("diffModal").style.display = "none";
@@ -2125,7 +2277,10 @@ function finalizeOpenRoundGrp(cvid) {
 const FOLD_THRESHOLD = 60, FOLD_BATCH = 30;
 function foldOldMessages(paneOverride) {
   const pane = paneOverride || chatPane();
-  const direct = pane.querySelectorAll(":scope > .msg-user, :scope > .msg-ai, :scope > .step-flow");
+  /* F17：AI 回答外面包着一层 .msg-row（头像 + 气泡），它不是 pane 的直属孩子 ——
+     原来这条 :scope > .msg-ai 一条都选不中，于是"折叠旧消息"对着长会话其实是空转：
+     消息越堆越多，DOM 一直在页面上。现在按整行折叠（连同头像一起收进折叠区）。 */
+  const direct = pane.querySelectorAll(":scope > .msg-user, :scope > .msg-row, :scope > .msg-ai, :scope > .step-flow");
   if (direct.length <= FOLD_THRESHOLD) return;
   let container = pane.querySelector(":scope > .fold-old");
   if (!container) {
@@ -2205,7 +2360,7 @@ function mdLite(s) {
 /* W9 · Markdown 渲染 Worker 化：流式 msg.delta 的全量重渲染移入经典 Worker，主线程只做 DOM 写入。
    失败兜底：Worker 创建失败（如 Electron file:// 协议）/运行期 onerror → 同步 renderChatMD 回退（绝不白屏）。
    竞态防护：快照校验 b.buf === src —— buf 已前进则丢弃过期结果（msg.end 的同步最终渲染天然覆盖迟到结果）。 */
-let _mdW = null, _mdWDead = false, _mdWSeq = 0, _mdTimer = null;
+let _mdW = null, _mdWDead = false, _mdWSeq = 0;
 const _mdWCbs = new Map();
 function _mdWorker() {
   if (_mdW || _mdWDead) return _mdW;
@@ -2229,16 +2384,105 @@ function renderChatMDAsync(src, cb) {
   _mdWCbs.set(id, { src: src, cb: cb });
   try { w.postMessage({ id: id, src: src }); } catch (e) { _mdWCbs.delete(id); cb(renderChatMD(src)); }
 }
+/* F16：重绘的调度单位是"这一条消息"，不是全局一根 timer。
+   原来 _mdTimer 是共享的：已有 timer 就直接 return —— 于是 A 在流、B 也在流时，
+   B 的 delta 全被 A 那一帧压住（A 的回调只画 A），B 整个交错期一帧都不更新；
+   msg.end 再 clearTimeout，又把别人刚排上的那帧连坐删掉。
+   现在改成"脏集合 + 一根共享帧"：每块各自标脏，帧到期把这批脏块各画各的
+   （帧预算仍然只有一份，不会放大成 N 个 timer）。
+   另外每块带一个世代号 gen：结束事件把 gen+1，路上飞回来的旧帧凭号作废 ——
+   不然 widget 那一类终稿是主线程同步渲染的，会被一条更早发出去、更晚回来的
+   Worker 帧盖回退化成普通代码块。 */
+const _mdDirty = new Set();
+let _mdFrame = null;
 function _mdRenderBlock(b) {
-  if (_mdTimer) return;   // 节流：65ms 窗口内合并突发 delta，只调度一帧（触发时取最新 buf）
-  _mdTimer = setTimeout(() => {
-    _mdTimer = null;
-    const src = b.buf;
-    renderChatMDAsync(src, (html) => {
-      if (b.buf !== src) return;   // buf 已前进：丢弃过期帧，下一帧渲染最新内容
-      b.el.innerHTML = html; wireCopyButtons(b.el); scrollChat();
-    });
-  }, 65);
+  _mdDirty.add(b);
+  if (_mdFrame) return;   // 65ms 窗口内合并突发 delta，一批只调度一帧
+  _mdFrame = setTimeout(_mdPaint, 65);
+}
+function _mdPaint() {
+  _mdFrame = null;
+  const batch = Array.from(_mdDirty);
+  _mdDirty.clear();
+  for (const b of batch) _mdPaintBlock(b, false);
+}
+/* ——— F16 第二段：长正文不再每帧整篇重灌 ———
+   量到的曲线（10 / 100 / 500KB 三档，脚本 scripts/_verify_stream_sched.js）：
+     帧数        1 / 10 / 39
+     innerHTML   10KB / 569KB / 8.5MB     ← 每帧都把整篇重灌一遍，累计写入是正文的 17 倍
+     longtask    0 / 0 / 202ms           ← 用户那一下卡顿
+     帧间隔      19 / 55 / 209ms         ← 输入掉帧的直接来源
+   解析本身不贵（Worker 里单帧最长 5.9ms，且不在主线程），贵的是 DOM 替换。
+   所以正文按"稳定前缀 + 尾巴"两半画：
+     · 稳定前缀只切在**块边界**（空行之后，且这之前围栏成双）——renderChatMD 是逐行的
+       块级渲染，列表遇到空行本来就 flushList，所以在空行处切两半、分别渲染再拼接，
+       与整篇渲染一次逐字相同（这一点是这套缓存正确的全部依据）；
+     · 尾巴是还没稳定的那一小截，每帧只重画它；
+     · 尾巴过长（例如一整块超长代码还没闭合）或内容回退（rewind/重生）时，
+       这一块退回整篇 Worker 重画 —— 最坏情况不超过改造前的成本，不会更差。 */
+const _MD_TAIL_MAX = 32 * 1024;
+/* 返回 [稳定前缀, 尾巴]：切点右移一位都不行，切点必须在"一个空行结束"的位置 */
+function _mdSplit(src) {
+  let k = src.lastIndexOf("\n\n");
+  while (k >= 0) {
+    const cut = k + 2;
+    const head = src.slice(0, cut);
+    if (((head.match(/^```[^\n]*$/gm) || []).length & 1) === 0) return [head, src.slice(cut)];
+    k = src.lastIndexOf("\n\n", k - 1);
+  }
+  return ["", src];
+}
+function _mdPaintBlock(b, final) {
+  const src = b.buf;
+  const sp = final ? [src, ""] : _mdSplit(src);
+  const stable = sp[0], tail = sp[1];
+  const painted = typeof b._paintedSrc === "string" ? b._paintedSrc : null;
+  if (!final && (tail.length > _MD_TAIL_MAX || painted === null || !stable.startsWith(painted))) {
+    _mdFullFrame(b, src);
+    return;
+  }
+  /* 尾巴元素恒为 b.el 的最后一个孩子：新稳定的那一截永远插在它前面，
+     于是 DOM 里的顺序与整篇渲染出来的顺序一致。 */
+  if (!b._tailEl || b._tailEl.parentNode !== b.el) {
+    if (b._tailEl && b._tailEl.parentNode !== b.el) b._tailEl.remove();
+    b._tailEl = document.createElement("div");
+    b._tailEl.className = "md-tail";
+    b.el.appendChild(b._tailEl);
+  }
+  const delta = stable.slice(painted ? painted.length : 0);
+  if (delta) b._tailEl.insertAdjacentHTML("beforebegin", renderChatMD(delta));
+  b._paintedSrc = stable;
+  if (final) { b._tailEl.remove(); b._tailEl = null; b._paintedSrc = src; }
+  else b._tailEl.innerHTML = tail ? renderChatMD(tail) : "";
+  wireCopyButtons(b.el); _mdScroll(b);
+}
+/* 整篇重画（旧那一条路）：Worker 解析 + 一次 innerHTML 替换 */
+function _mdFullFrame(b, src) {
+  const gen = b.gen || 0;
+  if (b._tailEl) { b._tailEl.remove(); b._tailEl = null; }
+  renderChatMDAsync(src, (html) => {
+    /* 作废的两种情形：这一块的内容又前进了（下一帧会画更新的），
+       或者这一块已经收尾（终稿由 msg.end 负责，见上面的 gen 注释）。 */
+    if (b.buf !== src || (b.gen || 0) !== gen) return;
+    b.el.innerHTML = html;
+    b._paintedSrc = src;
+    wireCopyButtons(b.el); _mdScroll(b);
+  });
+}
+/* 这一块不再需要流式帧了：从脏集合摘掉 + 世代号让飞行中的旧帧全部作废 */
+function _mdEndBlock(b) {
+  if (!b) return;
+  b.gen = (b.gen || 0) + 1;
+  _mdDirty.delete(b);
+}
+/* 后台会话那一块不该去动前台的滚动位置。
+   异步回调时 withConv 早就出来了，_boundConvId 是空的，scrollChat 会拿
+   "当前看得见的那块"当目标滚 —— 后台流一帧，前台的阅读位置就被拉走一次。 */
+function _mdScroll(b) {
+  if (!b.pane || !b.pane.isConnected) return;   // 非网格里后台 pane 根本不挂 DOM，不用滚
+  if (!gridMode) { scrollChat(); return; }
+  const box = b.pane;
+  if (box.scrollHeight - box.scrollTop - box.clientHeight < 80) box.scrollTop = box.scrollHeight;
 }
 
 /* W9：msg.end 的最终渲染同样走 Worker —— 长回复在结束那一瞬同步全量重渲染，
@@ -2513,13 +2757,155 @@ function applyEngineInfo(info) {
   if (typeof renderEnvPanel === "function") renderEnvPanel();
 }
 
-function syncFiles(files, incremental) {
-  if (incremental) {
-    // 增量更新：只覆盖传入的路径，保留未提及的文件
+/* ============================================================
+   F15 · 目录元数据 + 按需正文的前端一侧
+   ------------------------------------------------------------
+   state.files[path] 现在长这样（后两个字段可能压根没有）：
+     { path, size, mtimeMs, lang, binary, isNew, content?, original? }
+   "没有 content" 和 "content 是空串" 是两件不同的事：前者=还没读，后者=文件是空的。
+   所有要正文的地方都走 ensureContent / ensureBaseline，它们保证：
+     · 同一路径并发只发一次请求（共享同一个 Promise）；
+     · 服务端回包前不覆盖用户正在编辑的内容（脏文件绝不 setValue）；
+     · 拿不到就明说（终端一行），而不是让界面停在一个永远转圈的标签上。
+   ============================================================ */
+const _lazyWait = {};     // path -> {resolve, timer}：正文在途
+const _lazyBase = {};     // path -> {resolve, timer}：基线在途
+const LAUNCH_READ_TIMEOUT_MS = 20000;
+
+function _takeWait(map, key, value) {
+  const w = map[key];
+  if (!w) return;
+  clearTimeout(w.timer);
+  delete map[key];
+  w.resolve(value);
+}
+
+/* 合并一条目录项：mtime 没变就保留已经读到的正文（这是"反复打开同一文件不重复读盘"的那一半）。 */
+function mergeEntry(old, incoming) {
+  if (!incoming) return old;
+  const base = Object.assign({}, old || {}, incoming);
+  if (typeof incoming.content !== "string") {
+    // 元数据更新：正文只有在"文件确实变了"时才作废
+    const staleByMtime = old && typeof old.content === "string" &&
+      Number(old.mtimeMs || 0) !== Number(incoming.mtimeMs || 0);
+    if (old && !staleByMtime) { base.content = old.content; base.original = old.original; }
+    else if (staleByMtime) { delete base.content; delete base.original; }
+  }
+  return base;
+}
+
+function applyTree(tree, changed) {
+  if (tree) {
+    state.tree = {
+      total: Number(tree.total) || 0,
+      listed: Number(tree.listed) || (tree.entries || []).length,
+      more: !!tree.more,
+      truncated: !!tree.truncated,
+      /* 翻页要带的是"下一条从第几个开始"（offset），不是上一条路径：
+         服务端那页的排序键是 (价值层, 字典序)，路径游标会跨层错位。 */
+      nextOffset: Number(tree.nextOffset) || ((Number(tree.offset) || 0) + (tree.entries || []).length),
+    };
     state.files = state.files || {};
-    for (const p in files) state.files[p] = files[p];
-  } else {
-    state.files = files;
+    for (const e of (tree.entries || [])) state.files[e.path] = mergeEntry(state.files[e.path], e);
+  }
+  if (Array.isArray(changed)) state.changed = changed;
+}
+
+function ensureContent(path) {
+  const f = state.files[path];
+  if (!f) return Promise.resolve("");
+  if (f.binary) return Promise.resolve("");
+  if (typeof f.content === "string") return Promise.resolve(f.content);
+  if (_lazyWait[path]) return _lazyWait[path].p;
+  let resolve, timer = null;
+  const p = new Promise((r) => { resolve = r; });
+  _lazyWait[path] = { p, resolve, timer };
+  if (!send({ type: "file.read", path })) {
+    delete _lazyWait[path];
+    termLine('<span class="tl-warn">[读取] ' + escHtml(path) + " 没能发出去（连接未就绪）</span>");
+    return Promise.resolve("");
+  }
+  timer = setTimeout(() => {
+    if (!_lazyWait[path]) return;
+    delete _lazyWait[path];
+    termLine('<span class="tl-warn">[读取] ' + escHtml(path) + " 等了 " + (LAUNCH_READ_TIMEOUT_MS / 1000) + "s 没回，可能是盘上已经没有了</span>");
+    resolve("");
+  }, LAUNCH_READ_TIMEOUT_MS);
+  _lazyWait[path].timer = timer;
+  return p;
+}
+
+function ensureBaseline(path) {
+  const f = state.files[path];
+  if (!f) return Promise.resolve("");
+  if (typeof f.original === "string" || f.isNew === true) return Promise.resolve(f.original || "");
+  if (_lazyBase[path]) return _lazyBase[path].p;
+  let resolve, timer = null;
+  const p = new Promise((r) => { resolve = r; });
+  _lazyBase[path] = { p, resolve, timer };
+  if (!send({ type: "file.baseline", path })) {
+    delete _lazyBase[path];
+    return Promise.resolve("");
+  }
+  timer = setTimeout(() => {
+    if (!_lazyBase[path]) return;
+    delete _lazyBase[path];
+    resolve("");
+  }, LAUNCH_READ_TIMEOUT_MS);
+  _lazyBase[path].timer = timer;
+  return p;
+}
+
+/* 服务端回包（file.data / file.baseline / file.error）——在 handleEventInner 里分发到这里 */
+function onFileData(ev) {
+  const f = state.files[ev.path] || { path: ev.path };
+  f.content = ev.content;
+  if (ev.size != null) f.size = ev.size;
+  if (ev.mtimeMs) f.mtimeMs = ev.mtimeMs;
+  if (ev.lang) f.lang = ev.lang;
+  state.files[ev.path] = f;
+  if (models[ev.path] && !state.dirty.has(ev.path) && models[ev.path].getValue() !== ev.content) {
+    models[ev.path].setValue(ev.content);
+  }
+  if (state.activeFile === ev.path && previewOn && isPreviewable(ev.path)) renderPreview();
+  _takeWait(_lazyWait, ev.path, ev.content);
+}
+function onFileBaseline(ev) {
+  const f = state.files[ev.path] || { path: ev.path };
+  f.original = ev.original;
+  if (ev.isNew !== undefined) f.isNew = !!ev.isNew;
+  state.files[ev.path] = f;
+  _takeWait(_lazyBase, ev.path, ev.original);
+}
+function onFileError(ev) {
+  termLine('<span class="tl-warn">[读取] ' + escHtml(ev.path || "") + "：" + escHtml(ev.error || "读不出来") + "</span>");
+  _takeWait(_lazyWait, ev.path, "");
+  _takeWait(_lazyBase, ev.path, "");
+}
+
+/* 翻页：把下一页并进来，"还有 N 个未加载"跟着走 */
+function loadMoreTree() {
+  if (!state.tree.more) return;
+  if (!send({ type: "tree.load", offset: Number(state.tree.nextOffset) || 0, limit: 500 })) {
+    termLine('<span class="tl-warn">[目录] 加载更多没能发出去（连接未就绪）</span>');
+  }
+}
+
+function syncFiles(files, incremental, removed) {
+  state.files = state.files || {};
+  if (removed && removed.length) {
+    for (const p of removed) {
+      delete state.files[p];
+      if (models[p]) { models[p].dispose(); delete models[p]; state.dirty.delete(p); lspClose(p); }
+    }
+  }
+  /* 增量合并：只覆盖点名的路径，**保留已经读到的正文**。
+     服务端这里发来的多半是元数据（没有 content），mergeEntry 会按 mtime 决定要不要作废。 */
+  for (const p in files) state.files[p] = mergeEntry(state.files[p], files[p]);
+  if (!incremental && removed && removed.length) {
+    /* 目录变了（增删改名）时服务端会点名哪些确实没了；上面已经按 removed 清过一遍，
+       这里只补一句注释说明"为什么不整包替换"：整包替换等于把用户已经翻出来的后面几页也丢掉。 */
+    for (const p of removed) delete state.files[p];
   }
   // 关闭已消失文件的标签
   state.openTabs = state.openTabs.filter((p) => state.files[p]);
@@ -2528,11 +2914,12 @@ function syncFiles(files, incremental) {
     if (state.activeFile) openFile(state.activeFile);
     else { hideBinPreview(); if (state.monacoReady) editor.setModel(null); }
   }
-  // 同步 model 内容（跳过用户正在编辑的脏文件）
+  // 同步 model 内容（跳过用户正在编辑的脏文件；没正文的先不去读，等打开时再说）
   if (state.monacoReady) {
     for (const p in models) {
-      if (!state.files[p]) { models[p].dispose(); delete models[p]; state.dirty.delete(p); lspClose(p); continue; }
+      if (!state.files[p]) continue;
       if (state.files[p].binary) continue; // 二进制占位 model 不同步内容
+      if (typeof state.files[p].content !== "string") continue;
       if (!state.dirty.has(p) && models[p].getValue() !== state.files[p].content) models[p].setValue(state.files[p].content);
     }
   }
@@ -2618,21 +3005,30 @@ function renderApproval(ev) {
     cdStop = w.stop;
   }
   const lock = () => { el.querySelectorAll(".approval-actions button").forEach((b) => (b.disabled = true)); if (cdStop) cdStop(); };
+  /* send 返回 false 意味着这条压根没交给服务端（连接没开 / 正在重连）。
+     这时把卡片标成"已批准"再禁用按钮，用户就没有第二次机会了 ——
+     而 Agent 那边还卡在等确认，表现是"任务永远不动"（审查项 F09）。
+     所以没发出去时保持按钮可点，只把状态如实写出来。 */
+  const notSent = () => {
+    statusEl.className = "t-status fail";
+    statusEl.innerHTML = ico("close") + " 确认没有发出去（连接未就绪），可重试";
+    return false;
+  };
   el.querySelector(".btn-approve").onclick = () => {
-    send({ type: "tool.approve", id: ev.id });
+    if (!send({ type: "tool.approve", id: ev.id })) return notSent();
     statusEl.className = "t-status done";
     statusEl.innerHTML = ico("check") + " 已批准";
     lock();
   };
   const sesBtn = el.querySelector(".btn-approve-session");
   if (sesBtn) sesBtn.onclick = () => {
-    send({ type: "tool.approve", id: ev.id, remember: "session", tool: ev.tool });
+    if (!send({ type: "tool.approve", id: ev.id, remember: "session", tool: ev.tool })) return notSent();
     statusEl.className = "t-status done";
     statusEl.innerHTML = ico("shield") + " 本会话已授权 " + (ev.tool || "");
     lock();
   };
   el.querySelector(".btn-reject").onclick = () => {
-    send({ type: "tool.reject", id: ev.id });
+    if (!send({ type: "tool.reject", id: ev.id })) return notSent();
     statusEl.className = "t-status fail";
     statusEl.innerHTML = ico("close") + " 已拒绝";
     lock();
@@ -2672,7 +3068,12 @@ function renderChoice(ev) {
     btn.onclick = () => {
       const idx = parseInt(btn.dataset.idx, 10);
       const choice = opts[idx] ? opts[idx].label : "";
-      send({ type: "tool.choice_result", id: ev.id, choice });
+      /* 与审批卡同一口径：没发出去就不许标"已选择"，按钮保持可点（审查项 F09）。 */
+      if (!send({ type: "tool.choice_result", id: ev.id, choice })) {
+        statusEl.className = "t-status fail";
+        statusEl.innerHTML = ico("close") + " 选择没有发出去（连接未就绪），可重试";
+        return;
+      }
       statusEl.className = "t-status done";
       statusEl.innerHTML = ico("check") + " 已选择: " + esc(choice);
       if (cdStop) cdStop();
@@ -2736,7 +3137,10 @@ function handleEventInner(ev) {
       if (typeof renderEnvPanel === "function") setTimeout(renderEnvPanel, 0);
       if (ev.lsp) state.lsp = ev.lsp;
       if (ev.ctxLimit) state.ctxLimit = ev.ctxLimit;   // 水位分母：压缩线（与压缩判定同源）
-      syncFiles(ev.files);
+      /* F15：先落目录元数据（含"一共多少个 / 还有没有下一页"），再把带正文的那一撮盖上去。
+         顺序反了会把 warm 的正文当作"没有 content 的新条目"被 mergeEntry 丢一次。 */
+      applyTree(ev.tree, ev.changed);
+      syncFiles(ev.files, true, []);
       setRunning(ev.running, null);
       if (!state.booted) {
         state.booted = true;
@@ -2751,7 +3155,30 @@ function handleEventInner(ev) {
       }
       break;
     }
-    case "fs.sync": syncFiles(ev.files, ev.incremental); break;
+    case "fs.sync":
+      if (ev.tree || ev.changed) applyTree(ev.tree, ev.changed);
+      syncFiles(ev.files, ev.incremental, ev.removed || []);
+      break;
+    /* F15 的三朵按需回包：正文、基线、目录下一页 */
+    case "file.data": onFileData(ev); break;
+    case "file.baseline": onFileBaseline(ev); break;
+    case "file.error": onFileError(ev); break;
+    case "tree.data":
+      applyTree(ev, null);
+      renderTree();
+      break;
+    case "fs.renamed": {
+      /* 改名 = 旧路径没了 + 新路径有了。tab / model / 脏标记都要跟着搬家，
+         否则用户看到的是"改完名之后编辑器里那份还是旧路径的内容"。 */
+      if (ev.from && ev.to && state.files[ev.to] && !state.files[ev.from]) {
+        if (models[ev.from]) { models[ev.to] = models[ev.from]; delete models[ev.from]; }
+        if (state.dirty.has(ev.from)) { state.dirty.delete(ev.from); state.dirty.add(ev.to); }
+        state.openTabs = state.openTabs.map((p) => (p === ev.from ? ev.to : p));
+        if (state.activeFile === ev.from) state.activeFile = ev.to;
+        renderTabs(); renderBreadcrumb();
+      }
+      break;
+    }
     case "engine.info": applyEngineInfo(ev.engine); break;
     case "agent.state": setRunning(ev.running, ev.label, ev.convId, ev.labelKey, ev.labelVars); break;
     case "agent.backoff": {
@@ -2782,6 +3209,18 @@ function handleEventInner(ev) {
       break;
     }
     case "op.error": termLine('<span class="tl-err">[操作失败] ' + esc(ev.userHint || ev.error) + "</span>"); break;
+    case "chat.rejected": {
+      /* 会话排队满了，服务端拒收这一条。以前前端完全没接这个事件：
+         输入框早就清空了，用户看到的只是"我发的消息没影了"（审查项 F09）。
+         原文从 lastSent 取（服务端回包里的 text 为控体积截到 2000 字，
+         拿它还原草稿等于悄悄吃掉后半截）。 */
+      termLine('<span class="tl-warn">[Agent] ' + esc(ev.reason || "这条没有发出去") + "</span>");
+      if (!ev.convId || ev.convId === (lastSent && lastSent.convId)) {
+        if (restoreLastSent()) termLine('<span class="tl-info">[Agent] 原文已放回输入框，改完再发即可。</span>');
+        lastSent = null;
+      }
+      break;
+    }
     case "agent.error": showAgentError(ev); break;
     case "file.saved": {
       /* 只认这次 ack 对应的那份内容。以前无条件把"此刻编辑器里的内容"当成磁盘内容，
@@ -2854,7 +3293,7 @@ function handleEventInner(ev) {
       el.className = "msg msg-ai type-caret";
       row.appendChild(el);
       chatPane().appendChild(row); scrollChat(true);
-      answerBlock = { el, row, buf: "" };
+      answerBlock = { el, row, buf: "", pane: chatPane() };
       blocks[ev.id] = answerBlock;
       break;
     }
@@ -2865,13 +3304,13 @@ function handleEventInner(ev) {
     }
     case "msg.end": {
       const b = blocks[ev.id]; if (!b) break;
-      if (_mdTimer) { clearTimeout(_mdTimer); _mdTimer = null; }
+      _mdEndBlock(b);   // 摘掉流式帧（含飞行中的那一次），终稿由下面这一次说了算
       b.el.classList.remove("type-caret");
-      // W9：最终渲染也走 Worker（widget 类回复除外，见 renderChatMDFinal 注释）
+      // W9：没建过稳定块壳的那一块（一口到位的短答）终稿仍走 Worker 整篇渲染
       let finished = false;
-      const finish = (html) => {
+      const settle = () => {
         if (finished) return; finished = true;
-        b.el.innerHTML = html; wireCopyButtons(b.el);
+        wireCopyButtons(b.el);
         // 给 AI 回复加「复制全部」按钮（气泡在流式渲染中会被 innerHTML 覆盖，故在结束时挂载）
         const row = b.el.closest(".msg-row");
         if (row && !row.querySelector(".msg-copy")) {
@@ -2883,9 +3322,14 @@ function handleEventInner(ev) {
            不该有"重新生成"，用户要重跑的是整轮任务，不是某句话。
            demoted：tool.start 已判定这块是过程叙述（后面又跟了工具），不再挂结论效果。 */
         if (row && !b.demoted) markFinalAnswer(row);
-        scrollChat();
+        _mdScroll(b);
         send({ type: "ctx.query" });   // 回答结束拉一次服务端实测水位，校正圆圈进度
       };
+      /* F16：已经按稳定块画过的那一块，收尾只是"把最后一段挪进稳定区、清掉尾巴"，
+         成本是剩下那一截，不是整篇再灌一遍（500KB 那 202ms 长任务就是这么省掉的）。
+         尾巴里剩下的未闭合内容也在这里定稿，所以终稿与流式过程用的是同一套切分口径。 */
+      if (b._tailEl) { _mdPaintBlock(b, true); settle(); break; }
+      const finish = (html) => { b.el.innerHTML = html; settle(); };
       if (b.buf) renderChatMDFinal(b.buf, finish);
       else finish("");
       break;
@@ -2986,7 +3430,16 @@ function handleEventInner(ev) {
         state.dirty.delete(ev.path);
         state.openTabs = state.openTabs.filter((p) => p !== ev.path);
       } else {
-        state.files[ev.path] = { content: ev.content, original: ev.original, isNew: ev.isNew, lang: ev.lang };
+        /* Agent 刚写完：正文/基线就地更新（这是"改了哪个文件"最权威的一手信息），
+           同时把这个路径记进变更集 —— 否则 modifiedSet 只认服务端 hello 里那份快照，
+           界面上的 M 徽标要等到下一次全量同步才亮。 */
+        state.files[ev.path] = mergeEntry(state.files[ev.path] || {}, {
+          content: ev.content, original: ev.original, isNew: ev.isNew, lang: ev.lang,
+        });
+        state.changed = state.changed || [];
+        if (!state.changed.some((c) => c && c.path === ev.path)) {
+          state.changed.push({ path: ev.path, status: ev.isNew ? "A" : "M" });
+        }
         if (state.monacoReady && models[ev.path] && !state.dirty.has(ev.path) && models[ev.path].getValue() !== ev.content) {
           models[ev.path].setValue(ev.content);
         }
@@ -3399,8 +3852,13 @@ function renderStepPill() {
   const den = Math.max(sp.total || 0, sp.n);
   seg.push('<span class="sp-steps">' + (busy ? '<i class="sp-spin"></i>' : ico(sp.fail ? "circleX" : "circleCheck")) +
     t("stepPillSteps") + " <b>" + sp.n + "</b>" + (den ? "/" + den : "") + "</span>");
-  if (ch.files) seg.push('<span class="sp-sep"></span><span class="sp-files">' + t("stepPillFiles", { n: ch.files }) + "</span>" +
-    '<span class="sp-stat"><b class="add">+' + ch.add + '</b> <b class="del">−' + ch.del + "</b></span>");
+  if (ch.files) {
+    seg.push('<span class="sp-sep"></span><span class="sp-files">' + t("stepPillFiles", { n: ch.files }) + "</span>");
+    /* 有文件没读正文就不报增删行数：那串数会让人以为"本次只改了这些"。 */
+    if (!ch.unknown) {
+      seg.push('<span class="sp-stat"><b class="add">+' + ch.add + '</b> <b class="del">−' + ch.del + "</b></span>");
+    }
+  }
   if (sp.fail) seg.push('<span class="sp-sep"></span><span class="sp-fail">' + t("stepPillFail", { n: sp.fail }) + "</span>");
   p.innerHTML = seg.join("");
   replaceIcons(p);
@@ -3412,8 +3870,9 @@ function renderEnvPanel() {
   const root = $("agEnv"); if (!root) return;
   const ch = state.lastChangeTotals || { files: 0, add: 0, del: 0 };
   const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
-  set("envAdd", "+" + (ch.add || 0));
-  set("envDel", "−" + (ch.del || 0));
+  /* 同 renderStepPill：部分文件的正文还没读过来时，这两个格子说"没量到"，不说 0。 */
+  set("envAdd", ch.unknown ? "—（有 " + ch.unknown + " 个未读）" : "+" + (ch.add || 0));
+  set("envDel", ch.unknown ? "—" : "−" + (ch.del || 0));
   set("envFiles", t("nFiles", { n: ch.files || 0 }));
   const br = $("sbBranch"); if (br) set("envBranch", br.textContent);
   const vcs = $("envVcs");
@@ -4117,6 +4576,26 @@ const AUTH = { token: "" };
 let _authRedirected = false;   // 防止 401 时反复弹登录窗
 let HAS_USERS = true;          // 本机是否已有账号（/api/auth/status 告知）；决定弹窗默认落在登录还是注册
 let lastUserText = "";         // C2：记录最后一条用户消息，供错误重试使用
+/* 最近一条"已经交给 WebSocket"的消息。服务端排队满了会拒收（chat.rejected），
+   而这时输入框早就清空了 —— 用户看到的是"我发的话凭空消失"。
+   存整份（含附件）而不是回用事件里带回来的那份：服务端为了控制回包体积
+   把 text 截到 2000 字，拿它还原草稿等于悄悄吃掉后半截。 */
+let lastSent = null;
+function restoreLastSent() {
+  if (!lastSent) return false;
+  const ta = document.querySelector("#chatInput");
+  if (!ta) return false;
+  if (!ta.value.trim() && !pendingAttach.length) {
+    ta.value = lastSent.text || "";
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    if (lastSent.attachments && lastSent.attachments.length) {
+      lastSent.attachments.forEach((a) => pendingAttach.push({ src: a.src, name: a.name }));
+      renderChips();
+    }
+    return true;
+  }
+  return false;
+}
 
 function showAuthModal() {
   _authRedirected = false;
@@ -4252,7 +4731,11 @@ function connect() {
 function send(obj) {
   if (obj && (obj.type === "chat" || obj.type === "newchat") && !obj.convId &&
       typeof convId !== "undefined" && convId) obj.convId = convId;
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  /* 返回值是"这条有没有真的交出去"。以前这里静默丢弃：连接不是 OPEN 时
+     ws.send 一行都不跑，而调用方已经把输入框清空了 ——
+     实测形态是"断线时点发送，字没了、消息也没出去"（审查项 F09）。 */
+  if (!ws || ws.readyState !== 1) return false;
+  try { ws.send(JSON.stringify(obj)); return true; } catch (e) { return false; }
 }
 
 /* ---------------- 附件（图片粘贴 / 拖拽 / 选择） ---------------- */
@@ -4292,23 +4775,36 @@ function bindInput() {
   const doSend = () => {
     const v = ta.value.trim();
     const skillId = activeSkill ? activeSkill.id : "";
-    if (!v && !pendingAttach.length && !skillId) return;
+    if (!v && !pendingAttach.length && !skillId) return false;
 
-    ta.value = "";
-    // 记录到当前会话的发送历史，供 ↑/↓ 浏览回填
-    const curConv = (typeof convId !== "undefined" && convId) || "default";
-    (sentHistory[curConv] = sentHistory[curConv] || []);
-    if (v) sentHistory[curConv].push(v);
-    histNav = -1;
-    const attachments = pendingAttach.splice(0, pendingAttach.length).map((a) => ({ src: a.src, name: a.name }));
-    renderChips();
+    const attachments = pendingAttach.map((a) => ({ src: a.src, name: a.name }));
     /* Skill 走 skillId 单独发出去，正文由服务端注入到模型看到的上下文里。
        旧写法是把整份 body 前置拼进这条消息：气泡里糊一大段模板、每轮都重复占上下文，
        而且"用技能"必须靠输入框里有字才成立。 */
     const text = v || (attachments.length ? "（请分析所附图片）" : "");
     // 多会话并行：直接发送，不再排队
-    lastUserText = text; send({ type: "chat", text, attachments, convId, skillId });
+    lastUserText = text;
+    /* 先确认这条真的交得出去，再动输入框。
+       原先的顺序是"清空 → 发送"，而 send 在连接没开时什么都不做：
+       离线/重连的窗口里点一次发送，草稿就凭空没了（审查项 F09 实测）。
+       刻意不做"重连后自动补发"：chat 这一路带着附件与技能，自动重发在
+       "服务端其实收到了、只是回包丢了"的情况下会变成执行两遍。 */
+    const accepted = send({ type: "chat", text, attachments, convId, skillId });
+    if (!accepted) {
+      termLine('<span class="tl-warn">[发送] 与服务的连接尚未就绪，这条消息没有发出，草稿已为你保留。</span>');
+      return false;
+    }
+    ta.value = "";
+    lastSent = { text, attachments, convId: (typeof convId !== "undefined" && convId) || "default" };
+    // 记录到当前会话的发送历史，供 ↑/↓ 浏览回填
+    const curConv = (typeof convId !== "undefined" && convId) || "default";
+    (sentHistory[curConv] = sentHistory[curConv] || []);
+    if (v) sentHistory[curConv].push(v);
+    histNav = -1;
+    pendingAttach.splice(0, pendingAttach.length);
+    renderChips();
     if (attachments.length) termLine('<span class="tl-info">[附件] 已随消息发送 ' + attachments.length + " 张图片</span>");
+    return true;
   };
   window._doSend = doSend;   // 暴露全局引用供 setRunning / openConv 使用
   inputBox.querySelector("#btnSend").onclick = doSend;
@@ -4320,9 +4816,10 @@ function bindInput() {
   ta.addEventListener("input", autoGrow);
   ta.addEventListener("focus", () => inputBox.classList.add("focused"));
   ta.addEventListener("blur", () => inputBox.classList.remove("focused"));
-  ta.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { if (atMenu && atMenu.style.display !== "none") return; e.preventDefault(); doSend(); }
-  });
+  /* Enter 不再单独挂一个监听器。以前这里先挂了一个"Enter 就发"的处理器，
+     菜单导航那一个挂在它后面 —— 于是斜杠菜单开着时按 Enter，
+     先被前一个处理器发出去、后一个才想起来要补全（实测：/review 既发出去了又被展开）。
+     键盘入口只留下面那一个，优先级固定为：输入法组合态 → 菜单 → 历史 → 发送。 */
 
   // C1b：@文件 / @目录 补全（意图→结果闭环提速）
   atMenu = document.createElement("div");
@@ -4428,6 +4925,11 @@ function bindInput() {
   };
 
   ta.addEventListener("keydown", (e) => {
+    /* 输入法组合态优先于一切：中文/日文输入时按 Enter 是"确认候选词"，
+       不是"把这条发出去"。判据两条并用 —— e.isComposing 是标准位，
+       keyCode 229 是老 Safari/部分 IME 唯一会给的信号（实测漏掉这一条时，
+       选词按回车会把半截拼音直接发出去并清空输入框）。 */
+    if (e.isComposing || e.keyCode === 229) return;
     if (atMenu && atMenu.style.display !== "none") {
       // @ 文件/目录 补全菜单导航
       if (e.key === "Escape") hideAtMenu();
@@ -4443,6 +4945,8 @@ function bindInput() {
       else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSlash(slashIdx); }
       return;
     }
+    /* 没有菜单在场，Enter 才是"发送"。放在菜单分支之后，斜杠/@ 命令就不会被抢发。 */
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); return; }
     // 历史消息浏览（@ 菜单未打开时）
     // 仅在「不会妨碍多行编辑」时接管方向键：单行内容随时可翻历史；
     // 多行内容只在光标处于最开头（↑）/ 最末尾（↓）时才翻历史，
@@ -4624,6 +5128,16 @@ function convFirstUserTitle(cvid) {
   return t.slice(0, 32);
 }
 
+/* 列表摘要：最后一句话（用户问的或 AI 答的）取前 42 字。
+   只在写快照时算一次，不在每次渲染列表时算 —— 见 convSummary 的注释。 */
+function convLastLineText(pane) {
+  if (!pane) return "";
+  const msgs = pane.querySelectorAll(".msg-user, .msg-ai");
+  const last = msgs[msgs.length - 1];
+  if (!last) return "";
+  return (last.textContent || "").trim().replace(/\s+/g, " ").slice(0, 42);
+}
+
 /* 持久化指定会话（默认当前活跃）的 pane 内容到 localStorage */
 function persistConv(cvid) {
   const id = cvid || convId;
@@ -4632,7 +5146,11 @@ function persistConv(cvid) {
   const list = loadConvList();
   const c = list.find((x) => x.id === id);
   if (!c) return;
-  if (pane) saveConvDom(id, pane.innerHTML);   // dom 独立存储，避免全量序列化
+  if (pane) {
+    saveConvDom(id, pane.innerHTML);   // dom 独立存储，避免全量序列化
+    const s = convLastLineText(pane);
+    if (s) c.summary = s;
+  }
   const t = convFirstUserTitle(id);
   if (t && (!c.title || c.title === "新对话")) c.title = t;
   // 不更新 ts，保持创建时间排序不变，避免会话列表跳动
@@ -4657,10 +5175,17 @@ function convTimeGroup(ts) {
 }
 /* 分组标题按当前语言现取：写成常量数组的话，切语言后侧栏还钉着"今天" */
 const CONV_GROUP_KEYS = ["convGroupToday", "convGroupYesterday", "convGroupWeek", "convGroupEarlier"];
+/* F17：列表摘要优先读记录里的元数据。
+   旧形态对**每一条**会话现场 `div.innerHTML = 那份 pane 快照` 再 querySelector ——
+   渲染一次列表就要解析全部历史正文（1000 条会话时是纯重复劳动），而且每条都要
+   读一次 localStorage（lsGet 还会顺手写一次 LRU 索引）。
+   摘要在 persistConv 写快照时一并算好存下来（那时正文本来就在内存里）。
+   老记录没有 summary → 仍然走原来的现场解析，不因为改版把历史摘要弄丢。 */
 function convSummary(c) {
   if (c.id === convId && state.convRunning[c.id]) return { tag: "running", text: t("convGroupRunning", { n: state.round || 1 }) };
   if (state.convRunning[c.id]) return { tag: "running", text: t("running") };
-  // 优先取内存 pane（后台会话流式更新后比 localStorage 快照新鲜）
+  if (typeof c.summary === "string" && c.summary) return { tag: "", text: c.summary };
+  // 兼容：没有 summary 的老记录（含刚迁移过来、还没再持久化过的那些）
   const domHtml = (convPanes[c.id] && convPanes[c.id].childNodes.length) ? convPanes[c.id].innerHTML : loadConvDom(c.id);
   if (domHtml) {
     const tmp = document.createElement("div");
@@ -4777,7 +5302,17 @@ function showConvCtxMenu(e, c) {
 }
 
 /* 会话搜索框实时过滤 */
-(function() { const cs = $("convSearch"); if (cs) cs.addEventListener("input", renderConvList); })();
+(function() {
+  const cs = $("convSearch");
+  if (!cs) return;
+  /* F17：逐字符重建整张表 = 每次按键都把 1000 行 DOM 重做一遍。
+     输入框按主流做法做一次短延时（停手 120ms 才重建），搜索仍然即时响应。 */
+  let timer = null;
+  cs.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(renderConvList, 120);
+  });
+})();
 
 function openConv(id) {
   if (id === convId) { applyLayout(); return; }   // 网格模式下重复点击本会话：只刷新布局
@@ -4795,6 +5330,7 @@ function openConv(id) {
   if (!convPanes[id]) hydratePane(id, (c && loadConvDom(id)) || "");
   applyLayout();   // W22：单视图与网格共用这一个挂载入口
   foldOldMessages();
+  evictHotPanes();   // F17：切走的会话只留最近 HOT_PANES 块，其余在落快照后释放 DOM
   scrollChat();
   buildMsgNav();
   refreshCtx();

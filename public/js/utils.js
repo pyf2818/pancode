@@ -130,15 +130,19 @@ function _lsSaveOrder() {
 }
 /* 记一次访问：把 key 移到队尾（队头 = 最老）。
    只记可淘汰的那些——偏好类 key（cw-theme 之类）本来就永远不会被牺牲，
-   进索引只会把索引撑大、并让"最老"算错。 */
-function lsTouch(key) {
+   进索引只会把索引撑大、并让"最老"算错。
+   persist=false（读缓存那条路）只在内存里改顺序，不落 localStorage：
+   以前 lsGet 也走这里，于是"读一次"等于"同步写一次索引"——渲染一遍 1000 条的会话列表
+   就是 1000 次同步写（审查项 F17 量到的）。淘汰口径因此变成"最近没写过的先淘汰"，
+   而会话正文快照只在它发生变化时才会被写，活跃会话照样受保护。 */
+function lsTouch(key, persist) {
   if (!LS_PREFIXES.some((p) => String(key).indexOf(p) === 0)) return;
   const o = lsOrder();
   const i = o.indexOf(key);
   if (i >= 0) o.splice(i, 1);
   o.push(key);
   while (o.length > 400) o.shift();      // 索引自身也收敛，别变成新的泄漏点
-  _lsSaveOrder();
+  if (persist !== false) _lsSaveOrder();
 }
 /* 只淘汰我们自己写的会话快照，绝不动 cw-theme / cw-fontsize 这类偏好。 */
 function lsEvictOldest() {
@@ -167,7 +171,7 @@ function lsSet(key, val) {
     catch (e2) { lsWarnFull(e2); return false; }
   }
 }
-function lsGet(key) { try { lsTouch(key); return localStorage.getItem(key); } catch (e) { return null; } }
+function lsGet(key) { try { lsTouch(key, false); return localStorage.getItem(key); } catch (e) { return null; } }
 
 function colorizeDiffText(text) {
   return text.split("\n").map((l) => {
