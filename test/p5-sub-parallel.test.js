@@ -379,3 +379,79 @@ describe("共享白板 handler", () => {
     expect(board.items.length).toBe(0);
   });
 });
+
+/* ============================================================
+   审查项 F03：solo 判据答的是"我这组里有没有兄弟"，
+   不是"这份盘上有没有别的写者" —— 少了后面这一问，整盘抹就可能把别人的活一起抹掉。
+   下面两条钉的是"别人写的必须原样留着"，正向对照钉"否决不是把整盘回滚整个关掉"。
+   ============================================================ */
+describe("整盘回滚的跨写者否决", () => {
+  const diskOf = (p) => fs.readFileSync(path.join(wsDir, p), "utf8");
+
+  it("同引擎里别的写者（别的会话 / 用户在编辑器里保存）落过盘 → 不走整盘回滚", async () => {
+    const a = mkAgent({ "mine.js": "M0", "theirs.js": "T0" });
+    a._undoStack = [];
+    a._engineId = 90001;
+    a._chatStream = async () => {
+      const me = currentSub();
+      me.n = (me.n || 0) + 1;
+      if (me.n > 1) return { content: "完成" };
+      /* 子智能体自己写的那一笔：走 _pushCheckpoint，署名自动落在 me.writer 上 */
+      a.files.write("mine.js", "子步骤写的");
+      a._pushCheckpoint([{ path: "mine.js", beforeExisted: true, beforeContent: "M0", store: null, dir: wsDir }], "子步骤写入");
+      /* 同一时刻另一个写者改了另一个文件 —— 旧代码的整盘比对会把它一起抹回 T0 */
+      a.files.write("theirs.js", "别人改的");
+      a._undoStack.push({
+        label: "别人写入 theirs.js", at: Date.now(), convId: "other-conv", writer: null,
+        entries: [{ path: "theirs.js", beforeExisted: true, beforeContent: "T0", store: null, dir: wsDir }],
+      });
+      return { content: "完成" };
+    };
+    const r = {};
+    await a.runSubAgent("独占跑一步", { label: "独占", report: r });
+    expect(diskOf("theirs.js")).toBe("别人改的");
+    expect(r.foreignWrites).toContain("theirs.js");
+    expect(termLines(a)).toContain("整盘回滚已否决");
+  });
+
+  it("同进程里另一个用户引擎写过这份盘 → 同样否决（各自的撤销栈互相看不见）", async () => {
+    const a = mkAgent({ "mine.js": "M0", "theirs.js": "T0" });
+    a._undoStack = [];
+    a._engineId = 90002;
+    const other = mkAgent();                 // 另一份引擎实例，指向同一个工作区
+    other._undoStack = [];
+    other._engineId = 90003;
+    a._chatStream = async () => {
+      const me = currentSub();
+      me.n = (me.n || 0) + 1;
+      if (me.n > 1) return { content: "完成" };
+      a.files.write("mine.js", "子步骤写的");
+      a._pushCheckpoint([{ path: "mine.js", beforeExisted: true, beforeContent: "M0", store: null, dir: wsDir }], "子步骤写入");
+      a.files.write("theirs.js", "另一个引擎写的");
+      other.files.write("theirs.js", "另一个引擎写的");
+      other._pushCheckpoint([{ path: "theirs.js", beforeExisted: true, beforeContent: "T0", store: null, dir: wsDir }], "另一个用户写入");
+      return { content: "完成" };
+    };
+    const r = {};
+    await a.runSubAgent("独占跑一步", { label: "独占", report: r });
+    expect(diskOf("theirs.js")).toBe("另一个引擎写的");
+    expect(r.foreignWrites.length).toBeGreaterThan(0);
+  });
+
+  it("正向对照：确实只有我一个写者时，整盘回滚照常执行（否决不是把它整个关掉）", async () => {
+    const a = mkAgent({ "base.js": "B0" });
+    a._undoStack = [];
+    a._engineId = 90004;
+    a._chatStream = async () => {
+      const me = currentSub();
+      me.n = (me.n || 0) + 1;
+      if (me.n === 1) return { toolCalls: [{ id: "c1", name: "run_command", arguments: JSON.stringify({ __p: "命令造的2.txt", command: "造个文件" }) }] };
+      return { content: "完成" };
+    };
+    const r = {};
+    await a.runSubAgent("独自跑命令", { label: "独占", report: r });
+    expect(a.files.exists("命令造的2.txt")).toBe(false);
+    expect(r.foreignWrites).toEqual([]);
+    expect(termLines(a)).toContain("独占，整盘比对");
+  });
+});

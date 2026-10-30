@@ -149,7 +149,7 @@ const COMMANDS = [
       if (!sub) {
         const { wizard } = require("./llm-setup");
         const r = await wizard(cfg);
-        if (r && ctx.rebuildEngine) ctx.rebuildEngine();
+        if (r && ctx.rebuildEngine) await ctx.rebuildEngine();
         return;
       }
 
@@ -178,7 +178,7 @@ const COMMANDS = [
       if (sub === "add") {
         const { wizard } = require("./llm-setup");
         const r = await wizard(cfg);
-        if (r && ctx.rebuildEngine) ctx.rebuildEngine();
+        if (r && ctx.rebuildEngine) await ctx.rebuildEngine();
         return;
       }
 
@@ -189,7 +189,7 @@ const COMMANDS = [
         if (r && r.ok) {
           process.stdout.write(S.ok("✓ 已切换到 ") + r.profile.name + S.dim(" → " + r.profile.model) + "\n");
           if (!r.hasKey) process.stdout.write(S.warn("  ⚠ 该配置无 API Key，需重新设置\n"));
-          if (ctx.rebuildEngine) ctx.rebuildEngine();
+          if (ctx.rebuildEngine) await ctx.rebuildEngine();
         } else {
           process.stdout.write(S.err("  未找到配置 id=" + rest + "\n"));
         }

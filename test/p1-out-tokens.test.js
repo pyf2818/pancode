@@ -12,7 +12,11 @@ const path = require("path");
 let root = "";
 let cfgMod = null;
 function freshConfig(dataDir) {
-  for (const m of ["../server/config", "../server/safe-write"]) delete require.cache[require.resolve(m)];
+  /* dotenv 也要一起清：它的 ROOT/ENV_PATH 是在**模块加载时**按当时的 PANCODE_DATA_DIR 定死的。
+     每个用例都换一个新的临时数据根，只清 config 的话 setEnvVar 会往第一个用例（已经删掉的）
+     目录里写 .env —— 表现是 ENOENT，红的是夹具的陈旧路径，不是产品。
+     （applyLlmProfile 从 F12 起总会写这个键：切到没有密钥的档要显式清掉，不能让上一档的密钥留在运行时。） */
+  for (const m of ["../server/config", "../server/safe-write", "../server/dotenv"]) delete require.cache[require.resolve(m)];
   process.env.PANCODE_DATA_DIR = dataDir;
   return require("../server/config");
 }

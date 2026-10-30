@@ -188,11 +188,19 @@ async function repl({ engine, stores, cfg, wsDir, standalone }) {
     exit: false, vimMode: false,
     transcriptLines: [],
     standalone,
-    /* /llm 配置后热切换引擎 */
-    rebuildEngine: () => {
-      const fresh = standalone
+    /* /llm 配置后热切换引擎。
+       两个装配函数都是 async 的，以前这里当同步用：`fresh.engine` 拿到的是
+       undefined（Promise 上没有 engine 字段），于是 /llm 走完向导后引擎直接坏掉
+       （审查项 F11）。换引擎前先中止并等旧引擎把会话落盘，别把在跑的任务丢在半路。 */
+    rebuildEngine: async () => {
+      const old = engine;
+      if (old) {
+        try { if (typeof old.abort === "function") old.abort(); } catch (_) {}
+        try { if (old.flushConversations) await old.flushConversations(); } catch (_) {}
+      }
+      const fresh = await (standalone
         ? assembleStandalone(wsDir, () => {})
-        : assembleFull(wsDir, () => {});
+        : assembleFull(wsDir, () => {}));
       engine = fresh.engine;
       cfg = fresh.cfg;
       engine.emit = emit;
@@ -299,7 +307,8 @@ async function repl({ engine, stores, cfg, wsDir, standalone }) {
   }
 
   await loop();
-  try { if (engine.flushConversations) engine.flushConversations(); } catch (_) {}
+  // flush 现在返回 Promise：CLI 走到这一步就要退出了，不等它落盘等于把最后一段对话丢掉
+  try { if (engine.flushConversations) await engine.flushConversations(); } catch (_) {}
 }
 
 /* ---------- main ---------- */
@@ -347,17 +356,29 @@ async function main() {
 
   if (args.once) {
     const renderer = createRenderer({
-      onApprove: async (ev) => { const r = await prompt.approval(ev); if (r.stop) process.exit(0); if (engine.resolveApproval) engine.resolveApproval(ev.id, r.ok); if (r.session && r.ok && engine.grantSession) engine.grantSession(ev.tool); },
+      onApprove: async (ev) => { const r = await prompt.approval(ev); if (r.stop) process.exit(0); if (engine.resolveApproval) engine.resolveApproval(ev.id, r.ok); if (r.session && r.ok && engine.grantSession) engine.grantSession(ev.tool || ev.name); },
       onChoice: async (ev) => { const r = await prompt.choice(ev); if (engine.resolveChoice) engine.resolveChoice(ev.id, r.value); },
     });
-    if (engine.emit) engine.emit = (ev) => renderer.handleEvent(ev);
+    /* 单次模式是给脚本用的（CI、管道、`pancode "跑一下测试"`）。
+       以前任务失败也 exit 0：agent.error 只往 stdout 写一行字，调用方的
+       `$?` / `if ! pancode ...` 一律判成功 —— 自动化里这比报错更难查（审查项 F11）。 */
+    let failure = "";
+    if (engine.emit) engine.emit = (ev) => {
+      if (ev && ev.type === "agent.error" && !failure) failure = String(ev.message || "任务失败");
+      renderer.handleEvent(ev);
+    };
     try {
       await engine.handleChat(args.once, { convId: "cli-once" });
     } catch (e) {
       process.stdout.write(S.err("  " + (e.message || e) + "\n"));
+      if (!failure) failure = String(e.message || e);
     }
     renderer.resetRound();
-    try { if (engine.flushConversations) engine.flushConversations(); } catch (_) {}
+    try { if (engine.flushConversations) await engine.flushConversations(); } catch (_) {}
+    if (failure) {
+      process.stdout.write(S.err("  任务未正常完成：" + failure.split("\n")[0].slice(0, 200)) + "\n");
+      process.exitCode = 1;
+    }
     return;
   }
 

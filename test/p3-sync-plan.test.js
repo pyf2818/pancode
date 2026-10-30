@@ -86,7 +86,13 @@ describe("接线：watch 回调真的按批走判据，并喂语义索引", () =
   });
 
   it("hello 之后记下了\"前端手里那份集合\"（否则第一条外部改动永远全量）", () => {
+    /* 口径：hello 之后 _syncedPaths 必须真的被"这一屏前端拿到的那些路径"灌满。
+       F15 把首屏从"前 500 个文件的正文"换成"一页目录元数据 + 变更集正文"，源头随之
+       从 fileMap 的键变成 tree.entries 的路径 —— 换成哪个都行，唯独不许是空集合。
+       （只钉字面量的判据撑不过一次等价改写，这条改过一次，注释留在上面那条里。） */
     const hello = src.slice(src.indexOf("async function helloPayload"));
-    expect(hello.slice(0, hello.indexOf("\n}\n"))).toMatch(/_syncedPaths = new Set\(Object\.keys\(fileMap\)\)/);
+    const body = hello.slice(0, hello.indexOf("\n}\n"));
+    expect(body).toMatch(/_syncedPaths\s*=\s*(new Set\(|noteSyncedPaths\()/);
+    expect(body).toMatch(/_syncedPaths\s*=\s*.*(tree\.entries|Object\.keys\(fileMap\))/);
   });
 });

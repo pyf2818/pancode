@@ -361,12 +361,12 @@ describe("会话落盘裁剪（CONV_MAX_MSGS 回归）", () => {
     return a;
   }
 
-  it("flushConversations 真的把文件写出来（常量丢失时会抛错并被 try/catch 静默吞掉）", () => {
+  it("flushConversations 真的把文件写出来（常量丢失时会抛错并被 try/catch 静默吞掉）", async () => {
     const warn = console.warn;
     const swallowed = [];
     console.warn = (...args) => swallowed.push(args.join(" "));
     try {
-      agentWith([{ role: "user", content: "hi" }, { role: "assistant", content: "yo" }]).flushConversations();
+      await agentWith([{ role: "user", content: "hi" }, { role: "assistant", content: "yo" }]).flushConversations();
     } finally { console.warn = warn; }
     expect(swallowed).toEqual([]);
     expect(fs.existsSync(path.join(dir, "conversations.json"))).toBe(true);
@@ -375,10 +375,42 @@ describe("会话落盘裁剪（CONV_MAX_MSGS 回归）", () => {
     expect(data.conversations[0].history).toHaveLength(2);
   });
 
-  it("单会话超过上限时只保留最近 80 条", () => {
+  /* 审查项 F02 的钉：flush 必须排在同一条按路径串行的写入序列里，而不是绕开它直接写盘。
+     旧实现 flushConversations 走 atomicWrite，于是"队列里那份更早入队的旧快照"会排在
+     flush 之后落盘，把刚刷下去的新数据盖回旧的 —— 用户看到的是"退出后最后一段对话没了"。
+     这条测试在旧代码上必红：gate 未放行时 flush 已经同步写盘（existsSync 为 true）。 */
+  it("flush 排在同路径已入队的旧写之后，新数据不被旧快照覆盖", async () => {
+    const safeWrite = require("../server/safe-write");
+    const p = path.join(dir, "conv-order.json");
+    const a = agentWith([{ role: "user", content: "NEWEST" }]);
+    a._convPath = p;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const stale = safeWrite.enqueueWrite(p, async () => {
+      await gate;
+      await safeWrite.atomicWrite(p, JSON.stringify({ v: 1, current: "c1", conversations: [{ id: "c1", history: [{ role: "user", content: "OLD" }] }] }, null, 2));
+    });
+    const flushed = a.flushConversations();
+    expect(fs.existsSync(p)).toBe(false);   // 队列卡住时 flush 不该"抢跑"直接落盘
+    release();
+    await flushed;
+    await stale;
+    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    expect(data.conversations[0].history[0].content).toBe("NEWEST");
+  });
+
+  it("flush 返回可等待的 Promise（调用方据此判断「盘上已是新数据」）", async () => {
+    const a = agentWith([{ role: "user", content: "hi" }]);
+    const r = a.flushConversations();
+    expect(r && typeof r.then).toBe("function");
+    expect(await r).toBe(true);
+    expect(JSON.parse(fs.readFileSync(a._convPath, "utf8")).conversations[0].history).toHaveLength(1);
+  });
+
+  it("单会话超过上限时只保留最近 80 条", async () => {
     const long = Array.from({ length: 200 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: "m" + i }));
     const a = agentWith(long);
-    a.flushConversations();
+    await a.flushConversations();
     const data = JSON.parse(fs.readFileSync(a._convPath, "utf8"));
     const kept = data.conversations[0].history;
     expect(kept).toHaveLength(CONV_MAX_MSGS_KEPT);
@@ -386,22 +418,47 @@ describe("会话落盘裁剪（CONV_MAX_MSGS 回归）", () => {
     expect(kept[kept.length - 1].content).toBe("m199");
   });
 
-  it("空历史会话不落盘（别在存档里堆空壳）", () => {
+  /* 审查项 F14：裁剪要成对裁。裸 slice(-80) 会正好切在
+     assistant.tool_calls 与它对应的 role:"tool" 结果之间，
+     存档重开后第一发请求就被上游按 400 判非法（表现为"隔天打开这个会话，AI 一句话都回不出来"）。 */
+  it("裁剪后不留下没有结果的 tool_call，也不留下没主的 tool 结果", async () => {
+    /* 夹具是照着"裸 slice(-80) 一定会切坏"构造的：开头放一对 tool_call / tool 结果，
+       后面接 79 条普通消息，共 81 条 —— slice(-80) 会从这对的**中间**开始切，
+       留下一枚没有对应请求的孤儿 tool 结果。
+       （先前用等长分组试过：80 与分组长度凑成整倍数，切点恰好落在组边界上，
+         测的是"碰巧没错"，那种判据不成立。） */
+    const msgs = [
+      { role: "assistant", content: "", tool_calls: [{ id: "t0", type: "function", function: { name: "read_file", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "t0", content: "结果0" },
+    ];
+    for (let i = 0; i < 79; i++) msgs.push({ role: i % 2 ? "assistant" : "user", content: "m" + i });
+    const a = agentWith(msgs);
+    await a.flushConversations();
+    const kept = JSON.parse(fs.readFileSync(a._convPath, "utf8")).conversations[0].history;
+    expect(kept.length).toBeLessThanOrEqual(CONV_MAX_MSGS_KEPT);
+    expect(kept.length).toBeGreaterThan(0);
+    const ids = new Set(kept.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
+    const called = kept.filter((m) => m.tool_calls).flatMap((m) => m.tool_calls.map((tc) => tc.id));
+    expect(called.every((id) => ids.has(id))).toBe(true);        // 没有"喊了没人应"的调用
+    expect([...ids].every((id) => called.includes(id))).toBe(true); // 也没有"没主的结果"
+  });
+
+  it("空历史会话不落盘（别在存档里堆空壳）", async () => {
     const a = agentWith([{ role: "user", content: "有内容" }], {
       c2: { history: [], round: 0, ts: Date.now(), changes: [] },
     });
-    a.flushConversations();
+    await a.flushConversations();
     const data = JSON.parse(fs.readFileSync(a._convPath, "utf8"));
     expect(data.conversations.map((c) => c.id)).toEqual(["c1"]);
   });
 
-  it("history 不是数组时按空处理，不抛错也不写空档", () => {
+  it("history 不是数组时按空处理，不抛错也不写空档", async () => {
     const a = agentWith(null);
     a._convPath = path.join(dir, "conv2.json");
     const warn = console.warn;
     const swallowed = [];
     console.warn = (...args) => swallowed.push(args.join(" "));
-    try { a.flushConversations(); } finally { console.warn = warn; }
+    try { await a.flushConversations(); } finally { console.warn = warn; }
     expect(swallowed).toEqual([]);
     expect(fs.existsSync(a._convPath)).toBe(false);
   });

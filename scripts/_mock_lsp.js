@@ -23,7 +23,24 @@ process.stdin.on("data", (d) => {
 });
 function handle(msg) {
   if (msg.id !== undefined && msg.id !== null && msg.method === "initialize") {
-    send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: { textDocumentSync: 1, hoverProvider: true, completionProvider: { triggerCharacters: ["."] }, definitionProvider: true } } });
+    /* _mock 这一段是给 scripts/test-lsp.js 看的"子进程现场"：
+       它收到的 rootUri/rootPath 是不是桥接层重写后的授权根、自己的 cwd 落在哪、
+       环境里有没有混进 OPENAI_API_KEY / PANCODE_* —— 这些只能由子进程自己报告，
+       桥接层里读到的都算"自己说自己对"。 */
+    const p = msg.params || {};
+    send({ jsonrpc: "2.0", id: msg.id, result: {
+      capabilities: { textDocumentSync: 1, hoverProvider: true, completionProvider: { triggerCharacters: ["."] }, definitionProvider: true },
+      _mock: {
+        rootUri: p.rootUri || null,
+        rootPath: p.rootPath || null,
+        folders: Array.isArray(p.workspaceFolders) ? p.workspaceFolders.map((f) => f.uri) : null,
+        cwd: process.cwd(),
+        leakedApiKey: process.env.OPENAI_API_KEY || "",
+        leakedSecrets: Object.keys(process.env).filter((k) => /API_?KEY|TOKEN|SECRET/i.test(k)),
+        pancodeVars: Object.keys(process.env).filter((k) => /^PANCODE_/i.test(k)),
+        hasPath: !!process.env.PATH,
+      },
+    } });
   } else if (msg.method === "initialized") {
     // 模拟语言服务器主动推送一条诊断
     send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: "file:///mock/x.py", diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, severity: 1, message: "mock syntax error" }] } });

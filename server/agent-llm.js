@@ -31,9 +31,23 @@ const { ExpertStore, formatExpertPrompt } = require("./expert-store"); // W2 专
    的唯一真相源。以前这些判定散在本文件的 5 个手工 Set 里，加一个工具要记着改 6 处，
    漏一处的后果不是报错而是静默劣化（详见 tools/contract.js 开头）。 */
 const TOOL = require("./tools/contract");
+/* 权限决策的唯一梯子（分支顺序 + 措辞）在 permission-core.js —— 桌面引擎与
+   独立 CLI 引擎共用同一份，避免"配置写着 ask、某个入口却直通执行"（审查项 F05）。 */
+const permCore = require("./permission-core");
 /* P5：并行改盘的归属（谁在写哪个文件）与一次编排一份的共享白板。
    上下文走 AsyncLocalStorage —— 同层兄弟是同时跑的，挂在实例字段上就是"谁后进来算谁"。 */
-const { subContext } = require("./sub-context");
+const { subContext, currentSub } = require("./sub-context");
+/* ---------- 跨引擎实例的"这份盘最近谁写过"登记（审查项 F03） ----------
+   撤销栈与认领集都是**每引擎一份**的：同一进程里另一个用户引擎、或另一个会话，
+   在这份工作区上落过检查点，本引擎的栈里看不见。而"整盘快照回滚"要动的恰恰是整个目录。
+   这一张按工作区目录聚合的最近写入登记表用来补这一眼：只要子智能体开拍之后
+   有别的引擎实例在这份盘上写过，整盘回滚就否决掉，退回"只收回认领过的文件"那一档。
+   归属不明时宁可漏收，不可误毁别人的工作。
+   ⚠ 它覆盖不到"外部进程直接改盘"（IDE 之外的编辑器、脚本、git 命令）——
+     那种只能靠独立工作树或文件版本 CAS，这里如实降级，不假装是完整写集。 */
+let _engineSeq = 0;
+let _subWriterSeq = 0;
+const _wsLastWrite = new Map();   // path.resolve(工作区目录) -> { by, at }
 const { Blackboard } = require("./blackboard");
 
 const convContext = new AsyncLocalStorage();
@@ -1447,6 +1461,7 @@ class LlmAgent extends AgentBase {
     this.convChanges = {};              // convId -> 该会话改动的文件清单（按会话记录显示）
     this._currentConv = "default";      // 当前活跃对话 ID
     this._abort = false;                // 中断标志
+    this._engineId = ++_engineSeq;      // 跨引擎写者登记用的实例号（审查项 F03）
     this.runningConvs = new Set();      // 并行会话：正在运行的 convId 集合
     this._convQueues = {};              // convId -> 忙时排队的 {text, opts} 列表（上限 CONV_QUEUE_MAX）
     this._convAborts = {};              // convId -> abortRef（外部 abort 按会话中断）
@@ -1623,25 +1638,35 @@ class LlmAgent extends AgentBase {
     });
   }
 
+  /* 会话存档的唯一构造点：防抖落盘与退出刷盘必须出自同一份形状，
+     否则"退出时写的那一份"会和"平时写的那一份"字段悄悄漂移。 */
+  _conversationsPayload() {
+    const entries = [...this.conversations.entries()].slice(-CONV_MAX);
+    const conversations = entries.map(([id, v]) => ({
+      id,
+      round: v.round || 0,
+      ts: v.ts || Date.now(),
+      /* 裁剪按"工具调用与其结果成对"这一组一组地裁，而不是裸 slice(-N)：
+         直接切尾巴会把 assistant.tool_calls 留在切线上、把它对应的 role:"tool" 结果切掉
+         （或反过来留一枚孤儿结果），存档重开后第一发请求就被上游按 400 判非法 ——
+         表现为"隔天再打开这个会话，AI 一句话都回不出来"（审查项 F14）。 */
+      history: trimHistoryGroups(v.history, CONV_MAX_MSGS),
+      changes: Array.isArray(v.changes) ? v.changes : [],
+    })).filter((c) => c.history.length);
+    return {
+      v: 1,
+      updated: Date.now(),
+      current: this._currentConv || "default",
+      conversations,
+    };
+  }
+
   /* 防抖落盘：序列化时裁剪单会话消息数与总会话数，避免文件无限膨胀 */
   _persistConversations() {
     clearTimeout(this._convSaveTimer);
     this._convSaveTimer = setTimeout(() => {
       try {
-        const entries = [...this.conversations.entries()].slice(-CONV_MAX);
-        const conversations = entries.map(([id, v]) => ({
-          id,
-          round: v.round || 0,
-          ts: v.ts || Date.now(),
-          history: Array.isArray(v.history) ? v.history.slice(-CONV_MAX_MSGS) : [],
-          changes: Array.isArray(v.changes) ? v.changes : [],
-        })).filter((c) => c.history.length);
-        safeWrite.saveJson(this._convPath, {
-          v: 1,
-          updated: Date.now(),
-          current: this._currentConv || "default",
-          conversations,
-        });
+        safeWrite.saveJson(this._convPath, this._conversationsPayload());
       } catch (e) {
         log.tag("agent").warn("会话上下文落盘失败: " + e.message);
       }
@@ -1655,29 +1680,22 @@ class LlmAgent extends AgentBase {
     this._persistConversations();
   }
 
-  /* 进程退出前同步刷盘：防抖定时器来不及触发时兜底 */
+  /* 进程退出前刷盘：防抖定时器来不及触发时兜底。
+     返回 Promise，调用方（shutdown / CLI 退出）必须等它 —— "调用了 flush" 不等于
+     "数据已经在盘上"，审查项 F02 实测到的正是把这两件事当成一件后新数据被旧队列写覆盖。
+     写必须走 saveJson（同一条按路径串行的写入序列）：原先这里直接 atomicWrite，
+     绕开了队列，于是队列里那份更早入队的旧快照会排在 flush 之后落盘，把新数据盖回旧的。 */
   flushConversations() {
     clearTimeout(this._convSaveTimer);
     this._convSaveTimer = null;
     try {
       this._snapshotCurrent();
-      const entries = [...this.conversations.entries()].slice(-CONV_MAX);
-      const conversations = entries.map(([id, v]) => ({
-        id,
-        round: v.round || 0,
-        ts: v.ts || Date.now(),
-        history: Array.isArray(v.history) ? v.history.slice(-CONV_MAX_MSGS) : [],
-        changes: Array.isArray(v.changes) ? v.changes : [],
-      })).filter((c) => c.history.length);
-      if (!conversations.length) return;
-      safeWrite.atomicWrite(this._convPath, JSON.stringify({
-        v: 1,
-        updated: Date.now(),
-        current: this._currentConv || "default",
-        conversations,
-      }, null, 2));
+      const payload = this._conversationsPayload();
+      if (!payload.conversations.length) return Promise.resolve(true);
+      return safeWrite.saveJson(this._convPath, payload);
     } catch (e) {
       log.tag("agent").warn("会话上下文刷盘失败: " + e.message);
+      return Promise.resolve(false);
     }
   }
 
@@ -1827,35 +1845,75 @@ ${taskSummary}
     this._persistConversations();
   }
 
+  /* 停止的三种口径，以前只有一把钥匙（审查项 F08）：
+       abort(convId)               —— 只停这一个会话
+       abort() 且人在会话上下文里 —— 停"当前这个"会话
+       abort() 且没有上下文        —— 服务退出 / 切工作区 / 桌面端"终止所有任务"，停全部
+     旧实现有三处越界：
+       · this.running = false 是实例级的 —— 停 A 会顺带把 B 也说成"没在跑"，
+         于是状态栏、托盘轮询、工作区切换判据全部跟着错；
+       · 清空 this.pending 不看归属 —— B 会话正在等的那张审批卡被 A 的停止顺手拒掉；
+       · 无参调用既不等于"当前会话"也不等于"全部"，只置了一个没人读的旧标志。 */
   abort(convId) {
-    // 多会话并行：按 convId 中断指定会话
-    if (convId && this._convAborts && this._convAborts[convId]) {
-      this._convAborts[convId].value = true;
-    } else {
-      const ctx = convContext.getStore();
-      if (ctx) {
-        ctx.abortRef.value = true;
-      } else {
-        this._abort = true;
-      }
+    const ctx = convContext.getStore();
+    const target = String(convId || (ctx && ctx.convId) || "");
+    if (target) this._abortConv(target);
+    else this.abortAll();
+  }
+
+  /* 停全部：只在"没有会话上下文"时被 abort() 兜到，服务退出与切工作区走这一条 */
+  abortAll() {
+    for (const c of [...this.runningConvs]) this._abortConv(c);
+    this._abort = true;
+    this._dropPending(() => true, "用户中断");
+    this.running = this._deriveRunning();
+    this._clearGoalOnStop("");
+  }
+
+  /* running 的口径：还有没有会话在跑。已经被告知停止、只是还没从循环里走出来的那个不算 ——
+     否则"停 A"永远停不干净：runningConvs 要等 A 的 finally 才摘，这期间状态位还替它说"在跑"，
+     而用户看到的明明是"我按了停止，AI 空闲却迟迟不变"。 */
+  _deriveRunning() {
+    if (!this.runningConvs || !this.runningConvs.size) return false;
+    for (const c of this.runningConvs) {
+      const ref = this._convAborts && this._convAborts[c];
+      if (!ref || !ref.value) return true;
     }
-    this.running = false;
-    /* 用户点「停止」= 明确不要它自己往下跑。以前这里只掐 abortRef，_goal 还挂着，
-       于是收尾判据一看"目标还在、不是异常退出"，800ms 后 Goal 自动续跑又把任务叫醒 ——
-       停止按钮按不住一个正在自驱的长任务。停就把它停干净：摘目标、清该会话的续跑计数、落盘。 */
-    if (this._goal) {
-      this._goal = "";
-      if (this._goalState) this._goalState[convId || this._currentConv || "default"] = undefined;
-      try { this._saveGoal(); } catch (e) { /* 落盘失败也要停，内存里已经清了 */ }
-      this.emit({ type: "goal.settled", turns: 0, convId: convId || this._currentConv, cleared: true });
-    }
+    return false;
+  }
+
+  _abortConv(convId) {
+    if (this._convAborts && this._convAborts[convId]) this._convAborts[convId].value = true;
+    else if (this._currentConv === convId) this._abort = true;
+    /* running 由"还有没有会话在跑"推导，而不是被一次停止一票否决：
+       多会话并行时停掉 A，B 还在跑，状态位就该还是 true。 */
+    this.running = this._deriveRunning();
+    this._dropPending((p) => (p.convId || "") === convId, "用户中断");
+    this._clearGoalOnStop(convId);
+  }
+
+  /* 按归属收掉待确认的卡：owned 判据决定这一张是不是本次停止该管的。
+     不收的话前端那张卡会一直显示"等待确认"，而服务端已经把对应工具拒了。 */
+  _dropPending(owned, reason) {
     for (const [id, p] of this.pending) {
+      if (!owned(p)) continue;
       clearTimeout(p.timer);
       // 同步广播收尾：审批卡（ap_*）与选项卡（ch_*）进入「已中断」状态，避免前端永远显示等待中
       this.emit({ type: "tool.end", id: (id.startsWith("ch") ? "choice_" : "ap_") + id, ok: false, label: "已中断" });
-      p.resolve({ approved: false, reason: "用户中断" });
+      p.resolve({ approved: false, reason });
     }
-    this.pending.clear();
+    for (const [id, p] of [...this.pending]) if (owned(p)) this.pending.delete(id);
+  }
+
+  /* 用户点「停止」= 明确不要它自己往下跑。以前这里只掐 abortRef，_goal 还挂着，
+     于是收尾判据一看"目标还在、不是异常退出"，800ms 后 Goal 自动续跑又把任务叫醒 ——
+     停止按钮按不住一个正在自驱的长任务。停就把它停干净：摘目标、清该会话的续跑计数、落盘。 */
+  _clearGoalOnStop(convId) {
+    if (!this._goal) return;
+    this._goal = "";
+    if (this._goalState) this._goalState[convId || this._currentConv || "default"] = undefined;
+    try { this._saveGoal(); } catch (e) { /* 落盘失败也要停，内存里已经清了 */ }
+    this.emit({ type: "goal.settled", turns: 0, convId: convId || this._currentConv, cleared: true });
   }
 
   /* 用户在审阅面板「接受」暂存改动 → 写盘并广播变更。
@@ -1903,9 +1961,15 @@ ${taskSummary}
        用户自己在编辑器里保存的那一类没有会话上下文，留空串（撤销时按"不是别的会话"放行）。 */
     const ctx = convContext.getStore();
     const convId = (ctx && ctx.convId) || "";
-    this._undoStack.push({ label: label || "改动", entries, at: Date.now(), convId });
+    /* writer 是"哪一趟子智能体写的"（不在子智能体里时为 null）。
+       整盘回滚的否决判据靠它区分"我这一步写的"和"别人在我开拍之后写的"（审查项 F03）。 */
+    const sub = currentSub();
+    const at = Date.now();
+    this._undoStack.push({ label: label || "改动", entries, at, convId, writer: (sub && sub.writer) || null });
     if (this._undoStack.length > 50) this._undoStack.shift();   // 限制栈深，避免无限增长
     this._shadowCommit(label, entries, convId);   // P-H2：同步落到 shadow git，跨会话可恢复
+    const wsDir = path.resolve((this.files && this.files.dir) || "");
+    if (wsDir) _wsLastWrite.set(wsDir, { by: this._engineId, at });
   }
 
   /* 撤销栈的对外视图（/api/undo 与聊天里的撤销按钮共用这一份）。
@@ -1955,8 +2019,26 @@ ${taskSummary}
     } catch (e) { return null; }
   }
 
-  _undoLast() {
+  /* 撤销归属的唯一判据（审查项 F04）：以前"别替别的会话撤销"这条守卫只写在 HTTP 入口上，
+     而模型自己可调的 undo 工具直接 _undoLast() —— 同一条规则在两个入口上厚薄不一，
+     绕过的恰好是没人盯着的那一个。下沉到这里，任何入口想绕过都得先绕过本函数。
+     convId 缺省时取当前会话上下文：模型工具跑在 AsyncLocalStorage 里（自动有），
+     HTTP 侧没有上下文，由调用方显式传 { convId }。 */
+  _undoOwnerMismatch(ck, convId) {
+    if (!ck || !convId) return null;
+    const owner = ck.convId || "";
+    // 留空串的那一类是用户自己在编辑器里存的，没有会话归属，按"不是别的会话"放行
+    if (!owner || owner === convId) return null;
+    return "最近一步改动属于另一个会话（" + (ck.label || "改动") + "），没有替你撤销它";
+  }
+
+  _undoLast(opts) {
+    const st = convContext.getStore();
+    const convId = String(opts && opts.convId !== undefined ? opts.convId : ((st && st.convId) || ""));
     if (this._undoStack.length) {
+      const topCk = this._undoStack[this._undoStack.length - 1];
+      const why = this._undoOwnerMismatch(topCk, convId);
+      if (why) return { ok: false, cross: true, reason: why };
       const ck = this._undoStack.pop();
       try {
         let touchedActive = false;
@@ -2000,6 +2082,10 @@ ${taskSummary}
        没有它，用户连点两次"撤销"就能把工作区抹回开机那一刻。 */
       const head = this._shadowHead();
       if (!head) return { ok: false, reason: "影子仓里没有可回退的检查点（只剩初始全量快照或回退记录，退它们不是撤销一步）" };
+      /* 内存栈空了才走到这条（重启后 / 别的会话），而影子仓是按工作区分片的：
+         一个仓里混着多个会话的检查点，归属判据在这里同样要生效。 */
+      const headWhy = this._undoOwnerMismatch(head, convId);
+      if (headWhy) return { ok: false, cross: true, reason: headWhy };
       const r = shadowGit.restoreLast(this._shadowGitDir, this.files.dir, this.files);
       /* 部分回退也要把已经变了的文件推给前端：失败的是其中几个，
          另外几个确实已经回到原样了，界面不能停留在旧内容上。 */
@@ -2102,6 +2188,9 @@ ${taskSummary}
       owned: new Set(),
       conflicts: [],
       report: opts.report || null,
+      /* 这一趟写盘的署名（对象身份即唯一性）：检查点带上它，
+         收尾时才答得出"盘上这些差异是不是我造成的"（审查项 F03）。 */
+      writer: { id: "sub-" + (++_subWriterSeq) + ":" + String(opts.stepId || opts.label || "子任务").slice(0, 24) },
     };
     /* 整趟运行都在 subContext 里：深层的工具 handler（board）据此拿到**自己这一步**的白板，
        而不是最后进来的那个兄弟的。 */
@@ -2145,11 +2234,15 @@ ${taskSummary}
        而且每个写盘步骤都要把整个工作区读进内存一遍。
        独占时（这一刻只有我一个写盘子智能体）仍拍整盘 —— 那里连命令改盘都能收回，是更强的那一档；
        并行时只收回这一步认领过的文件，其余的如实报数，不装成"全部已隔离"。 */
-    const iso = { full: null, owned: {}, pathsBefore: null, gen: 0 };
+    const iso = { full: null, owned: {}, pathsBefore: null, gen: 0, at: 0, wsDir: "", writer: sub.writer };
     if (mayMutate) {
       this._subWriters = (this._subWriters || 0) + 1;
       this._subGen = (this._subGen || 0) + 1;
       iso.gen = this._subGen;
+      /* 时刻取在拍快照**之前**：快照要读整个工作区，这期间落下的检查点到底有没有被
+         拍进快照里是说不清的，所以一律按"别人在我开拍之后写过"处理 —— 保守一侧。 */
+      iso.at = Date.now();
+      iso.wsDir = path.resolve((this.files && this.files.dir) || "");
       if (this._subWriters === 1) iso.full = this._workspaceSnapshot();
       try { iso.pathsBefore = new Set(this.files.list()); } catch (e) { iso.pathsBefore = null; }
     }
@@ -2174,7 +2267,11 @@ ${taskSummary}
             ctxRecovered = true;
             const sys = messages[0];
             const taskMsg = messages[1];
-            const tail = messages.slice(-6);
+            /* 取尾巴也要成对取：裸 slice(-6) 可能正好切在
+               assistant.tool_calls 与它的 role:"tool" 结果中间，
+               那等于用"压缩上下文"这一步自己造出一发协议非法的请求 ——
+               恢复重试立刻又被打回来，而且这次是 400 而不是超限。 */
+            const tail = trimHistoryGroups(messages.slice(2), 6);
             messages.length = 0;
             messages.push(sys, taskMsg,
               { role: "user", content: "[系统提示] 子任务上下文已超限并被压缩，以上是最近的关键消息，继续完成原任务。" },
@@ -2263,7 +2360,7 @@ ${taskSummary}
            按整盘抹就等于抹掉它已经交出去的改动。 */
         const solo = this._subWriters === 1 && this._subGen === iso.gen;
         const back = this._isolateSubRun(iso, sub, solo);
-        if (back.staged.length || back.errors.length || back.leftover.length || sub.conflicts.length) {
+        if (back.staged.length || back.errors.length || back.leftover.length || sub.conflicts.length || (back.foreign && back.foreign.length)) {
           /* 措辞必须跟着真正走的那条分支走：solo 判据是"起跑后没进来过兄弟"，
              但 iso.full 还可能因为仓库太大而为 null —— 那时收回的其实只有认领过的文件，
              报"独占（整盘）"就是骗人。 */
@@ -2272,6 +2369,9 @@ ${taskSummary}
             + (back.errors.length ? "（" + back.errors.length + " 处回滚异常）" : "")
             + (sub.conflicts.length ? "；有 " + sub.conflicts.length + " 次改盘被并行冲突挡回" : "")
             + (back.leftover.length ? "；另有 " + back.leftover.length + " 个新文件无法归因、未收回" : "")
+            + (back.foreign && back.foreign.length
+              ? "；这一步期间检测到 " + back.foreign.length + " 处别的写者落盘（别的会话或你在编辑器里的保存），整盘回滚已否决，只收回本步认领过的文件"
+              : "")
             + "。请到「改动审阅」面板确认或拒绝。", cls: "tl-warn" });
         }
         this._releaseClaims(sub);
@@ -2283,6 +2383,7 @@ ${taskSummary}
           sub.report.claimed = Object.keys(iso.owned);
           sub.report.conflicts = sub.conflicts.slice();
           sub.report.unattributed = back.leftover.slice();
+          sub.report.foreignWrites = (back.foreign || []).slice();
           sub.report.rolledBack = back.staged.length;
           sub.report.boardNotes = sub.board.from(sub.from);
         }
@@ -2355,18 +2456,41 @@ ${taskSummary}
     }
   }
 
+  /* 整盘回滚的否决判据（审查项 F03）：这一步开拍之后，盘上有没有"不是我"的写入。
+     两个信号取并集：
+       1) 本引擎撤销栈里 at >= iso.at 且 writer !== 我这一趟 的检查点
+          —— 覆盖父会话、同引擎的别的会话、用户在编辑器里自己存的那一下；
+       2) 跨引擎登记表里 at >= iso.at 且 by !== 本引擎 的那一笔
+          —— 覆盖同一进程里的另一个用户引擎（各自的撤销栈互相看不见）。
+     以前 solo 只问"有没有兄弟子智能体进来过"，那答的是"我这组里有没有别人"，
+     不是"这份盘上有没有别人" —— 少了后面这一问，整盘抹就可能把别人的活一起抹掉。
+     ⚠ 覆盖不到外部进程直接改盘（仓库外的编辑器、脚本、git 命令）：
+       那种只能靠独立工作树或文件版本 CAS，这里只降级、不假装已经管住。 */
+  _foreignWriters(iso) {
+    const out = [];
+    for (const ck of (this._undoStack || [])) {
+      if (!ck || !(ck.at >= iso.at)) continue;
+      if (ck.writer === iso.writer) continue;
+      for (const e of (ck.entries || [])) if (e && e.path) out.push(e.path);
+    }
+    const w = iso.wsDir ? _wsLastWrite.get(iso.wsDir) : null;
+    if (w && w.at >= iso.at && w.by !== this._engineId) out.push("(其他引擎实例写入)");
+    return [...new Set(out)];
+  }
+
   /* 收尾收回这一步的改动。
-     独占 → 沿用整盘快照回滚（命令改盘、批量新建都收得回来，与改造前逐字一致）。
-     并行 → 只回滚本步认领过的文件；顺手统计"冒出来但不归我"的新文件，只报不动手：
+     独占且期间没有别的写者 → 沿用整盘快照回滚（命令改盘、批量新建都收得回来）。
+     其余情况 → 只回滚本步认领过的文件；顺手统计"冒出来但不归我"的新文件，只报不动手：
        不知道是谁写的就动手抹，比不隔离更糟。 */
   _isolateSubRun(iso, sub, solo) {
-    if (solo && iso.full) {
+    const foreign = (solo && iso.full) ? this._foreignWriters(iso) : [];
+    if (solo && iso.full && !foreign.length) {
       /* 整盘那条返回的形状是旧的 {staged, errors}，没有 leftover —— 在这里补齐，
          别让调用方去猜"这一条到底走的是哪一档"。staged 装的本来就是收回掉的文件名。 */
       const r = this._isolateSubAgentChanges(iso.full);
-      return { mode: "full", staged: (r && r.staged) || [], changed: (r && r.staged) || [], errors: (r && r.errors) || [], leftover: [] };
+      return { mode: "full", staged: (r && r.staged) || [], changed: (r && r.staged) || [], errors: (r && r.errors) || [], leftover: [], foreign: [] };
     }
-    const out = { mode: "owned", staged: [], changed: [], errors: [], leftover: [] };
+    const out = { mode: "owned", staged: [], changed: [], errors: [], leftover: [], foreign };
     for (const p of Object.keys(iso.owned)) {
       const before = iso.owned[p];
       try {
@@ -2450,44 +2574,10 @@ ${taskSummary}
     return rulesLib.globToRe(glob);
   }
 
-  /* 规则命中判定。规则可以是：
-       "npm run"                    → 旧版子串 / /regex/ 语法（保持兼容）
-       { tool:"run_command", pattern:"npm run test*", action:"allow" }
-       { tool:"write_file",  pattern:"src/**" }
-     tool 支持 "*" 与逗号分隔多工具。 */
+  /* 规则命中判定：实现已抽到 permission-core.js（桌面与 CLI 共用一份梯子）。
+     这里保留方法只是给既有调用点/测试一个稳定的落点。 */
   _matchPermRule(toolName, subject, rules, kind) {
-    if (!rules || !rules.length) return null;
-    const subj = String(subject || "");
-    for (const r of rules) {
-      if (!r) continue;
-      if (typeof r === "string") {
-        if (this._matchRule(subj, [r])) return r;
-        if (r.length >= 2 && r.startsWith("/") && r.endsWith("/")) continue;
-        // 旧配置里也有人写 "run_command:npm" 这种，兼容一下
-        const colon = r.indexOf(":");
-        if (colon > 0 && (r.slice(0, colon).trim() === toolName || r.slice(0, colon).trim() === "*")) return r;
-        continue;
-      }
-      const toolSpec = String(r.tool || "*").trim();
-      const tools = toolSpec.split(",").map((x) => x.trim()).filter(Boolean);
-      const toolOk = tools.some((t) => t === "*" || t === toolName || (t.endsWith(":") && toolName === t.slice(0, -1)) || (t.endsWith("*") && toolName.startsWith(t.slice(0, -1))));
-      if (!toolOk) continue;
-      if (r.pattern) {
-        const p = String(r.pattern);
-        if (p === "*" || p === "**") return r;
-        if (LlmAgent._globToRe(p).test(subj)) return r;
-        /* glob 不中时的退化按主体种类分流：
-           路径类 → 只在分隔符边界上退化为前缀（"src" 命中 "src/x"，不命中 "src-eval/x"）。
-             迁移前是无边界 startsWith，于是 allow 规则 "src" 会连带放行 "src-eval/x.js"，
-             放行面的误命中比拒绝面的漏命中更危险。
-           命令类 → 保持原来的前缀判定（"git push" 本就该拦住 "git push --force"）。 */
-        if (kind === "path") { if (pathPrefixHit(p, subj)) return r; }
-        else if (subj.toLowerCase().startsWith(p.toLowerCase().replace(/\*+$/g, "").trim())) return r;
-        continue;
-      }
-      return r;   // 只约束了工具名
-    }
-    return null;
+    return permCore.matchPermRule(toolName, subject, rules, kind);
   }
 
   /* 这次调用会碰到哪些工作区路径（规范化后的相对路径数组）；
@@ -2576,23 +2666,16 @@ ${taskSummary}
     return "";
   }
 
-  /* 返回 { action: "allow" | "ask" | "block", reason } */
-  /* dontAsk（openanlan 同名档）：任何"本来要问人"的出口都变成拒绝。
-     包一层而不是在每个出口前加分支 —— 这条链上有好几个 ask 出口（不可逆守卫、各档兜底），
-     漏改一个的下场是"无人可问的场景里弹出一张没人能点的卡"，任务就此冻死。
-     这一档是给后台自动化 / goal 长任务用的，不是给坐在屏幕前的人用的。 */
+  /* 返回 { action: "allow" | "ask" | "block" | "classify", reason }
+     分支顺序与措辞在 permission-core.decide()（桌面与独立 CLI 共用一份，审查项 F05）。 */
   _approvalDecision(toolName, args) {
     const dec = this._approvalDecisionRaw(toolName, args);
     const mode = ((this.cfg && this.cfg.permissions) || {}).mode || "ask";
-    if (dec.action === "ask" && mode === "dontAsk") {
-      return { action: "block", reason: "权限档为「不再询问」：" + dec.reason + "；本档不弹确认，已拒绝" };
-    }
-    return dec;
+    return permCore.applyDontAsk(dec, mode);
   }
 
   _approvalDecisionRaw(toolName, args) {
     const perm = this.cfg.permissions || { mode: "ask", allow: [], deny: [] };
-    const mode = perm.mode || "ask";
     const subject = this._hookSubject(toolName, args);
     const forms = this._subjectForms(toolName, args);
     const isPath = !!forms;
@@ -2609,60 +2692,37 @@ ${taskSummary}
                   跨根时当前项目写的 src/** 不许替另一个项目背书。 */
     const denyCandidates = isPath ? forms.rel.concat(forms.abs, forms.shape).filter((v, i, arr) => v && arr.indexOf(v) === i) : [subject];
     const denyHit = denyCandidates.map((v) => this._matchPermRule(toolName, v, perm.deny, kind)).find(Boolean);
-    if (denyHit) return { action: "block", reason: "命中拒绝规则 " + this._ruleLabel(denyHit) };
     // W14：删除文件不可逆——即使 auto 全自动模式、即使命中 allow 也强制人工确认
     // 判定来自契约表的 irreversible 旗标，不再钉死某一个工具名。
-    const irreversible = TOOL.contractOf(toolName).irreversible;
+    const contract = TOOL.contractOf(toolName);
+    const irreversible = contract.irreversible;
     const candidates = abs;
     /* candidates 为空是真实可达的（path 写成 "." 或 "/" 时三份形态都被抹空），
        而 [].every() 恒为 true —— 不挡住就等于"路径越怪，越不用问"。 */
+    let allowReason = null;
     if (!irreversible && candidates.length && perm.allow && perm.allow.length) {
       const hits = candidates.map((v) => this._matchPermRule(toolName, v, perm.allow, kind));
       if (hits.every(Boolean)) {
-        const why = candidates.length > 1
+        allowReason = candidates.length > 1
           ? "放行规则覆盖本次触碰的全部 " + candidates.length + " 个路径"
           : "命中放行规则 " + this._ruleLabel(hits[0]);
-        return { action: "allow", reason: why };
       }
     }
-    // 2) 本次会话内用户点过「以后都允许」的工具，直接放行
-    if (!irreversible && this._sessionGrants && this._sessionGrants.has(toolName)) {
-      return { action: "allow", reason: "本会话已授权" };
-    }
-
-    // 3) 纯只读工具直接放行。名字两用的（git_branch）按参数判，
-    //    判据与并行调度共用 TOOL.isReadOnly 这一条，不会再两处各写一份条件。
-    /* 每个出口都带 reason：决策链要能回答"这一步为什么没问我"，
-       光有 action:"allow" 等于把问题原样搬进日志再让人自己猜。 */
-    if (TOOL.isReadOnly(toolName, args)) return { action: "allow", reason: "只读操作，免确认" };
-
-    // W14 补漏：不可逆操作必须拦在「模式放行」之前。
-    // 上面只关闭了 allow 规则与会话授权两道出口；若此处不加守卫，
-    // mode === "auto" 会在下一行直接放行 delete_file —— 与本方法开头
-    // 「即使 auto 全自动模式也强制人工确认」的意图正好相反（实测曾静默删文件）。
-    // 文案按工具给：给用户看的卡片上说"删除文件不可逆"会让人以为要删东西（git_push 就是这一格）。
-    if (irreversible) {
-      const noun = { delete_file: "删除文件", git_push: "这次推送" }[toolName] || "该操作";
-      return { action: "ask", reason: noun + "不可逆，需人工确认" };
-    }
-
-    /* acceptEdits（对齐 openanlan 同名档）：只免"文件改动"这一格的确认。
-       判据用 isPath —— 它的来源是 _subjectForms：能算出路径形态的工具才是文件类，
-       run_command / git_* / 浏览器 / 桌面这些算不出路径，照样问人。
-       前置的 deny 规则、allow 覆盖、会话授权、不可逆守卫都已经在上面跑完了。 */
-    if (mode === "acceptEdits" && isPath && TOOL.contractOf(toolName).mutating) {
-      return { action: "allow", reason: "权限档为「接受编辑」，文件改动免确认" };
-    }
-
-    if (mode === "auto") return { action: "allow", reason: "权限档为「全自动」" };
-    /* smart：确定性的几道（deny / allow 覆盖 / 会话授权 / 只读免检 / 不可逆守卫）都过了，
-       剩下这一发要问模型。但本方法是同步的（file-tools.js 也直接调它），
-       所以这里只出一个哨兵，真正等模型的地方在 _gate。 */
-    if (mode === "smart") return { action: "classify", reason: "权限档为「智能判定」，这一步交分类器" };
-    if (mode === "semi") return { action: "ask", reason: "权限档为「半自动」，写操作需确认" };
-    if (mode === "acceptEdits") return { action: "ask", reason: "权限档为「接受编辑」：这一步不是文件改动，仍需确认" };
-    if (mode === "dontAsk") return { action: "ask", reason: "权限档为「不再询问」，但本步本来要问你" };
-    return { action: "ask", reason: "权限档为「每次都问」" }; // ask
+    return permCore.decide({
+      mode: perm.mode || "ask",
+      denyReason: denyHit ? "命中拒绝规则 " + this._ruleLabel(denyHit) : null,
+      allowReason,
+      // 2) 本次会话内用户点过「以后都允许」的工具，直接放行
+      sessionGranted: !!(this._sessionGrants && this._sessionGrants.has(toolName)),
+      // 3) 纯只读工具直接放行。名字两用的（git_branch）按参数判，
+      //    判据与并行调度共用 TOOL.isReadOnly 这一条，不会再两处各写一份条件。
+      readOnly: TOOL.isReadOnly(toolName, args),
+      irreversible,
+      // 文案按工具给：给用户看的卡片上说"删除文件不可逆"会让人以为要删东西（git_push 就是这一格）。
+      irreversibleReason: ({ delete_file: "删除文件", git_push: "这次推送" }[toolName] || "该操作") + "不可逆，需人工确认",
+      isPath,
+      mutating: contract.mutating,
+    });
   }
 
   /* 分类器（对齐 openanlan 的 auto 档；pancode 里 auto 这个名字已被"全放行"占用，故叫 smart）。
@@ -2845,6 +2905,10 @@ ${taskSummary}
       this.pending.set(id, {
         resolve: (v) => { clearTimeout(w.timer); clearInterval(w.nag); resolve(v); },
         timer: w.timer,
+        /* 归属会话：停止别的会话时不能把这一张一起拒掉（审查项 F08）。
+           非会话路径（后台任务/测试）拿不到上下文，currentConv() 会落到
+           引擎当前会话上 —— 那是此刻唯一说得通的归属。 */
+        convId: this.currentConv(),
       });
       this.emit({ type: "tool.pending", id, tool: toolName, danger, preview, timeoutSec: sec, round: this.round });
     });
@@ -2876,6 +2940,7 @@ ${taskSummary}
       this.pending.set(id, {
         resolve: (v) => { clearTimeout(w.timer); clearInterval(w.nag); resolve(v); },
         timer: w.timer,
+        convId: this.currentConv(),   // 同审批卡：按会话归属收，别被别的会话的停止误拒（F08）
         meta: { question: String(question || "").slice(0, 200), options: list.map((o) => o && o.label).slice(0, 6) },
       });
       this.emit({ type: "tool.ask_choice", id, question, options, timeoutSec: sec, round: this.round });
@@ -4444,7 +4509,14 @@ ${taskSummary}
 
   /* P2 可观测：环形 trace 缓冲（最近 200 条） */
   _traceEvent(type, data) {
-    const ev = { seq: ++this._traceSeq, t: Date.now(), type, data };
+    /* F18：事件自带"归属 + 身份"。
+       · convId —— 后台会话的事件不能灌进当前正在看的面板；
+       · eid = 时间戳:序号 —— seq 是引擎级的，服务端一重启又从 1 开始，
+         单靠 seq 判断"这条我收过没有"会跨重启撞号，前端重建时就会漏计或重计。 */
+    const ts = Date.now();
+    const seq = ++this._traceSeq;
+    const convId = this._convIdNow();
+    const ev = { seq, t: ts, type, data, convId, eid: ts + ":" + seq };
     this._trace.push(ev);
     if (this._trace.length > 200) this._trace.shift();
     this.emit({ type: "agent.trace", event: ev });   // P2 可观测：实时推到前端 Trace 面板

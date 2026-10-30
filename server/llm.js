@@ -292,6 +292,11 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
 
   const acc = { content: "", reasoning: "", toolCalls: [], finish: null, usage: null, parseErrors: 0 };
   let parseErrors = 0;          // 本次请求内被跳过的坏帧数（随 acc 带出，便于调用方告警）
+  /* 流式协议的两个终态信号之一：finish_reason（业务终态）或 [DONE] 哨兵（传输终态）。
+     有些网关只发 [DONE] 不发 finish_reason，认前者会误杀它们，所以两个都算"说完了"。
+     但"连接自然走到尽头、两个都没有"一定是半截 —— 那正是审查项 F07 实测到的形态：
+     工具参数看着完整，其实是流被掐在最后一帧之前，调用方却拿到一次"正常结束"。 */
+  let sawDoneSentinel = false;
   const tcMap = new Map(); // index -> {id, name, arguments}
 
   const reader = res.body.getReader();
@@ -299,7 +304,7 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
   let buf = "";
 
   const handleData = (data) => {
-    if (data === "[DONE]") return;
+    if (data === "[DONE]") { sawDoneSentinel = true; return; }
     let j;
     try {
       j = JSON.parse(data);
@@ -370,12 +375,12 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
     _idleErr = new Error("LLM 流空闲超时（" + Math.round(idleMs / 1000) + "s 无数据），流可能已挂起");
   }
   armIdle();
-  /* 只有拿到 finish_reason 才算这一口真的说完了。
+  /* 只有拿到协议终态才算这一口真的说完了（终态定义见上方 sawDoneSentinel 处）。
      旧判据是「finish || content || toolCalls」—— 半截正文、半截工具参数都算数，于是流被
      空闲超时或网络掐断时，调用方拿到的是"看起来正常结束"的一次生成：没有 tool_calls 就
      直接收尾，任务停在计划 3/9 却被记成完成（用户截图里那条即此形）。
-     下面三处都只认 finish_reason，其余一律抛错，交给 agent 层的重试梯子。 */
-  const trulyDone = () => !!acc.finish;
+     下面几处都只认终态，其余一律抛错，交给 agent 层的重试梯子。 */
+  const trulyDone = () => !!acc.finish || sawDoneSentinel;
   /* 整段读循环放进 try/finally：ext 监听必须活到请求真正结束为止。
      之前我把 unlinkExt() 撒在各个分支上（429 递归前、stream_options 递归前、!res.ok 前），
      漏一处就等于中途把监听摘了 —— 表现是"停止按钮偶尔没反应"，而且极难定位。
@@ -428,6 +433,14 @@ async function chatStream(cfg, messages, tools, cb, attemptOrOpts) {
         } else {
           throw _idleErr;
         }
+      }
+      /* 干净地读到流尽头、却没有任何协议终态 = 上游把这一口掐了（网关重启、代理超时、
+         响应被截断都会这样）。这里必须抛、不能 break：break 之后 return 的 acc 带着
+         "形状完整的半截工具调用"，agent 层会照着它真的去执行工具（审查项 F07 实测形态：
+         finish 为 null、toolCalls 却有 1 条，参数还正好是完整 JSON，谁都看不出它是半截）。 */
+      if (!trulyDone()) {
+        throw withEndpoint(new Error("LLM 流提前结束：未收到 finish_reason / [DONE] 结束标记"
+          + "（已收到 " + acc.content.length + " 字正文、" + tcMap.size + " 个工具调用片段），本次结果不完整"), url);
       }
       break;
     }

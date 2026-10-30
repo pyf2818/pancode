@@ -9,7 +9,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { LlmAgent } = require("../server/agent-llm");
+const { LlmAgent, _ctx } = require("../server/agent-llm");
 const { AgentBase } = require("../server/agent-base");
 const agentTools = require("../server/tools/agent-tools");
 const shadow = require("../server/shadow-git");
@@ -296,5 +296,113 @@ describe("undo 工具回执要报全动过的文件", () => {
     const atBottom = undoAgent({ ok: false, reason: "影子仓里没有可回退的检查点（只剩初始全量快照或回退记录）" });
     const out2 = await agentTools.undo(atBottom, {});
     expect(out2).toContain("初始全量快照与回退记录都不算一步");
+  });
+});
+
+/* ============================================================
+   审查项 F04：撤销归属判据必须在核心里，不能只写在某个入口上
+   以前 HTTP 的 /api/undo 记得"别替别的会话撤销"，而模型可调的 undo 工具
+   直接 _undoLast() —— 同一条规则在两个入口上厚薄不一，绕过的恰好是没人盯着的那个。
+   ============================================================ */
+describe("撤销归属判据下沉到 _undoLast（两个入口都绕不过）", () => {
+  let box;
+  afterEach(() => {
+    if (!box) return;
+    try { box.eng.files.close && box.eng.files.close(); } catch (e) { /* 已关 */ }
+    try { fs.rmSync(box.root, { recursive: true, force: true }); } catch (e) { /* Windows 句柄未放 */ }
+    box = null;
+  });
+
+  function boot() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pc-undo-owner-"));
+    const ws = path.join(root, "demo");
+    fs.mkdirSync(ws, { recursive: true });
+    fs.writeFileSync(path.join(ws, "a.txt"), "别人的活", "utf8");
+    const ready = shadow.ensureShadowRepo(path.join(root, "data"), ws);
+    expect(ready.ok).toBe(true);
+    const eng = Object.create(LlmAgent.prototype);
+    eng.files = new FileStore(ws);
+    eng._undoStack = [];
+    eng._shadowRepoReady = true;
+    eng._shadowGitDir = ready.dir;
+    eng._userKey = "u-test";
+    eng.emitted = [];
+    eng.emit = (e) => eng.emitted.push(e);
+    eng.fileChanged = () => {};
+    eng.pushChanges = () => {};
+    box = { root, ws, eng };
+    return box;
+  }
+  /* 手工压一支内存检查点：把 a.txt 从"别人的活"改成"我写的"，归属记在 ownerConv 名下 */
+  function pushWrite(eng, ownerConv, writer) {
+    eng._undoStack.push({
+      label: "写入 a.txt", at: Date.now(), convId: ownerConv, writer: writer || null,
+      entries: [{ path: "a.txt", beforeExisted: true, beforeContent: "别人的活", store: null, dir: eng.files.dir }],
+    });
+    eng.files.write("a.txt", "我写的");
+  }
+  const read = (ws) => fs.readFileSync(path.join(ws, "a.txt"), "utf8");
+
+  it("栈顶属于别的会话时，显式带 convId 的撤销被挡下且不弹栈", () => {
+    const { eng, ws } = boot();
+    pushWrite(eng, "conv-B");
+    const r = eng._undoLast({ convId: "conv-A" });
+    expect(r.ok).toBe(false);
+    expect(r.cross).toBe(true);
+    expect(r.reason).toMatch(/另一个会话/);
+    expect(eng._undoStack).toHaveLength(1);          // 没被悄悄弹掉，B 自己还能撤
+    expect(read(ws)).toBe("我写的");                  // 盘上一点没动
+  });
+
+  it("同一会话来撤就正常执行（守卫不是把撤销整个关掉）", () => {
+    const { eng, ws } = boot();
+    pushWrite(eng, "conv-B");
+    const r = eng._undoLast({ convId: "conv-B" });
+    expect(r.ok).toBe(true);
+    expect(read(ws)).toBe("别人的活");
+  });
+
+  it("模型工具那条路径（没有显式 convId，只有 AsyncLocalStorage 上下文）同样被挡住", () => {
+    const { eng, ws } = boot();
+    pushWrite(eng, "conv-B");
+    const { convContext } = _ctx;
+    const r = convContext.run({ convId: "conv-A" }, () => eng._undoLast());
+    expect(r.cross).toBe(true);
+    expect(read(ws)).toBe("我写的");
+  });
+
+  it("不带会话上下文的调用保持原行为（空串按「不是别的会话」放行，别把历史用法判死）", () => {
+    const { eng, ws } = boot();
+    pushWrite(eng, "conv-B");
+    expect(eng._undoLast().ok).toBe(true);
+    expect(read(ws)).toBe("别人的活");
+  });
+
+  it("栈顶归属为空（用户在编辑器里自己存的）时允许撤销", () => {
+    const { eng, ws } = boot();
+    pushWrite(eng, "");
+    expect(eng._undoLast({ convId: "conv-A" }).ok).toBe(true);
+    expect(read(ws)).toBe("别人的活");
+  });
+
+  it("内存栈空、退影子那一步时归属判据同样生效", () => {
+    const { eng, ws } = boot();
+    eng.files.write("a.txt", "改过了");
+    eng._shadowCommit("写入 a.txt", [{ path: "a.txt" }], "conv-B");
+    const r = eng._undoLast({ convId: "conv-A" });
+    expect(r.ok).toBe(false);
+    expect(r.cross).toBe(true);
+    expect(read(ws)).toBe("改过了");
+  });
+
+  it("_pushCheckpoint 把子智能体写者署名记进栈（F03 的否决判据靠这一笔才有信号）", () => {
+    const { eng } = boot();
+    const { subContext } = require("../server/sub-context");
+    const w = { id: "sub-1" };
+    eng._pushCheckpoint([{ path: "a.txt", beforeExisted: true, beforeContent: "别人的活", dir: eng.files.dir }], "写入 a.txt");
+    expect(eng._undoStack[0].writer).toBe(null);
+    subContext.run({ writer: w }, () => eng._pushCheckpoint(
+      [{ path: "a.txt", beforeExisted: true, beforeContent: "别人的活", dir: eng.files.dir }], "子步骤写入"));
+    expect(eng._undoStack[1].writer).toBe(w);
   });
 });

@@ -45,22 +45,33 @@ function histPath() {
   return wsKey.forWorkspace(path.resolve(ROOT, (cfg && cfg.workspace) || "workspace"), ROOT)
     .file(path.join(ROOT, ".pancode", "orch-history"));
 }
-/* 进程内权威副本 + 懒加载一次。以前每次 append 都裸读盘再 unshift：
+/* 进程内权威副本 + 懒加载。以前每次 append 都裸读盘再 unshift：
    saveJson 是异步排队落盘，连续两次编排时第二次读到的还是旧文件，
-   会把第一次的记录整条覆盖丢掉。 */
-let _histCache = null;
+   会把第一次的记录整条覆盖丢掉。
+   键必须是"这份工作区对应的那个历史文件"：原先是一整个模块级单例，
+   切工作区之后缓存里还是 A 项目的记录，而 histPath() 已经指向 B ——
+   下一次 append 把 A 的整份历史写进 B 的文件，两个项目的编排记录互相污染
+   （审查项 F14）。按路径分片之后，"缓存"与"它在替哪份文件说话"始终是一对。 */
+const _histCache = new Map();   // histPath -> 记录数组
 function histLoad() {
-  if (_histCache) return _histCache;
-  try { _histCache = JSON.parse(fs.readFileSync(histPath(), "utf8")) || []; }
-  catch (e) { _histCache = []; }
-  return _histCache;
+  const p = histPath();
+  const hit = _histCache.get(p);
+  if (hit) return hit;
+  let list = [];
+  try { list = JSON.parse(fs.readFileSync(p, "utf8")) || []; } catch (e) { list = []; }
+  if (!Array.isArray(list)) list = [];
+  _histCache.set(p, list);
+  return list;
 }
 function histAppend(rec) {
   const list = histLoad();
   list.unshift(rec);
   const kept = list.slice(0, HIST_MAX);
-  _histCache = kept;
-  safeWrite.saveJson(histPath(), kept);
+  /* histPath() 每次都要 load 一遍配置，这里取一次复用：
+     缓存键与写入目标必须是同一次算出来的同一个路径。 */
+  const p = histPath();
+  _histCache.set(p, kept);
+  safeWrite.saveJson(p, kept);
   return kept;
 }
 function histList() {

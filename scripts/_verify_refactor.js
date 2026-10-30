@@ -94,7 +94,10 @@ function startGateway() {
         const hit = msgs.filter((m) => m.role === "user").map(asText).filter((s) => /【场景[^\]】]*】/.test(s)).pop() || "";
         const scene = (hit.match(/【场景([^\]】]*)】/) || [])[1] || "";
         let lastUserIdx = -1;
-        for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === "user") lastUserIdx = i;
+        /* 必须 break：不 break 的话循环一路覆盖到**最早**那条 user，
+           同一会话里跑第二个场景（③ 改完 ④ 撤）就会被判成"这一轮已经跑过工具"，
+           撤销根本没被调用。以前每场景一条会话，这个洞照不出来。 */
+        for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === "user") { lastUserIdx = i; break; }
         const alreadyRan = lastUserIdx >= 0 && msgs.slice(lastUserIdx + 1).some((m) => m.role === "tool");
         rs.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
         const send = (o) => rs.write("data: " + JSON.stringify(o) + "\n\n");
@@ -127,8 +130,11 @@ function startGateway() {
   });
 }
 
-async function runScene(conn, scene, ms) {
-  const conv = "rf-" + scene + "-" + Date.now();
+/* 默认每场景一条会话（历史互不串，tool.end 归属好认）。
+   撤销必须钉在**发生改动的那条会话**里：F07 之后跨会话点撤销会被拒绝——
+   别的会话的改动不该由这一次调用替你回滚。第 4 个参数就是为 ③→④ 这一对准备的。 */
+async function runScene(conn, scene, ms, fixedConv) {
+  const conv = fixedConv || "rf-" + scene + "-" + Date.now();
   const before = conn.events.length;
   conn.send({ type: "chat", text: "【场景" + scene + "】请按这个场景调用工具", convId: conv });
   let done = null;
@@ -211,7 +217,8 @@ const ranScene = (r, scene) => !!r.done && got(scene).length > 0;
     ok("查完文件仍未改动", read("src/user.js") === USER_JS, read("src/user.js").slice(0, 30));
 
     section("③ apply:true 才落盘，且边界都对");
-    const r3 = await runScene(conn, "应用");
+    const convRf = "rf-apply-" + Date.now();      // ③ 改、④ 撤：同一条会话，撤销才轮得到它
+    const r3 = await runScene(conn, "应用", null, convRf);
     ok("落盘真发生了（模型读到了原子写入的回执）", /已原子写入|已写入/.test(got("应用")), got("应用").slice(0, 220));
     ok("user.js 的函数名与导出都改了", /function loadUser\(id\)/.test(read("src/user.js")) && /\{ loadUser \}/.test(read("src/user.js")), read("src/user.js"));
     ok("api.js 的 import 与调用都改了", /const \{ loadUser \}/.test(read("src/api.js")) && /loadUser\(e\.id\)/.test(read("src/api.js")), read("src/api.js"));
@@ -222,7 +229,7 @@ const ranScene = (r, scene) => !!r.done && got(scene).length > 0;
     ok("回执里承诺了 /undo 一次撤掉整批", /undo/.test(got("应用")), got("应用").slice(0, 200));
 
     section("④ 一次撤销撤掉整批改名（一次调用只有一个检查点）");
-    const r4 = await runScene(conn, "撤销");
+    const r4 = await runScene(conn, "撤销", null, convRf);
     ok("undo 真跑到了", ranScene(r4, "撤销"), got("撤销").slice(0, 200));
     ok("user.js 回到原样", read("src/user.js") === USER_JS, JSON.stringify(read("src/user.js").slice(0, 40)));
     ok("api.js 也回到原样（同一次调用的第二个文件一起撤）", read("src/api.js") === API_JS, JSON.stringify(read("src/api.js").slice(0, 40)));
