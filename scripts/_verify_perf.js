@@ -99,13 +99,18 @@ window.__frameGaps = async function (ms) {
   fs.writeFileSync(path.join(DATA_DIR, "pancode.config.json"),
     JSON.stringify({ workspace: WS_DIR, desktop: { closeAction: "quit" }, agentMode: "auto" }), "utf8");
 
+  const perfEnv = Object.assign({}, process.env, {
+    PANCODE_DATA_DIR: DATA_DIR, PORT: String(PORT), AGENT_FAST: "1",
+    CURSORWEB_ENGINE: "demo", NODE_NO_WARNINGS: "1",
+  });
+  /* 父 shell 残留 ELECTRON_RUN_AS_NODE=1 时，electron.exe 会退化成纯 Node：
+     `require("electron").app` 是 undefined，main.js 第一行 setAppUserModelId 就 TypeError，
+     症状是"服务端没起来"而不是"权限错了"。同一把尺子见 _verify_desktop.js 与 _verify_pkg.js。 */
+  delete perfEnv.ELECTRON_RUN_AS_NODE;
   child = spawn(electronBin, [".", "--no-sandbox", "--remote-debugging-port=" + CDP,
     "--user-data-dir=" + path.join(SANDBOX, "electron-ud")], {
     cwd: ROOT,
-    env: Object.assign({}, process.env, {
-      PANCODE_DATA_DIR: DATA_DIR, PORT: String(PORT), AGENT_FAST: "1",
-      CURSORWEB_ENGINE: "demo", NODE_NO_WARNINGS: "1",
-    }),
+    env: perfEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", (d) => { log += d; });
@@ -153,32 +158,53 @@ window.__frameGaps = async function (ms) {
     };
   });
 
-  /* 打开设置这一步：openWorkbench 先 display:flex 出空壳，再 await 一次配置请求，
-     然后才把整块 DOM 建出来。所以"看得见"和"有内容"是两件事，分开量。 */
+  /* 打开设置这一步走的是用户真路径：#btnSettings 现在只出小抽屉（gear-menu.js），
+     「全部设置」才进全屏工作台（workbench.js:1464 注释）。上一版直接点齿轮等 #wbBody，
+     于是 evaluate 里 getElementById("wbBody") 是 null，整段 catch 成 err，
+     探针照样 exit 0 —— 量了个空。抽屉与面板两段分开量：抽屉是用户摸到的第一下。
+     openWorkbench 先 wbBuild() 出空壳，再 await 一次配置请求才填内容，所以"看得见"和"有内容"仍然是两件事。 */
   const openSettings = await page.evaluate(async () => {
-    const close = () => { const c = document.getElementById("wbClose"); if (c && document.getElementById("workbench").style.display !== "none") c.click(); };
+    const gear = () => document.getElementById("btnSettings");
+    const drawerOn = () => { const g = document.getElementById("gearMenu"); return !!g && !g.classList.contains("hidden"); };
+    const closeDrawer = () => { if (typeof window.closeGearMenu === "function") window.closeGearMenu(); };
+    const close = () => { const c = document.getElementById("wbClose"); if (c && document.getElementById("workbench") && document.getElementById("workbench").style.display !== "none") c.click(); };
+    const openFull = () => { closeDrawer(); gear().click(); document.querySelector("#gearMenu .gm-all").click(); };
     const raf2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    /* wbBuild() 是懒建的：第一次打开之前根本没有 #wbBody。清空只在它已存在时做
+       —— 不存在时本来就是干净的空壳，不存在"旧节点留在下次重建前"的问题。 */
+    const clearBody = () => { const b = document.getElementById("wbBody"); if (b) b.replaceChildren(); };
     const until = (pred) => new Promise((done) => {
       const t0 = performance.now();
       (function loop() { if (pred()) return done(performance.now() - t0); requestAnimationFrame(loop); })();
     });
-    const frame = [], content = [];
+    const drawer = [];
+    const drawerShown = [];
+    for (let k = 0; k < 3; k++) {
+      closeDrawer(); await raf2();
+      const t0 = performance.now();
+      gear().click();
+      drawerShown.push(drawerOn());
+      drawer.push(Math.round(performance.now() - t0));
+    }
+    const frame = []; const content = [];
     for (let k = 0; k < 3; k++) {
       close(); await raf2();
-      const t0 = performance.now();
-      document.getElementById("btnSettings").click();
+      clearBody();
+      const t1 = performance.now();
+      openFull();
       await raf2();
-      frame.push(Math.round(performance.now() - t0));
+      frame.push(Math.round(performance.now() - t1));
       close(); await raf2();
       // close 不清 #wbBody（openWorkbench 每次重建内容，但旧节点会留到下次重建前），
       // 不清空的话第二次起 ">40 个元素" 判据立即为真，量出 0 —— 上一轮基线就是这么被污染的。
-      document.getElementById("wbBody").replaceChildren();
-      const t1 = performance.now();
-      document.getElementById("btnSettings").click();
+      clearBody();
+      const t2 = performance.now();
+      openFull();
       content.push(Math.round(await until(() => document.querySelectorAll("#wbBody *").length > 40)));
     }
-    frame.sort((a, b) => a - b); content.sort((a, b) => a - b);
-    return { frameMed: frame[1], frames: frame, contentMed: content[1], contents: content };
+    drawer.sort((a, b) => a - b); frame.sort((a, b) => a - b); content.sort((a, b) => a - b);
+    return { drawerMed: drawer[1], drawer, drawerShown: drawerShown.filter(Boolean).length,
+      frameMed: frame[1], frames: frame, contentMed: content[1], contents: content };
   }).catch((e) => ({ err: e.message.split("\n")[0] }));
 
   const panelOpen = await page.evaluate(() => {
@@ -222,15 +248,39 @@ window.__frameGaps = async function (ms) {
     longTaskCount: longTasks.filter((t) => t.dur >= 50).length,
     longTasks,
   };
-  console.log(JSON.stringify(result, null, 1));
   fs.writeFileSync(BASELINE_FILE, JSON.stringify(result, null, 2), "utf8");
-  console.log("\n写入 " + path.relative(ROOT, BASELINE_FILE));
   await browser.close();
   child.kill();
-  process.exit(0);
+  child = null;
+
+  /* 原先这一段只把 JSON 打出来就 exit 0 —— 上一轮 #wbBody 取不到、整段量成 err，
+     链上依然读成"跑了且过"。这里补判据：全部是"这一步到底量到数没有"的结构判据，
+     不设毫秒闸（同机器上别的进程会把阈值随机刷红，见 _verify_perf 头注释的口径）。 */
+  console.log(JSON.stringify(result, null, 1));
+  const isNum = (x) => typeof x === "number" && isFinite(x);
+  const os = result.openSettings;
+  const judge = [
+    ["真桌面壳里量到了首屏（FCP 与 domInteractive 都是正数）", isNum(result.boot.fcp) && result.boot.fcp > 0 && isNum(result.boot.domInteractive) && result.boot.domInteractive > 0],
+    ["齿轮小抽屉一点就出（三次都显形，且量到时间）", os.drawerShown === 3 && isNum(os.drawerMed) && (os.drawer || []).length === 3],
+    ["全屏设置面板开到有内容（#wbBody 子节点 >40）", result.panelOpen === true],
+    ["面板「空壳」与「有内容」两段都量到数（没被 catch 成 err）", isNum(os.frameMed) && isNum(os.contentMed) && !os.err],
+    ["设置里换分组逐个量到（样本数=导航项数，上限 8）", result.tabs.count > 0 && result.tabs.samples.length === Math.min(result.tabs.count, 8) && result.tabs.samples.every((s) => isNum(s.med))],
+    ["CODE↔AGENT 切换量到 3 个样本", isNum(result.modeSwitch.med) && (result.modeSwitch.all || []).length === 3],
+    ["静置 1.5 秒有帧间隔采样（不是空数组凑出来的 p95）", result.frames.n > 0 && isNum(result.frames.p95)],
+    ["基线文件落盘且就是这一次量的（读回比对 at）", (() => { try { return JSON.parse(fs.readFileSync(BASELINE_FILE, "utf8")).at === result.at; } catch (e) { return false; } })()],
+  ];
+  let red = 0;
+  for (const [name, cond] of judge) {
+    console.log((cond ? "  \x1b[32m✓\x1b[0m " : "  \x1b[31m✗\x1b[0m ") + name);
+    if (!cond) red++;
+  }
+  console.log("\n共 " + judge.length + " 条，红 " + red + " 条");
+  console.log("\n写入 " + path.relative(ROOT, BASELINE_FILE));
+  process.exit(red ? 1 : 0);
 })().catch((e) => {
   console.error("探针异常：" + e.stack);
   console.error(log.slice(-2000));
+  console.log("\n共 1 条，红 1 条");
   try { child.kill(); } catch (_) {}
   process.exit(1);
 });

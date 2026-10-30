@@ -10,6 +10,7 @@ const fs = require("fs");
 const path = require("path");
 const taskWatch = require("./task-watch");
 const closePolicy = require("./close-policy");
+const frameTrust = require("./frame-trust");
 
 /* 桌面版默认独立端口，避免与网页版(8766)冲突 */
 const PORT = Number(process.env.PORT || 8767);
@@ -18,19 +19,22 @@ process.env.PORT = String(PORT);
 /* Windows 下不设这个，系统通知会被当成"未关联应用的通知"直接丢弃，气泡根本不弹 */
 app.setAppUserModelId("com.pancode.desktop");
 
+/* 启动期配置文件只读一次：GPU 与沙箱两个开关都必须在 app.ready 之前同步决定，
+   过窗口就不生效了（backend 起来以后再读，appendSwitch 已经晚了）。 */
+const startupCfg = (() => {
+  try {
+    const root = process.env.PANCODE_DATA_DIR || path.join(__dirname, "..");
+    return JSON.parse(fs.readFileSync(path.join(root, "pancode.config.json"), "utf8")) || {};
+  } catch (e) { return {}; }   /* 没有配置文件 / 读不动 = 全走默认 */
+})();
+
 /* GPU 策略：默认交给 Chromium 自检（真桌面 GPU 上合成动画/模糊才有硬件加速，
    无条件禁用曾把整台应用压进软件光栅化，设置面板一次切换要 200-320ms）。
-   虚拟机/远程桌面等无 GPU 环境才回退：PANCODE_GPU=0 或配置 desktop.gpu:"off"。
-   GPU 开关是启动期一次性决定，所以这里要在 ready 前同步读配置文件——
-   不能等 backend 起来再读，那时 appendSwitch 已经过了生效窗口。 */
+   虚拟机/远程桌面等无 GPU 环境才回退：PANCODE_GPU=0 或配置 desktop.gpu:"off"。 */
 const gpuPref = (() => {
   if (process.env.PANCODE_GPU === "0") return "off";
   if (process.env.PANCODE_GPU === "1") return "on";
-  try {
-    const root = process.env.PANCODE_DATA_DIR || path.join(__dirname, "..");
-    const cfg = JSON.parse(fs.readFileSync(path.join(root, "pancode.config.json"), "utf8"));
-    if (cfg && cfg.desktop && cfg.desktop.gpu === "off") return "off";
-  } catch (e) { /* 没有配置文件 / 读不动 = 默认开 GPU */ }
+  if (startupCfg.desktop && startupCfg.desktop.gpu === "off") return "off";
   return "on";
 })();
 if (gpuPref === "off") {
@@ -39,7 +43,20 @@ if (gpuPref === "off") {
   app.commandLine.appendSwitch("disable-gpu-compositing");
   app.commandLine.appendSwitch("disable-software-rasterizer");
 }
-app.commandLine.appendSwitch("no-sandbox");
+/* 渲染进程沙箱：以前无条件 no-sandbox，等于把所有页面都跑在"能直接调系统调用"的进程里。
+   这里根本不需要禁：渲染端 nodeIntegration=false、contextIsolation=true，
+   preload 只 require("electron") 递红绿灯指令——沙箱开着的 preload 一样能拿到 ipcRenderer。
+   （实测见 scripts/_verify_desktop.js：沙箱=开时窗口显形、页面加载、红绿灯 IPC 真的往返。）
+   留一条回退给起不来的环境（受限组策略 / 某些杀软会拦 sandbox 进程）：
+   PANCODE_SANDBOX=0 或配置 desktop.sandbox:"off"。默认是**开**。 */
+const sandboxPref = (() => {
+  if (process.env.PANCODE_SANDBOX === "0") return "off";
+  if (process.env.PANCODE_SANDBOX === "1") return "on";
+  if (startupCfg.desktop && startupCfg.desktop.sandbox === "off") return "off";
+  return "on";
+})();
+if (sandboxPref === "off") app.commandLine.appendSwitch("no-sandbox");
+console.log("[pc] 渲染进程沙箱=" + (sandboxPref === "off" ? "关" : "开") + " GPU=" + (gpuPref === "off" ? "关" : "开"));
 
 let win = null;
 let tray = null;
@@ -92,6 +109,36 @@ function waitForServer(retries = 80) {
   });
 }
 
+/* ---------- 来源边界（审查项 F13） ----------
+   界面里会渲染模型输出、docx 预览（sandbox iframe）、以及各种链接。窗口是无边框的，
+   红绿灯是唯一出口，所以"谁能发这条 IPC"必须问得出答案，而不是"反正 preload 只暴露四个方法"。
+   判据本体在 electron/frame-trust.js（有单测），这里只接主进程才有的两样东西：帧对象与 shell。 */
+const APP_ORIGIN = `http://127.0.0.1:${PORT}`;
+let shownFailPage = false;    // 后端启动失败，当前主框面是我们自己写的 data: 错误页
+
+const isAppUrl = (u) => frameTrust.isAppUrl(APP_ORIGIN, u, shownFailPage);
+
+function fromAppFrame(event) {
+  let url = "";
+  try { url = String((event && event.senderFrame && event.senderFrame.url) || (event && event.sender && event.sender.getURL()) || ""); }
+  catch (e) { return false; }   // 帧已销毁 → 按不可信处理
+  return isAppUrl(url);
+}
+
+/* 拒绝把主框面开走的导航（页面上一个没有 target 的 <a>、一段 location.assign 都算）。
+   以前只有 setWindowOpenHandler 管"开新窗"，当前窗口被导航走是没人拦的。 */
+function guardNavigation(event, targetUrl, kind) {
+  const dec = frameTrust.navigationAction(APP_ORIGIN, targetUrl, shownFailPage);
+  if (dec.action === "allow") return;
+  event.preventDefault();
+  if (dec.action === "external") {
+    console.log("[pc] " + kind + " 外部链接交给系统浏览器：" + String(targetUrl).slice(0, 120));
+    Promise.resolve(shell.openExternal(String(targetUrl))).catch(() => {});
+  } else {
+    console.log("[pc] " + kind + " 拒绝非白名单协议：" + (dec.protocol || String(targetUrl).slice(0, 120)));
+  }
+}
+
 async function createWindow() {
   win = new BrowserWindow({
     width: 1440,
@@ -113,6 +160,7 @@ async function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: sandboxPref !== "off",
       preload: path.join(__dirname, "preload.js"),
     }
   });
@@ -126,14 +174,24 @@ async function createWindow() {
      正确做法：`on` 只绑一次（下面的 flag），`handle` 用 `removeHandler`（它不需要 listener）。 */
   if (!winIpcBound) {
     winIpcBound = true;
-    ipcMain.on("pc-win:minimize", () => { if (win && !win.isDestroyed()) win.minimize(); });
-    ipcMain.on("pc-win:toggle-max", () => {
+    ipcMain.on("pc-win:minimize", (e) => {
+      if (!fromAppFrame(e)) return;
+      if (win && !win.isDestroyed()) win.minimize();
+    });
+    ipcMain.on("pc-win:toggle-max", (e) => {
+      if (!fromAppFrame(e)) return;
       if (!win || win.isDestroyed()) return;
       if (win.isMaximized()) win.unmaximize(); else win.maximize();
     });
-    ipcMain.on("pc-win:close", () => { if (win && !win.isDestroyed()) win.close(); });
+    ipcMain.on("pc-win:close", (e) => {
+      if (!fromAppFrame(e)) return;
+      if (win && !win.isDestroyed()) win.close();
+    });
     // ipcMain 是进程级单例：handler 也只注册一次，靠闭包动态读模块变量 win
-    ipcMain.handle("pc-win:is-max", () => !!(win && !win.isDestroyed() && win.isMaximized()));
+    ipcMain.handle("pc-win:is-max", (e) => {
+      if (!fromAppFrame(e)) return false;
+      return !!(win && !win.isDestroyed() && win.isMaximized());
+    });
   }
   const pushMax = () => {
     if (win && !win.isDestroyed()) win.webContents.send("pc-win:max", win.isMaximized());
@@ -165,18 +223,39 @@ async function createWindow() {
 
   /* 外部链接交给系统默认浏览器打开。只放行 http(s)/mailto：openExternal 会把任意
      scheme 交给系统处理器，file:/smb:/自定义协议都可能是提权入口（win上加 \\.\ 一类
-     设备路径甚至能直接崩 shell）。docx 预览里被塞进来的奇怪链接也走这道闸。 */
+     设备路径甚至能直接崩 shell）。docx 预览里被塞进来的奇怪链接也走这道闸。
+     白名单与下面的同窗口导航共用 frame-trust 那一份，不再各写一遍。 */
   win.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const u = new URL(url);
-      if (u.protocol === "http:" || u.protocol === "https:" || u.protocol === "mailto:") {
-        shell.openExternal(u.href);
-      } else {
-        console.log("[pc] 拒绝打开非白名单协议链接:", u.protocol);
-      }
-    } catch (e) { console.log("[pc] 链接解析失败，忽略:", String(url).slice(0, 120)); }
+    const dec = frameTrust.navigationAction(APP_ORIGIN, url, shownFailPage);
+    if (dec.action === "external") {
+      Promise.resolve(shell.openExternal(String(url))).catch(() => {});
+    } else if (dec.action !== "allow") {
+      console.log("[pc] 拒绝打开非白名单链接:", dec.protocol || String(url).slice(0, 120));
+    }
     return { action: "deny" };
   });
+  /* 同窗口导航（F13）：没有 target 的 <a>、window.location 改写都会走到这里。
+     放走一次就等于把整个应用换成外部页面——红绿灯、WS、令牌全在别人的页面里跑。 */
+  win.webContents.on("will-navigate", (e, url) => guardNavigation(e, url, "窗口导航"));
+
+  /* 探针用：沙箱开启后红绿灯那条 IPC 链路是否真的还能往返。
+     这条只能由主进程发起——判据要穿过 preload 暴露的真桥、ipcRenderer.invoke、
+     再到主进程带 senderFrame 校验的 handler，最后把值回读给主进程。
+     只在环境变量存在时生效，正常启动路径不受影响。 */
+  const probeIpcMs = Number(process.env.PANCODE_PROBE_IPC_MS || 0);
+  if (probeIpcMs > 0) {
+    setTimeout(async () => {
+      if (!win || win.isDestroyed()) { console.log("[pc] IPC 往返失败：窗口没了"); return; }
+      try {
+        const has = await win.webContents.executeJavaScript(
+          "!!(window.pancodeWin && typeof window.pancodeWin.isMaximized === 'function')", true);
+        const max = has ? await win.webContents.executeJavaScript("window.pancodeWin.isMaximized()", true) : null;
+        console.log("[pc] IPC 往返 " + (has && typeof max === "boolean" ? "ok" : "失败") + " bridge=" + has + " isMax=" + max);
+      } catch (e) {
+        console.log("[pc] IPC 往返失败：" + (e && e.message ? e.message : e));
+      }
+    }, probeIpcMs);
+  }
 
   win.on("closed", () => { win = null; });
 
@@ -274,6 +353,9 @@ async function createWindow() {
   } catch (e) {
     console.log("[pc] 后端启动失败：" + (e && e.message ? e.message : e));
     if (winAlive()) {
+      /* 错误页也是"我们自己的框面"：无边框窗口只有红绿灯能关，
+         把它标成可信来源，否则后端起不来时窗口连关都关不掉。 */
+      shownFailPage = true;
       await loadOrFail(
         "data:text/html;charset=utf-8," +
           encodeURIComponent(`<body style="background:${bgFor()};color:${nativeTheme.shouldUseDarkColors ? "#ccc" : "#333"};font-family:sans-serif;display:grid;place-items:center;height:100vh;margin:0"><div><h3>pancode 后端启动失败</h3><p>${e.message}</p></div></body>`),
@@ -544,7 +626,12 @@ app.on("before-quit", (e) => {
   if (backend && typeof backend.shutdown === "function" && !shutDone) {
     e.preventDefault();
     shutDone = true;
-    try { backend.shutdown("electron-quit"); } catch (err) {}
-    setTimeout(() => app.quit(), 1200);   // shutdown 内部 3s 兜底退出，这里先让事件循环收尾
+    /* 后端 shutdown 现在返回"数据已落盘"的信号（预算 2.5s）。原先这里拍死一个 1200ms
+       的闹钟就 app.quit()，等于把还没写完的会话/登录态连同进程一起掐掉。 */
+    const go = () => { try { app.quit(); } catch (err) {} };
+    let done = null;
+    try { done = backend.shutdown("electron-quit"); } catch (err) {}
+    if (done && typeof done.then === "function") done.then(go, go);
+    setTimeout(go, 5000);   // 兜底：后端收口挂住时仍要退出，不能让窗口关不掉
   }
 });

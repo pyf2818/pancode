@@ -88,19 +88,31 @@ async function boot(tag, port, cfgExtra, probeEnv) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const inst = {
-    child, port, DATA_DIR, WS_DIR, sandbox, out: "",
+    child, port, DATA_DIR, WS_DIR, sandbox, out: "", head: "",
     alive: () => child.exitCode === null && !child.killed,
     count: (sub) => (inst.out.split(sub).length - 1),
   };
-  child.stdout.on("data", (c) => { inst.out = (inst.out + c).slice(-60000); });
-  child.stderr.on("data", (c) => { inst.out = (inst.out + c).slice(-60000); });
+  /* 启动期那几行必须单独留一份：后端一旦开始刷日志，60000 字符的尾巴会把
+     "[pc] 渲染进程沙箱=开 / IPC 往返 ok" 这类开局心跳整段冲掉——实测红过一次，
+     而那两条恰恰只能在开局看到（沙箱与来源判据都在主进程模块加载时就定死了）。 */
+  const onData = (c) => {
+    const s = String(c);
+    inst.out = (inst.out + s).slice(-60000);
+    if (inst.head.length < 20000) inst.head += s;
+  };
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
   child.on("exit", (code, sig) => { inst.out += "\n[exit code=" + code + " sig=" + sig + "]"; });
   /* 关键的一层：后端起来 ≠ 界面弹出来。3.2.1 第一次装机就是栽在这个洞上——
      ipcMain.off 少传 listener 抛 ERR_INVALID_ARG_TYPE，createWindow 从那一行整段中断，
      ready-to-show 没挂上：health 全绿、任务照跑，而窗口从头到尾没出现过（wsClients 恒 0）。
-     所以每个实例都先等主进程自己喊"显形了"。 */
-  inst.marker = async (sub, ms) => {
-    const hit = () => (typeof sub === "string" ? inst.out.includes(sub) : sub.test(inst.out));
+     所以每个实例都先等主进程自己喊"显形了"。
+     第三个参数 fromHead=true 时改看开局那份缓冲（启动期心跳用）。 */
+  inst.marker = async (sub, ms, fromHead) => {
+    const hit = () => {
+      const src = fromHead ? inst.head : inst.out;
+      return typeof sub === "string" ? src.includes(sub) : sub.test(src);
+    };
     const t0 = Date.now();
     while (Date.now() - t0 < ms) { if (hit()) return true; await wait(120); }
     return false;
@@ -129,7 +141,14 @@ async function boot(tag, port, cfgExtra, probeEnv) {
        其实一次也没证明过"界面弹得出来"。现在关窗时机落在"任务正在跑"里面，
        "关窗前 / 关窗后"那对比对才真的是在比这两件事。 */
     PANCODE_PROBE_TRAY_DUMP: "1",
-    PANCODE_PROBE_TRAY_CLICK_MS: "12500",   // 落在挂后台之后：验"从托盘唤回窗口 + 跳会话"
+    /* 为什么是 25 秒而不是 12.5 秒：任务表空着的时候轮询退到 15 秒一次（pollTasks 里
+       scheduleNext(have ? 3000 : 15000)），而 chat 是探针在 health 通了之后才发的——
+       实测 12.5 秒那一刀正好砍在"第一次拿到非空任务表"之前，钩子打印的是
+       "[pc] 探针模拟托盘点击：任务表还是空的"，三条判据全红，而红的是夹具的时机，不是产品。
+       （对照：同一支探针换回旧 main.js 也是这三条红，与沙箱/来源改动无关。） */
+    PANCODE_PROBE_TRAY_CLICK_MS: "25000",   // 落在挂后台之后：验"从托盘唤回窗口 + 跳会话"
+    // F13：沙箱开着的时候，红绿灯那条 IPC 链路还得真的往返（主进程里跑，见 electron/main.js）
+    PANCODE_PROBE_IPC_MS: "6500",
   });
   if (!A) {
     ok("Electron 实例能启动并把后端带起来", false, "60s 内 /api/health 没应答");
@@ -141,6 +160,14 @@ async function boot(tag, port, cfgExtra, probeEnv) {
   ok("A：窗口真的显形（ready-to-show 一路跑到 show，没有被中途抛错打断）",
     await A.marker("[pc] 窗口已显形", 20000), A.out.slice(-700));
   ok("A：页面真的加载完成（did-finish-load）", await A.marker("[pc] 页面加载完成", 20000), A.out.slice(-500));
+  /* F13 的两条，成对看才有意义：
+     ① 沙箱默认开着（以前是无条件 no-sandbox，等于所有页面都能直接摸系统调用）；
+     ② 开着沙箱时红绿灯那条链路仍然走得通。
+     第二条必须认 isMax=true：handler 现在带 senderFrame 校验，来源不认时**回的是 false**，
+     只看"往返 ok"会把"发出去被静默拒了"当成通过——那正好是这次改动最可能引入的回归。 */
+  ok("A：渲染进程沙箱默认是开的", await A.marker("[pc] 渲染进程沙箱=开", 8000, true), A.head.slice(0, 300));
+  ok("A：沙箱开着时红绿灯 IPC 真的往返（不是被来源校验静默拒掉）",
+    await A.marker("[pc] IPC 往返 ok bridge=true isMax=true", 20000, true), A.head.slice(-400));
   /* 托盘图标：读不到图时主进程现在会大声记一行 error，成功也打一行心跳。
      3.2.x 的包里 `build.files` 白名单漏了 `assets/**`，托盘一直是个"点得到但看不见"的空图标，
      而日志里一个字都没有——用户看到的就是"托盘没图标"，排查全靠猜。 */
@@ -220,6 +247,9 @@ async function boot(tag, port, cfgExtra, probeEnv) {
      以前 showWindow/createWindow 那条链坏过一次（ready-to-show 没挂上），
      只断"日志里有这一行"是测不出没显形的。 */
   ok("A：挂后台的窗口被托盘点击唤回成可见", await A.marker("[pc] 唤回窗口后可见=true", 10000), A.out.slice(-400));
+  /* 整个实例 A 的子进程输出落一份盘：这三条判据只给"最后一屏"时，
+     "点击钩子根本没跑" 与 "跑了但 convId 不是我要的那条" 长得一模一样，没法判。 */
+  try { fs.writeFileSync(path.join(OUT, "desktop-a-child.log"), A.out); } catch (e) {}
 
   section("A 没有窗口，任务照常跑到收口");
   const done = await waitFor((e) => e.type === "agent.done", 150000);

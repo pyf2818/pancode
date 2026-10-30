@@ -69,7 +69,13 @@ async function getToken() {
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
   page.on("pageerror", (e) => errors.push("PAGEERROR: " + e.message));
 
-  if (token) await page.addInitScript((t) => localStorage.setItem("cw-user-token", t), token);
+  if (token) await page.addInitScript((t) => {
+    /* init script 每个 frame 都跑一遍；应用里的 srcdoc/沙箱预览 iframe 读 localStorage
+       直接抛 SecurityError —— 这是探针自己的副作用，不是产品报错（同一坑见 _verify_uitaste.js）。 */
+    try {
+      localStorage.setItem("cw-user-token", t);
+    } catch (e) {}
+  }, token);
 
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load", timeout: 30000 });
   await page.waitForFunction(() => window.state && window.state.monacoReady === true, { timeout: 25000 }).catch(() => {});
@@ -100,9 +106,29 @@ async function getToken() {
   });
   console.log("DIAG " + JSON.stringify(diag) + " errors=" + JSON.stringify(errors.slice(0, 8)));
 
+  /* 这些量原先只是打印出来给人看，而这一支无论如何都 exit 0 ——
+     "跑了但不会红"不算验收。这里把它们变成判据。
+     数目按夹具的真实口径来，不用「≥1」糊过去：.phk 是**当前选中文件**的块数
+     （renderPatchHunks 只画 _sel 那个文件），src/calc.py 有 1 个 hunk；
+     勾选态则跟着产品口径——openPatchReview 把每个 hunk 强制 accepted=true（patch-review.js:12），
+     所以全勾。哪天这个强制没了，这条会翻红，那是要看见的变化。 */
+  const judge = [
+    ["补丁窗口真的显形了（不是截了一张空屏）", diag.visible === true],
+    ["补丁列出了夹具的 2 个文件", diag.files === MOCK.files.length],
+    ["选中文件逐块摊开（.phk = 该文件夹具 hunk 数 1，不是整屏糊一块）", diag.hunks === MOCK.files[0].hunks.length],
+    ["勾选态实测口径：每个 hunk 都被强制勾上（checked = hunks）", diag.hunks >= 1 && diag.checked === diag.hunks],
+    ["全程没有页面 JS 报错", errors.length === 0],
+  ];
+  let red = 0;
+  for (const [name, cond] of judge) {
+    console.log((cond ? "  \x1b[32m✓\x1b[0m " : "  \x1b[31m✗\x1b[0m ") + name);
+    if (!cond) red++;
+  }
+  console.log("\n共 " + judge.length + " 条，红 " + red + " 条");
+
   await browser.close();
   cleanup();
-  process.exit(0);
+  process.exit(red ? 1 : 0);
 })().catch((e) => { console.error("VERIFY_FAIL", e); cleanup(); process.exit(1); });
 
 /* 自清理：删除本次验证注册的一次性账号（在沙箱数据根下），并移走沙箱目录 */

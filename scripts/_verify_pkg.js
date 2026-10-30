@@ -35,6 +35,11 @@ const UNPACKED = process.argv[2] ? path.resolve(process.argv[2]) : defaultUnpack
 const EXE = path.join(UNPACKED, "pancode.exe");
 const ASAR = path.join(UNPACKED, "resources", "app.asar");
 const PORT = Number(process.env.PORT || 8877);
+/* 发行门禁：没有产物就是红，不是"打个 SKIP 然后 exit 0"。
+   本地没包可验时仍然可以普通跑（打「未测」后退出 0，分层运行器会把这一步记成 SKIP），
+   但 verify:release / PANCODE_RELEASE=1 这一条路必须拦住，否则"验包"就成了装饰。 */
+const RELEASE_GATE = process.env.PANCODE_RELEASE === "1" || process.argv.includes("--release");
+const MANIFEST = path.join(REPO, "release", "build-manifest.json");
 
 let pass = 0, fail = 0;
 const fails = [];
@@ -43,6 +48,7 @@ function ok(name, cond, detail) {
   else { fail++; fails.push(name + (detail ? " — " + detail : "")); console.log("  \x1b[31m✗\x1b[0m " + name + (detail ? " — " + detail : "")); }
 }
 function section(t) { console.log("\n\x1b[1m" + t + "\x1b[0m"); }
+const J = (v) => { try { return JSON.stringify(v === undefined ? "<undefined>" : v).slice(0, 300); } catch (e) { return String(v).slice(0, 300); } };
 
 /* ---------------- asar 头部解析（只读，不落任何文件） ---------------- */
 
@@ -94,13 +100,48 @@ function readArchive(archive) {
 
 (async () => {
   if (!fs.existsSync(EXE)) {
-    console.log("\x1b[33mSKIP:\x1b[0m 没找到打包产物 " + EXE + "（先跑 npm run dist）");
+    const why = "没找到打包产物 " + EXE + "（先跑 npm run dist；release/.unpacked-path 指向的解包目录是 " + UNPACKED + "）";
+    if (RELEASE_GATE) {
+      console.log("\x1b[31m✗ 发行验收缺件：\x1b[0m" + why);
+      console.log("共 1 条，红 1 条");
+      process.exit(1);
+    }
+    console.log("\x1b[33m未测（SKIP）：\x1b[0m" + why);
+    console.log("这一支什么都没验 —— 不是通过，是没测。发行门禁下这一步会直接红（PANCODE_RELEASE=1）。");
+    console.log("共 0 条，红 0 条");
     process.exit(0);
   }
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "pc-pkg-"));
   const wsDir = path.join(dataDir, "workspace");
   fs.mkdirSync(wsDir, { recursive: true });
   const repoVersion = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).version;
+
+  section("M 这份产物是谁打出来的：构建清单与哈希对账");
+  /* 没有清单 = 不知道这份 exe 对应哪一版代码，B 段再绿也只能说"包里有些本轮的字符串"。
+     所以这一段先跑：它回答"验的是不是刚打的那一份"。 */
+  const crypto = require("crypto");
+  const sha256 = (f) => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex");
+  if (!fs.existsSync(MANIFEST)) {
+    ok("release/build-manifest.json 存在", false, "缺清单：重新跑 npm run dist（scripts/dist.js 现在必写这份）");
+  } else {
+    const mf = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
+    ok("清单版本与源码版本一致 " + mf.version, mf.version === repoVersion, JSON.stringify({ 清单: mf.version, 源码: repoVersion }));
+    ok("清单记下了来源 commit", !!mf.sourceCommit && /^[0-9a-f]{40}$/.test(mf.sourceCommit), String(mf.sourceCommit));
+    if (RELEASE_GATE) ok("发行构建的工作树是干净的", mf.worktreeClean === true, "脏文件 " + mf.dirtyFiles + " 个：" + J(mf.dirtySample));
+    for (const a of (mf.artifacts || [])) {
+      const p = path.join(REPO, "release", a.file);
+      if (!fs.existsSync(p)) { ok("清单里的产物真的在 release/：" + a.file, false, "文件不存在"); continue; }
+      const now = sha256(p);
+      ok(a.file + " 的 sha256 与清单一致", now === a.sha256 && fs.statSync(p).size === a.bytes,
+        JSON.stringify({ 清单: String(a.sha256).slice(0, 12), 现在: now.slice(0, 12), 清单字节: a.bytes, 现在字节: fs.statSync(p).size }));
+    }
+    /* 清单记的 buildDir 是**输出根**，验的是它下面的 win-unpacked —— 两者不是同一个路径，
+       直接拿字符串等比会永远红（第一版就是这么错的）。 */
+    const expectUnpacked = mf.buildDir ? path.resolve(String(mf.buildDir), "win-unpacked") : null;
+    ok("清单里的解包目录就是这一次在验的那个",
+      expectUnpacked && expectUnpacked.replace(/\\/g, "/").toLowerCase() === UNPACKED.replace(/\\/g, "/").toLowerCase(),
+      J({ 清单: expectUnpacked, 在验: UNPACKED }));
+  }
 
   section("A 产物跑得起来（真起打包后的 exe）");
   const child = spawn(EXE, [], {
@@ -280,6 +321,7 @@ function readArchive(archive) {
   try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (e) {}
 
   console.log("\n" + (fail ? "\x1b[31mFAIL\x1b[0m" : "\x1b[32mPASS\x1b[0m") + " — 通过 " + pass + " / 失败 " + fail);
+  console.log("共 " + (pass + fail) + " 条，红 " + fail + " 条");
   if (fail) for (const f of fails) console.log("  · " + f);
   process.exit(fail ? 1 : 0);
 })().catch((e) => {
