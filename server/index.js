@@ -3395,6 +3395,11 @@ module.exports = {
   taskRows: readTaskRows,
   desktopPref: () => (cfg.desktop && cfg.desktop.closeAction) || "ask",
   setDesktopPref: (v) => { try { return configMod.saveDesktop(cfg, { closeAction: v }).closeAction; } catch (e) { return ""; } },
+  /* 托盘/主进程要读整组桌面偏好（关窗行为 + 开机自启 + 收口通知），单个 closeAction 不够用 */
+  desktopPrefs: () => Object.assign({ closeAction: "ask", launchAtLogin: false, notifyOnDone: true }, cfg.desktop || {}),
+  setDesktopPrefs: (patch) => { try { return configMod.saveDesktop(cfg, patch || {}); } catch (e) { return null; } },
+  /* 开机自启要落成系统登录项，只有主进程能做；设置界面写配置（本进程）后由这个钩子喊一声 */
+  onDesktopChange: (fn) => configMod.setDesktopChangeHook(fn),
   workspaceDir: () => WS_DIR,
   /* 托盘「复制诊断信息」的数据源。日志环是内存的（刻意不落盘，重启即空），
      所以出问题后要趁进程还活着抄走 —— 这也是内测阶段唯一能把"我这崩了"变成可查证据的路径。

@@ -131,6 +131,9 @@ async function main() {
       localStorage.setItem("cw-theme", "dark");
       localStorage.setItem("cw-palette", "graphite");
       localStorage.setItem("cw-onboarded", "1");   // 沙箱是全新数据根，不放行新手引导会盖住所有入口
+      /* 桌面端才有的「关闭窗口 / 开机自启 / 收口通知」分组靠这个标记显形；
+         浏览器态本来没有它，这里注入是为了在真实页面上点那两个开关（行为与 Electron 渲染进程一致）。 */
+      window.pancodeDesktop = { platform: "win32" };
     } catch (e) {}
   }, token);
 
@@ -317,6 +320,39 @@ async function main() {
     ok("开回后界面与配置一致", !!sBack && sBack.aria === "true"
       && ((cfgBack.agent || {}).memory || {}).autoSettle === true, JSON.stringify([sBack, (cfgBack.agent || {}).memory]));
     await page.screenshot({ path: path.join(OUT, "wb_autosettle.png") }).catch(() => {});
+
+    section("后台与关闭（桌面端）：开机自启 / 收口通知两个开关");
+    /* 这两行是给"装好之后没有挂后台功能"补的入口。判据同视觉/自动结算那段：
+       不止"看得见"，还要点得动、写进 desktop 段、重开分区后从服务端回填。
+       这里注入的 pancodeDesktop 只影响本页显形，不改产品分支。 */
+    await page.evaluate(() => window.openWorkbench("general"));
+    await wait(320);
+    const launchRow = await pollRow("开机自启（静默到托盘）", "false");
+    ok("通用页渲染出「开机自启（静默到托盘）」，默认关", !!launchRow && launchRow.aria === "false" && launchRow.hasKnob, JSON.stringify(launchRow));
+    const notifyRow = await pollRow("任务收口时通知", "true");
+    ok("通用页渲染出「任务收口时通知」，默认开", !!notifyRow && notifyRow.aria === "true" && notifyRow.hasKnob, JSON.stringify(notifyRow));
+    ok("点得到开机自启那一行", await page.evaluate(clickRow, "开机自启（静默到托盘）"));
+    const launchAfter = await pollRow("开机自启（静默到托盘）", "true");
+    const cfgD1 = await req("GET", "/api/config", null, token);
+    ok("开机自启真的写进配置（desktop.launchAtLogin=true）",
+      !!launchAfter && launchAfter.aria === "true" && ((cfgD1.desktop || {}).launchAtLogin) === true,
+      JSON.stringify(cfgD1.desktop));
+    ok("点得到收口通知那一行", await page.evaluate(clickRow, "任务收口时通知"));
+    const notifyAfter = await pollRow("任务收口时通知", "false");
+    const cfgD2 = await req("GET", "/api/config", null, token);
+    ok("收口通知关闭写进配置（desktop.notifyOnDone=false），关窗偏好没被牵连",
+      !!notifyAfter && notifyAfter.aria === "false" && ((cfgD2.desktop || {}).notifyOnDone) === false
+        && ((cfgD2.desktop || {}).closeAction || "ask") === "ask", JSON.stringify(cfgD2.desktop));
+    await page.evaluate(() => window.openWorkbench("appearance"));
+    await wait(200);
+    await page.evaluate(() => window.openWorkbench("general"));
+    await wait(300);
+    const launchReload = await pollRow("开机自启（静默到托盘）", "true");
+    const notifyReload = await pollRow("任务收口时通知", "false");
+    ok("重开分区后两个开关从服务端回填（不是只在内存里翻了个面）",
+      !!launchReload && launchReload.aria === "true" && !!notifyReload && notifyReload.aria === "false",
+      JSON.stringify([launchReload, notifyReload]));
+    await page.screenshot({ path: path.join(OUT, "wb_desktop_prefs.png") }).catch(() => {});
 
     // trace 面板那一格：有成本才出现金额，没成本绝不出现 ¥
     const withCost = await page.evaluate(() => {

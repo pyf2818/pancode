@@ -16,8 +16,10 @@ const frameTrust = require("./frame-trust");
 const PORT = Number(process.env.PORT || 8767);
 process.env.PORT = String(PORT);
 
-/* Windows 下不设这个，系统通知会被当成"未关联应用的通知"直接丢弃，气泡根本不弹 */
-app.setAppUserModelId("com.pancode.desktop");
+/* Windows 下不设这个，系统通知会被当成"未关联应用的通知"直接丢弃，气泡根本不弹。
+   必须与 package.json 的 build.appId 一致：electron-builder 给开始菜单快捷方式写的是 appId，
+   两边不一致时任务栏分组/图标会退回 Electron 默认原子图。 */
+app.setAppUserModelId("com.pancode.app");
 
 /* 启动期配置文件只读一次：GPU 与沙箱两个开关都必须在 app.ready 之前同步决定，
    过窗口就不生效了（backend 起来以后再读，appendSwitch 已经晚了）。 */
@@ -68,25 +70,62 @@ let winIpcBound = false;     // ipcMain 是进程级单例：这个标志必须�
 let lastRows = [];
 let lastTrayDump = "";       // 上次打给探针的托盘菜单快照，用来去重
 let pollTimer = null;
+/* 开机自启（登录项）拉起来的那一次带 --hidden：窗口照建、页面照加载（WS/任务都不断），只是不显形。 */
+let startHidden = process.argv.includes("--hidden");
+let startedHidden = false;   // 这次启动还没显过形：第一次唤回要顺带最大化（隐藏时不敢 maximize，它会把窗口带出来）
+let hidNotified = false;     // 「已挂到后台」的提示一个进程只弹一次
 
 /* 启动底色跟随系统主题（对齐 styles.css --bg：dark #0a0e13 / light #fafdfb），避免开窗闪错色 */
 const bgFor = () => (nativeTheme.shouldUseDarkColors ? "#0a0e13" : "#fafdfb");
 
 /* 关窗偏好读的是同进程后端的 cfg（设置界面写的也是同一份），不走 HTTP——闸门后面主进程没 token */
-const desktopPref = () => {
-  try { return (backend && typeof backend.desktopPref === "function") ? backend.desktopPref() : "ask"; }
-  catch (e) { return "ask"; }
+const DESKTOP_DEFAULTS = { closeAction: "ask", launchAtLogin: false, notifyOnDone: true };
+const desktopPrefs = () => {
+  try {
+    if (backend && typeof backend.desktopPrefs === "function") return Object.assign({}, DESKTOP_DEFAULTS, backend.desktopPrefs() || {});
+  } catch (e) { /* 后端还没就绪 → 走默认 */ }
+  return Object.assign({}, DESKTOP_DEFAULTS);
 };
+const desktopPref = () => closePolicy.normalizePref(desktopPrefs().closeAction);
 const setDesktopPref = (v) => {
   try { return (backend && typeof backend.setDesktopPref === "function") ? backend.setDesktopPref(v) : ""; }
   catch (e) { return ""; }
 };
+const setDesktopPrefs = (patch) => {
+  try { return (backend && typeof backend.setDesktopPrefs === "function") ? backend.setDesktopPrefs(patch) : null; }
+  catch (e) { return null; }
+};
+
+/* 开机自启 = 系统登录项。只有安装版才写：开发态写进去的是 node_modules 里的 electron.exe，
+   换目录或卸载后就是一条开机报错的死项。--hidden 让登录拉起的那次只驻留托盘。 */
+const loginItemPlatform = () => process.platform === "win32" || process.platform === "darwin";
+const loginItemQuery = () => (process.platform === "win32" ? { path: process.execPath, args: ["--hidden"] } : {});
+function syncLoginItem(why) {
+  if (!app.isPackaged || !loginItemPlatform()) return;
+  const want = desktopPrefs().launchAtLogin === true;
+  let now = false;
+  try { now = !!app.getLoginItemSettings(loginItemQuery()).openAtLogin; } catch (e) { now = false; }
+  if (now === want) return;
+  try {
+    app.setLoginItemSettings(Object.assign({ openAtLogin: want }, loginItemQuery()));
+    console.log("[pc] 开机自启=" + (want ? "开" : "关") + "（" + (why || "同步") + "）");
+  } catch (e) {
+    console.error("[electron] 开机自启写入失败：" + (e && e.message ? e.message : e));
+  }
+}
 
 /* 在 Electron 主进程内直接拉起后端（同进程，无需额外 node） */
 let backend = null;      // server/index.js 导出的 { shutdown }：退出时要显式收口，而不是让进程带着未落盘的会话消失
 let shutDone = false;
 function startServer() {
   backend = require(path.join(__dirname, "..", "server", "index.js"));
+  /* 设置界面 / 托盘改的是本进程里的 cfg：落盘后立刻把系统登录项与托盘菜单同步过来，
+     否则用户勾了「开机自启」要等下一次轮询才看得到状态。 */
+  try {
+    if (backend && typeof backend.onDesktopChange === "function") {
+      backend.onDesktopChange(() => { syncLoginItem("设置"); refreshTray(); });
+    }
+  } catch (e) { /* 订阅不上不影响其余功能 */ }
 }
 
 /* 轮询健康检查，等后端就绪再加载页面，避免白屏 */
@@ -200,6 +239,15 @@ async function createWindow() {
   win.on("unmaximize", pushMax);
   win.once("ready-to-show", () => {
     if (!win || win.isDestroyed()) return;
+    /* 登录项拉起来的那次带 --hidden：只在托盘真的在时才静默（没有托盘还藏着窗口，
+       用户就再也找不到它了）。maximize() 会把隐藏窗口带出来，所以这条路上两个都不调。 */
+    if (startHidden && trayOk) {
+      startHidden = false;
+      startedHidden = true;
+      console.log("[pc] 静默启动到托盘（--hidden）");
+      return;
+    }
+    startHidden = false;
     win.maximize();
     win.show();
     /* 这一行是给验收用的心跳：后端能在窗口没显形的时候也回 health（3.2.1 第一次就这么漏掉了
@@ -274,6 +322,11 @@ async function createWindow() {
     if (dec.action === "hide") {
       if (win && !win.isDestroyed()) win.hide();
       console.log("[pc] 已挂到后台，任务继续跑");
+      /* 第一次挂后台最容易"人找不到窗口了"：明说窗口去哪了、点哪能回来。一个进程只弹一次。 */
+      if (!hidNotified) {
+        hidNotified = true;
+        trayNote("pancode 已挂到后台", "任务继续跑。点这条通知或托盘图标随时唤回窗口。", showWindow);
+      }
       return;
     }
     if (dec.action === "quit") {
@@ -335,6 +388,17 @@ async function createWindow() {
     }, ms);
   }
 
+  /* 探针用：静默启动（--hidden）之后，从托盘唤回窗口的那一步。
+     原生托盘点击合成不了，这里直接调 showWindow 同一条链，验"藏着的窗口能被重新显形"。 */
+  const probeShowMs = Number(process.env.PANCODE_PROBE_SHOW_MS || 0);
+  if (probeShowMs > 0) {
+    setTimeout(() => {
+      showWindow();
+      console.log("[pc] 探针唤回窗口 visible=" + !!(win && !win.isDestroyed() && win.isVisible())
+        + " maximized=" + !!(win && !win.isDestroyed() && win.isMaximized()));
+    }, probeShowMs);
+  }
+
   /* 窗口可能在后端就绪之前就被关掉（用户抢那 1–2 秒，或探针到点关窗）。
      `isDestroyed()` 判活只挡得住"已经关掉"，挡得住检查那一瞬、挡不住紧随其后的销毁——
      实测探针把窗关掉时 loadURL 仍会以 "Object has been destroyed" 拒绝。
@@ -388,7 +452,12 @@ function trayIcon() {
 
 function showWindow() {
   if (quitting) return;                 // 正在退出时不复活窗口，否则退出流程会被一张新窗口拖住
-  if (win && !win.isDestroyed()) { win.show(); win.focus(); return; }
+  if (win && !win.isDestroyed()) {
+    /* 静默启动时没最大化（maximize 会把隐藏窗口带出来），第一次唤回补上 */
+    if (startedHidden) { startedHidden = false; win.maximize(); }
+    win.show(); win.focus(); return;
+  }
+  startHidden = false;                  // 窗口重建属于"用户要看它"，不再静默
   createWindow();
 }
 
@@ -407,6 +476,41 @@ function openConversation(convId) {
   try { win.webContents.send("pc-open-conv", convId); } catch (e) { pendingOpenConv = convId; }
 }
 
+const CLOSE_PREF_LABEL = { ask: "每次询问", background: "挂到后台", quit: "直接退出" };
+
+/* 托盘里的「后台与关闭」：关窗行为 + 两个开关，全在托盘上就能改，不用先唤回窗口再翻设置。
+   写的是同一份 cfg（与设置界面同源），落盘后 config 的钩子会把系统登录项一起同步。 */
+function trayPrefsItem() {
+  const p = desktopPrefs();
+  const cur = closePolicy.normalizePref(p.closeAction);
+  const setClose = (v) => {
+    setDesktopPref(v);
+    console.log("[pc] 托盘改关窗偏好：" + v);
+    refreshTray();
+  };
+  const setBool = (k, v) => {
+    setDesktopPrefs({ [k]: v });
+    console.log("[pc] 托盘改 " + k + "=" + v);
+    syncLoginItem("托盘");
+    refreshTray();
+  };
+  return {
+    label: "后台与关闭（关窗：" + CLOSE_PREF_LABEL[cur] + "）",
+    submenu: [
+      { label: "关闭窗口时", enabled: false },
+      { label: "每次询问（答完可记住）", type: "radio", checked: cur === "ask", click: () => setClose("ask") },
+      { label: "挂到后台（任务继续跑）", type: "radio", checked: cur === "background", click: () => setClose("background") },
+      { label: "直接退出", type: "radio", checked: cur === "quit", click: () => setClose("quit") },
+      { type: "separator" },
+      /* 开发态不写登录项（写进去的是 node_modules 里的 electron.exe），所以只给安装版可点 */
+      { label: "开机自启（静默到托盘）", type: "checkbox", checked: p.launchAtLogin === true,
+        enabled: app.isPackaged && loginItemPlatform(), click: (it) => setBool("launchAtLogin", it.checked) },
+      { label: "任务收口时弹通知", type: "checkbox", checked: p.notifyOnDone !== false,
+        click: (it) => setBool("notifyOnDone", it.checked) },
+    ],
+  };
+}
+
 function trayMenu() {
   const t = [{ label: taskWatch.trayStatusLine(lastRows), enabled: false }];
   /* 分组列表：卡住要批的排最前。挂后台的人回到托盘第一眼要看到的是"有一条等你"，
@@ -420,6 +524,7 @@ function trayMenu() {
   }
   t.push({ type: "separator" });
   t.push({ label: "打开 pancode 窗口", click: showWindow });
+  t.push(trayPrefsItem());
   t.push({ label: "打开工作区文件夹", click: openWorkspaceDir });
   t.push({ label: "复制诊断信息（反馈问题用）", click: copyDiagnostics });
   t.push({ type: "separator" });
@@ -474,8 +579,24 @@ function copyDiagnostics() {
   trayNote("诊断信息已复制", "共 " + text.length + " 字（含最近告警）。直接粘贴给开发者即可。");
 }
 
-function trayNote(title, body) {
-  try { if (Notification.isSupported()) new Notification({ title, body, silent: true }).show(); } catch (e) { /* 通知发不出去就算了，不影响菜单动作 */ }
+function trayNote(title, body, onClick) {
+  try {
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title, body, silent: true });
+    /* 挂后台的提示必须能点回去：通知本身就是"窗口在哪"的答案，点了没反应等于没提示 */
+    if (typeof onClick === "function") n.on("click", onClick);
+    n.show();
+  } catch (e) { /* 通知发不出去就算了，不影响菜单动作 */ }
+}
+
+/* 菜单快照：子菜单也要摊开，否则「后台与关闭」里的四个开关在探针眼里只是一个标题。
+   勾选态用 ✓ / ○ 标出来——radio 选的是哪一档、checkbox 开没开，全在日志里可判。 */
+function menuDump(items) {
+  return (items || []).map((it) => {
+    const mark = (it.type === "checkbox" || it.type === "radio") ? (it.checked ? "✓" : "○") : "";
+    const label = mark + (it.label || "—");
+    return it.submenu ? label + " ▸ [" + menuDump(it.submenu.items) + "]" : label;
+  }).join(" | ");
 }
 
 function refreshTray() {
@@ -489,7 +610,7 @@ function refreshTray() {
        底部几条动作项，全在这一行里。只在 PANCODE_PROBE_TRAY_DUMP=1 时打印，
        且只在内容真的变了时打印，免得 3 秒一轮把日志刷满。 */
     if (process.env.PANCODE_PROBE_TRAY_DUMP) {
-      const dump = menu.items.map((it) => it.label || "—").join(" | ");
+      const dump = menuDump(menu.items);
       if (dump !== lastTrayDump) { lastTrayDump = dump; console.log("[pc] 托盘菜单：" + dump); }
     }
   } catch (e) { /* 托盘刷新失败不影响后端 */ }
@@ -544,10 +665,15 @@ function pollTasks() {
   lastRows = rows;
   refreshTray();
   if (had !== have) console.log("[pc] 托盘状态：" + taskWatch.trayStatusLine(rows) + "（在跑 " + have + "）");
+  const notifyDone = desktopPrefs().notifyOnDone !== false;
   for (const r of settled) {
-    if (!Notification.isSupported()) break;
+    if (!notifyDone || !Notification.isSupported()) break;
     const t = taskWatch.notifyText(r);
-    new Notification({ title: t.title, body: t.body, silent: false }).show();
+    const n = new Notification({ title: t.title, body: t.body, silent: false });
+    /* 点通知 = 回到那条会话：窗口挂着后台时，这是最短的一条路 */
+    n.on("click", () => openConversation(r.convId));
+    n.show();
+    console.log("[pc] 任务收口通知 " + (r.convId || "?") + " [" + r.status + "]");
   }
   scheduleNext(have ? 3000 : 15000);
 }
@@ -609,6 +735,8 @@ app.whenReady().then(() => {
   startServer();
   createWindow();
   createTray();
+  syncLoginItem("启动");
+  console.log("[pc] 系统通知=" + (Notification.isSupported() ? "可用" : "不可用"));
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

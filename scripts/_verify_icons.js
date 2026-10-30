@@ -145,6 +145,12 @@ async function measure(page, pngBuf, size, bars) {
   const main = fs.readFileSync(path.join(ROOT, "electron", "main.js"), "utf8").replace(/\r\n/g, "\n");
   const winIcon = /icon:\s*path\.join\(__dirname,\s*"\.\.",\s*"assets",\s*"icon-1024\.png"\)/.test(main);
   ok("BrowserWindow 显式给了 icon（无边框窗口不会退回 exe 内嵌）", winIcon, "");
+  /* electron-builder 把 appId 写进开始菜单快捷方式；AUMID 不一致时任务栏按钮会挂到
+     另一条同 AUMID 的快捷方式上（实测被残留的 Electron.lnk 抢走，显示成原子图）。 */
+  const appId = (require(path.join(ROOT, "package.json")).build || {}).appId || "";
+  const aumid = (main.match(/app\.setAppUserModelId\(\s*"([^"]+)"\s*\)/) || [])[1] || "";
+  ok("app.setAppUserModelId 与 build.appId 一致（任务栏分组/图标靠这一对）",
+    !!appId && aumid === appId, "AUMID=" + aumid + " appId=" + appId);
   const trayIcon = /assets",\s*"icon-1024\.png"/.test(main.split("function trayIcon")[1] || "");
   ok("托盘图标也走同一张 assets/icon-1024.png", trayIcon, "");
   ok("assets/icon-1024.png 是这次渲染出来的（非空且 >100KB）",

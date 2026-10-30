@@ -61,7 +61,7 @@ function post(port, urlPath, body, token) {
 }
 
 /* 一个可关窗、可注入答案、可读日志的 Electron 实例 */
-async function boot(tag, port, cfgExtra, probeEnv) {
+async function boot(tag, port, cfgExtra, probeEnv, extraArgs) {
   const sandbox = path.join(OUT, "desktop-sandbox-" + tag);
   const DATA_DIR = path.join(sandbox, "data");
   const WS_DIR = path.join(sandbox, "ws");
@@ -73,7 +73,7 @@ async function boot(tag, port, cfgExtra, probeEnv) {
   fs.writeFileSync(path.join(DATA_DIR, "pancode.config.json"),
     JSON.stringify(Object.assign({ workspace: WS_DIR }, cfgExtra || {})), "utf8");
 
-  const child = spawn(electronBin, ["."], {
+  const child = spawn(electronBin, ["."].concat(extraArgs || []), {
     cwd: ROOT,
     env: (() => {
       const env = Object.assign({}, process.env, {
@@ -173,6 +173,7 @@ async function boot(tag, port, cfgExtra, probeEnv) {
      而日志里一个字都没有——用户看到的就是"托盘没图标"，排查全靠猜。 */
   ok("A：托盘图标真的读到了（缩到 16px 的非空图）", await A.marker("[pc] 托盘图标 ok", 15000), A.out.slice(-400));
   ok("A：没有「托盘图标读不到」的告警", !/托盘图标读不到/.test(A.out), A.out.slice(-400));
+  ok("A：系统通知可用（挂后台提示 / 收口通知都靠它）", await A.marker("[pc] 系统通知=可用", 15000, true), A.head.slice(-300));
   const crashes = (A.out.match(/(unhandledRejection|uncaughtException)[^\n]*/g) || []).slice(0, 2);
   ok("A：主进程这一路没有未捕获的异步异常", crashes.length === 0, crashes.join(" | "));
 
@@ -234,6 +235,13 @@ async function boot(tag, port, cfgExtra, probeEnv) {
   ok("A：有一版菜单里是「在跑」分组带着这条任务的标题", anyMenu(/在跑 1/) && anyMenu(/修复筛选 bug 并补测试/), menuDumps().slice(-2).join("\n").slice(0, 300));
   ok("A：菜单底部三条动作项都在（工作区 / 诊断 / 退出）",
     anyMenu(/打开工作区文件夹/) && anyMenu(/复制诊断信息/) && anyMenu(/退出 pancode（终止所有任务）/), menuDumps().slice(-1)[0] || "");
+  /* 「后台与关闭」是托盘上的后台控制面：关窗三档的勾选态 + 两个开关都必须真的装进菜单。
+     radio/checkbox 的 checked 由 menuDump 的 ✓/○ 标出来，所以这里能断言"勾在哪一档"。 */
+  ok("A：托盘有「后台与关闭」子菜单，且勾在当前偏好（挂到后台）上",
+    anyMenu(/后台与关闭（关窗：挂到后台）/) && anyMenu(/后台与关闭（关窗：挂到后台） ▸ \[[^\]]*✓挂到后台（任务继续跑）/),
+    menuDumps().slice(-1)[0] || "");
+  ok("A：子菜单里两个后台开关都在（开机自启 / 收口通知），通知默认开",
+    anyMenu(/开机自启（静默到托盘）/) && anyMenu(/✓任务收口时弹通知/), menuDumps().slice(-1)[0] || "");
   /* 第一项必须是状态行本身（"pancode 后端运行中…" 或 "N 个任务…"）。
      以前这里写死 "pancode " 前缀，而单任务那支文案是「1 个任务进行中：…」不带前缀 —— 判据错了，不是产品错了。 */
   ok("A：状态行永远排在第一项，分隔符把分组隔开",
@@ -265,6 +273,10 @@ async function boot(tag, port, cfgExtra, probeEnv) {
      轮询在无任务时是 15 秒一次，所以这里给 25 秒。 */
   const settledMenu = await A.marker(/最近收口 [1-9]/, 25000);
   ok("A：收口后菜单里出现「最近收口」分组", settledMenu, (A.out.match(/\[pc\] 托盘菜单：[^\n]*/g) || []).slice(-1)[0] || "");
+  /* 窗口挂着后台时，收口通知是唯一能把人叫回来的东西。只断"实现了 Notification"不够，
+     要断这一轮轮询真的走到了发通知那一步（正向对照在实例 D：开关关掉后一次都不许出现）。 */
+  ok("A：任务收口时真的发了系统通知（窗口在后台也通知）",
+    await A.marker("[pc] 任务收口通知 " + conv, 25000), A.out.slice(-500));
 
   section("A 退出钩子与托盘装配");
   ok("A：server/index.js 导出了 shutdown（electron before-quit 用它刷盘 + 杀子进程）",
@@ -339,6 +351,54 @@ async function boot(tag, port, cfgExtra, probeEnv) {
     ok("C：进程真的退了（没有留成后台幽灵）", gone, C.out.slice(-300));
     ok("C：退出后端口不再应答", !(await C.healthy()), "还答得上来就是没退干净");
     if (!gone) { try { C.child.kill(); } catch (e) {} }
+  }
+
+  /* ================= 实例 D：开机自启路径（--hidden 静默启动） ================= */
+  section("D 登录项拉起的 --hidden：窗口藏得住、唤得回、收口通知开关真的生效");
+  /* 这一节补「开机自启」的两半：带 --hidden 起来时不能把窗口糊到用户脸上，但页面/后端要照常活着；
+     从托盘唤回时窗口要能重新显形且最大化。同一个实例顺带做 notifyOnDone=false 的反向对照。 */
+  const D = await boot("d", 8818, { desktop: { closeAction: "background", notifyOnDone: false } }, {
+    PANCODE_PROBE_TRAY_DUMP: "1",
+    PANCODE_PROBE_SHOW_MS: "9000",     // 静默启动之后，模拟"点了托盘"
+  }, ["--hidden"]);
+  if (!D) {
+    ok("D：实例启动、后端起来", false, "60s 内 /api/health 没应答");
+  } else {
+    ok("D：实例启动、后端起来", true);
+    ok("D：走的是静默启动（--hidden 心跳）", await D.marker("[pc] 静默启动到托盘", 20000), D.out.slice(-500));
+    ok("D：窗口不显形时页面也加载完成（后端与 WS 都活着）", await D.marker("[pc] 页面加载完成", 25000), D.out.slice(-500));
+    ok("D：启动时窗口确实没弹出来（一次「窗口已显形」都没有）", !/\[pc\] 窗口已显形/.test(D.out), D.out.slice(-400));
+    ok("D：托盘唤回后窗口可见且最大化（静默启动不是「藏死」）",
+      await D.marker("[pc] 探针唤回窗口 visible=true maximized=true", 20000), D.out.slice(-500));
+    ok("D：托盘里通知开关读回来是关（notifyOnDone=false 没被默认值盖掉）",
+      /\[pc\] 托盘菜单：[^\n]*○任务收口时弹通知/.test(D.out), (D.out.match(/\[pc\] 托盘菜单：[^\n]*/g) || []).slice(-1)[0] || "");
+
+    /* 收口通知的反向对照：A（默认 true）必须出现，这里（false）一次都不许出现。
+       只有两半都在，才叫验过"开关真的管用"，而不是只验了"通知能弹"。 */
+    const regD = await get(8818, "/api/auth/auto");
+    const tokenD = regD.json && regD.json.token;
+    ok("D：本机免密身份可用", !!tokenD, JSON.stringify(regD.json).slice(0, 120));
+    if (tokenD) {
+      const WebSocket = require("ws");
+      const wsD = new WebSocket("ws://localhost:8818/", ["bearer." + encodeURIComponent(tokenD)]);
+      const eventsD = [];
+      wsD.on("message", (raw) => eventsD.push(JSON.parse(raw.toString())));
+      await new Promise((res, rej) => { wsD.on("open", res); wsD.on("error", rej); setTimeout(() => rej(new Error("WS 连接超时")), 10000); });
+      wsD.send(JSON.stringify({ type: "chat", text: "修复筛选 bug 并补测试", convId: "c-hidden-" + Date.now() }));
+      const waitE = async (pred, ms) => {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) { const e = eventsD.find(pred); if (e) return e; await wait(120); }
+        return null;
+      };
+      const doneD = await waitE((e) => e.type === "agent.done", 150000);
+      ok("D：静默启动的实例里任务照常跑到收口", !!doneD, doneD === null && "150s 内没等到 agent.done");
+      await wait(6000);   // 越过收口之后那一轮轮询（有任务时 3s 一轮）
+      ok("D：notifyOnDone=false 时收口一次通知都不发", D.count("[pc] 任务收口通知") === 0,
+        "出现 " + D.count("[pc] 任务收口通知") + " 次");
+      wsD.close();
+    }
+    try { D.child.kill(); } catch (e) {}
+    await wait(500);
   }
 
   console.log("\n" + (fail ? "\x1b[31mHAS FAIL\x1b[0m" : "\x1b[32mALL PASS\x1b[0m") + "：" + pass + " 通过 / " + fail + " 失败");

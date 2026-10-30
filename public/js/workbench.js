@@ -358,6 +358,17 @@ function wbRenderGeneral(box) {
         .then(() => wbSaved(t("wbGeneralwbSavedT57") + (NAMES[v] || v)))
         .catch(() => wbSaved(t("acRuleFormwbSavedT32"), true));
     }, "close 关闭 退出 后台 托盘 tray 窗口 desktop 驻留"));
+    /* 开机自启是系统登录项，主进程写（config 落盘后会同步过去）；通知开关只影响收口时的气泡。 */
+    gd.appendChild(wbToggle(t("wbGeneralwbToggleT63"), t("wbGeneralwbToggleT64"), !!(c.desktop && c.desktop.launchAtLogin), (v) => {
+      Promise.resolve(wbSave("desktop", { launchAtLogin: v }))
+        .then(() => wbSaved((v ? t("wbCompOnT13") : t("wbCompOffT14")) + t("wbGeneralwbToggleT63")))
+        .catch(() => wbSaved(t("acRuleFormwbSavedT32"), true));
+    }, "autostart 开机 自启 启动 login startup 托盘 后台"));
+    gd.appendChild(wbToggle(t("wbGeneralwbToggleT65"), t("wbGeneralwbToggleT66"), !(c.desktop && c.desktop.notifyOnDone === false), (v) => {
+      Promise.resolve(wbSave("desktop", { notifyOnDone: v }))
+        .then(() => wbSaved((v ? t("wbCompOnT13") : t("wbCompOffT14")) + t("wbGeneralwbToggleT65")))
+        .catch(() => wbSaved(t("acRuleFormwbSavedT32"), true));
+    }, "notify 通知 完成 收口 气泡 后台"));
     box.appendChild(gd);
 
     /* GPU 策略与 main.js 启动期那份判定同源（electron/main.js gpuPref）：

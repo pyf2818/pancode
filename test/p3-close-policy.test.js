@@ -121,6 +121,44 @@ describe("config.saveDesktop：偏好写盘", () => {
     expect(cfgMod.load().desktop.closeAction).toBe("ask");
   });
 
+  it("后台开关的默认值：不自启、收口要通知", () => {
+    const d = cfgMod.load().desktop;
+    expect(d.launchAtLogin).toBe(false);
+    expect(d.notifyOnDone).toBe(true);
+  });
+
+  /* 托盘/设置里只改一个布尔时，patch 里没有 closeAction —— 旧实现第一行就把整份 patch
+     判成非法并 return，按键会"点了没反应"。这条钉住逐键校验。 */
+  it("布尔开关单独保存，不被 closeAction 的校验吞掉", async () => {
+    const cfg = cfgMod.load();
+    expect(cfgMod.saveDesktop(cfg, { launchAtLogin: true }).launchAtLogin).toBe(true);
+    expect(cfgMod.saveDesktop(cfg, { notifyOnDone: false }).notifyOnDone).toBe(false);
+    expect(cfg.desktop.closeAction).toBe("ask");       // 没点的键不许跟着变
+    const onDisk = await readDisk((j) => j.desktop && j.desktop.launchAtLogin === true && j.desktop.notifyOnDone === false);
+    expect(onDisk).toBeTruthy();
+  });
+
+  it("布尔开关只认真正的 boolean，字符串 / 数字一律不改", () => {
+    const cfg = cfgMod.load();
+    for (const bad of ["true", 1, null, undefined, {}]) {
+      const d = cfgMod.saveDesktop(cfg, { launchAtLogin: bad, notifyOnDone: bad });
+      expect(d.launchAtLogin).toBe(false);
+      expect(d.notifyOnDone).toBe(true);
+    }
+  });
+
+  /* 开机自启是系统登录项，只有主进程能写：config 落盘后必须喊订阅方一声（设置界面与托盘都走这条）。 */
+  it("偏好落盘后通知订阅方（开机自启靠它同步到系统）", () => {
+    const cfg = cfgMod.load();
+    const seen = [];
+    cfgMod.setDesktopChangeHook((d) => seen.push(d));
+    cfgMod.saveDesktop(cfg, { launchAtLogin: true });
+    cfgMod.saveDesktop(cfg, { launchAtLogin: "yes" });   // 非法值不落盘，也不该触发
+    expect(seen.length).toBe(1);
+    expect(seen[0].launchAtLogin).toBe(true);
+    cfgMod.setDesktopChangeHook(null);
+  });
+
   it("三个合法值都写得进去，也真的落到盘上", async () => {
     const cfg = cfgMod.load();
     for (const v of ["background", "quit", "ask"]) {
@@ -191,6 +229,19 @@ describe("electron/main.js 的接线：字段名错了，判据再对也没用",
 
   it("记住之后真的写偏好，且写的是这一次实际选的那条", () => {
     expect(src).toMatch(/if \(dec\.rememberPref\) \{\s*setDesktopPref\(dec\.rememberPref\)/);
+  });
+
+  /* 收口通知与开机自启都落在系统 API 上（Notification / 登录项），Node 侧跑不到，
+     这里钉住主进程的接线方式；真正的行为由 scripts/_verify_desktop.js 的 A/D 两个真实例验。 */
+  it("收口通知受 notifyOnDone 控制，点通知回到那条会话", () => {
+    expect(src).toMatch(/notifyDone = desktopPrefs\(\)\.notifyOnDone/);
+    expect(src).toMatch(/n\.on\("click", \(\) => openConversation\(r\.convId\)\)/);
+  });
+
+  it("开机自启只在安装版写系统登录项，且登录拉起时带 --hidden", () => {
+    expect(src).toMatch(/if \(!app\.isPackaged \|\| !loginItemPlatform\(\)\) return;/);
+    expect(src).toMatch(/args:\s*\["--hidden"\]/);
+    expect(src).toMatch(/process\.argv\.includes\("--hidden"\)/);
   });
 
   /* 后端与主进程同进程：同步模态会把正在流式的任务整段卡住。

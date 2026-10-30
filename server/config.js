@@ -132,6 +132,11 @@ const DEFAULTS = {
     //   ask = 每次问（默认，第一次用会问）| background = 直接挂到后台，任务继续跑 | quit = 直接退出
     // 只有主进程读它（设置界面负责写）；非桌面态（浏览器 / npm start）完全不涉及。
     closeAction: "ask",
+    // 开机自启：登录系统后在托盘静默启动（带 --hidden，不弹窗口）。
+    // 主进程负责把它落成系统登录项；安装版才生效，开发态只是存着。
+    launchAtLogin: false,
+    // 任务收口（完成 / 失败 / 中断）时弹系统通知，点通知跳到那条会话。
+    notifyOnDone: true,
     // 硬件加速：on = 交给 Chromium 自检（默认，真桌面 GPU 上动画/模糊才跟得上）；
     // off = 强制软件渲染，虚拟机 / 远程桌面等无 GPU 环境的兼容档（重启生效）。
     gpu: "on",
@@ -495,17 +500,32 @@ function saveAgentSettings(cfg, patch) {
 }
 
 /* 持久化 Embedding 配置（代码向量索引用） */
-/* 桌面端窗口偏好。写它的有两个入口，都必须走这里，别开第二条落盘路径：
-   ① 设置界面（/api/config 的 section=desktop）；② 关窗对话框里勾了"记住我的选择"的主进程。
-   只认三个值，其它一律不改（防止把配置写成不可识别的状态）。 */
+/* 桌面端窗口偏好。写它的有三个入口，都必须走这里，别开第二条落盘路径：
+   ① 设置界面（/api/config 的 section=desktop）；② 关窗对话框里勾了"记住我的选择"的主进程；
+   ③ 托盘菜单里的开关。逐键验类型：不认识的键/值一律不动，但**不能因为一个键不合法
+   就把整份 patch 丢掉**——托盘只改 notifyOnDone 时没有 closeAction，以前那种整段校验
+   会把这次写入静默吞掉。 */
+let desktopHook = null;
+function setDesktopChangeHook(fn) { desktopHook = typeof fn === "function" ? fn : null; }
+
 function saveDesktop(cfg, patch) {
-  const v = String((patch && patch.closeAction) || "");
-  const ALLOWED = ["ask", "background", "quit"];
-  if (ALLOWED.indexOf(v) < 0) return cfg.desktop;
-  cfg.desktop = Object.assign({}, cfg.desktop, { closeAction: v });
+  const p = patch || {};
+  const next = Object.assign({}, DEFAULTS.desktop, cfg.desktop || {});
+  const before = JSON.stringify(next);
+  if (p.closeAction !== undefined) {
+    const v = String(p.closeAction);
+    if (["ask", "background", "quit"].indexOf(v) >= 0) next.closeAction = v;
+  }
+  for (const k of ["launchAtLogin", "notifyOnDone"]) {
+    if (typeof p[k] === "boolean") next[k] = p[k];
+  }
+  if (JSON.stringify(next) === before) return cfg.desktop;
+  cfg.desktop = next;
   const onDisk = readJsonSafe(CONFIG_PATH) || {};
   onDisk.desktop = cfg.desktop;
   writeJsonSafe(CONFIG_PATH, onDisk);
+  /* 开机自启是系统登录项，只有主进程能写：配置落盘后同步通知它一声（没有订阅方时忽略）。 */
+  try { if (desktopHook) desktopHook(cfg.desktop); } catch (e) {}
   return cfg.desktop;
 }
 
@@ -646,5 +666,5 @@ function progressionPath(cfg) {
   return wsShard(cfg).file(path.join(ROOT, ".pancode", "progression"));
 }
 
-module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveMcpServers, saveEmbedding, saveDesktop, saveComputer, agentSettings, embeddingInfo, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH,
+module.exports = { load, saveLlm, saveWorkspace, saveAgentSettings, saveMcpServers, saveEmbedding, saveDesktop, setDesktopChangeHook, saveComputer, agentSettings, embeddingInfo, engineMode, publicInfo, memoryPath, skillPath, soulPath, progressionPath, rulesDir, ROOT, CONFIG_PATH,
   saveLlmProfiles, upsertLlmProfile, applyLlmProfile, removeLlmProfile, profilePublic, normalizeBaseURL, PERMISSION_MODES };
