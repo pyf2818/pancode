@@ -12,7 +12,6 @@
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
-const cp = require("child_process");
 const crypto = require("crypto");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -111,13 +110,24 @@ async function measure(page, pngBuf, size, bars) {
     }
   }
 
-  /* ③ 反向对照：同一把尺子量被否掉的旧版，必须不合格 —— 否则门槛是空的 */
-  const oldSvg = cp.execSync("git show HEAD:assets/icon.svg", { cwd: ROOT, encoding: "utf8" });
-  const oldPng = await raster(browser, oldSvg, 16);
+  /* ③ 反向对照：现场造一个"必然该红"的反例 —— 同一张 SVG 把实底换成近白、笔画压细到 22/1024、
+     外圈去掉，这就是被否掉的「浅底细描边」那种形态。
+     原先这里量的是 `git show HEAD:assets/icon.svg`，图标一提交 HEAD 就变成新图，
+     对照物自己消失了（CI 上就是这么红的：它量到 79.7%/62.7 —— 那是新图自己的数）。
+     浅克隆下钉 commit 也一样会失效，所以反例必须自包含。 */
+  const negSvg = svg
+    .replace('fill="url(#tile)"', 'fill="#F7FBFC"')
+    .replace('stroke="#0B2230" stroke-opacity="0.28" stroke-width="8"', 'stroke="none"')
+    .replace(/stroke="#FFFFFF" stroke-width="112"/g, 'stroke="#9CC7DE" stroke-width="22"')
+    .replace('stroke="#FFFFFF" stroke-width="84"', 'stroke="#9CC7DE" stroke-width="16"')
+    .replace('<rect x="786" y="704" width="40" height="76" rx="20" fill="#FFFFFF"/>',
+      '<rect x="786" y="704" width="40" height="76" rx="20" fill="#9CC7DE"/>');
+  const negChanged = negSvg !== svg;
+  const oldPng = await raster(browser, negSvg, 16);
   const oldM = await measure(page, oldPng, 16, BARS);
   const oldFails = Object.keys(BARS).some((b) => oldM[b].seen < MIN_SEEN || oldM[b].contrast < MIN_CONTRAST);
-  ok("反向对照：HEAD 那版图标过不了同一道门槛（说明门槛咬得住）", oldFails,
-    "旧版 16px 浅栏 可辨 " + oldM.浅.seen + "% / 对比 " + oldM.浅.contrast);
+  ok("反向对照：现场造的「浅底细描边」反例过不了同一道门槛（门槛咬得住）", negChanged && oldFails,
+    "反例 16px 浅栏 可辨 " + oldM.浅.seen + "% / 对比 " + oldM.浅.contrast);
 
   /* ④ favicon 与应用图标同源 */
   const favPath = path.join(ROOT, "public", "favicon.svg");
