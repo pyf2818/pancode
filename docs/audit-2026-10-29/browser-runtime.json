@@ -1,0 +1,3361 @@
+{
+  "date": "2026-10-29T04:44:53.339Z",
+  "node": "v24.22.1",
+  "cpu": "AMD Ryzen 9 8945HX with Radeon Graphics        ",
+  "logicalCpus": 32,
+  "ramGiB": 16,
+  "out": "C:\\Users\\ANLAN0~1\\AppData\\Local\\Temp\\pancode-audit-runtime-20261029-v2",
+  "errors": [],
+  "consoleErrors": [],
+  "failedRequests": [],
+  "externalRequests": [],
+  "samples": [
+    {
+      "readyMs": 556.9202,
+      "hello": [
+        {
+          "bytes": 7992,
+          "files": 5
+        }
+      ],
+      "browser": {
+        "navigation": {
+          "name": "http://127.0.0.1:6214/",
+          "entryType": "navigation",
+          "startTime": 0,
+          "duration": 457.40000000596046,
+          "navigationId": 7912,
+          "initiatorType": "navigation",
+          "deliveryType": "",
+          "nextHopProtocol": "http/1.1",
+          "renderBlockingStatus": "non-blocking",
+          "contentType": "text/html",
+          "contentEncoding": "",
+          "workerStart": 0,
+          "workerRouterEvaluationStart": 0,
+          "workerCacheLookupStart": 0,
+          "workerMatchedSourceType": "",
+          "workerFinalSourceType": "",
+          "redirectStart": 0,
+          "redirectEnd": 0,
+          "fetchStart": 0.09999999403953552,
+          "domainLookupStart": 10,
+          "domainLookupEnd": 13,
+          "connectStart": 13,
+          "secureConnectionStart": 0,
+          "connectEnd": 13.900000005960464,
+          "requestStart": 14,
+          "responseStart": 18.400000005960464,
+          "firstInterimResponseStart": 0,
+          "finalResponseHeadersStart": 18.400000005960464,
+          "responseEnd": 19.69999998807907,
+          "transferSize": 48166,
+          "encodedBodySize": 47866,
+          "decodedBodySize": 47866,
+          "responseStatus": 200,
+          "serverTiming": [],
+          "unloadEventStart": 0,
+          "unloadEventEnd": 0,
+          "domInteractive": 192.5,
+          "domContentLoadedEventStart": 192.5,
+          "domContentLoadedEventEnd": 192.7999999821186,
+          "domComplete": 457.40000000596046,
+          "loadEventStart": 457.40000000596046,
+          "loadEventEnd": 457.40000000596046,
+          "type": "navigate",
+          "redirectCount": 0,
+          "activationStart": 0,
+          "criticalCHRestart": 0,
+          "notRestoredReasons": null,
+          "confidence": {
+            "randomizedTriggerRate": 0.4994798,
+            "value": "high"
+          }
+        },
+        "paints": [
+          {
+            "name": "first-paint",
+            "ms": 280
+          },
+          {
+            "name": "first-contentful-paint",
+            "ms": 280
+          }
+        ],
+        "resources": [
+          {
+            "name": "/styles.css",
+            "bytes": 241874,
+            "transfer": 242174,
+            "ms": 23.299999982118607
+          },
+          {
+            "name": "/icons.js",
+            "bytes": 15115,
+            "transfer": 15415,
+            "ms": 18.700000017881393
+          },
+          {
+            "name": "/vendor/monaco/vs/loader.js",
+            "bytes": 30061,
+            "transfer": 30361,
+            "ms": 20
+          },
+          {
+            "name": "/i18n.js",
+            "bytes": 196146,
+            "transfer": 196446,
+            "ms": 20
+          },
+          {
+            "name": "/js/core.js",
+            "bytes": 2060,
+            "transfer": 2360,
+            "ms": 19.299999982118607
+          },
+          {
+            "name": "/js/utils.js",
+            "bytes": 10633,
+            "transfer": 10933,
+            "ms": 21.299999982118607
+          },
+          {
+            "name": "/js/terminal-mod.js",
+            "bytes": 4751,
+            "transfer": 5051,
+            "ms": 24
+          },
+          {
+            "name": "/store.js",
+            "bytes": 1355,
+            "transfer": 1655,
+            "ms": 24.599999994039536
+          },
+          {
+            "name": "/js/evolution-codex.js",
+            "bytes": 44757,
+            "transfer": 45057,
+            "ms": 25.19999998807907
+          },
+          {
+            "name": "/js/automations.js",
+            "bytes": 10698,
+            "transfer": 10998,
+            "ms": 26.19999998807907
+          },
+          {
+            "name": "/js/cmdk.js",
+            "bytes": 7831,
+            "transfer": 8131,
+            "ms": 26.19999998807907
+          },
+          {
+            "name": "/js/skill-market.js",
+            "bytes": 25061,
+            "transfer": 25361,
+            "ms": 25.900000005960464
+          },
+          {
+            "name": "/js/onboard.js",
+            "bytes": 2989,
+            "transfer": 3289,
+            "ms": 26.80000001192093
+          },
+          {
+            "name": "/js/settings.js",
+            "bytes": 16856,
+            "transfer": 17156,
+            "ms": 27.400000005960464
+          },
+          {
+            "name": "/js/processes.js",
+            "bytes": 5754,
+            "transfer": 6054,
+            "ms": 27.80000001192093
+          },
+          {
+            "name": "/js/lsp-client.js",
+            "bytes": 10915,
+            "transfer": 11215,
+            "ms": 28.400000005960464
+          },
+          {
+            "name": "/js/commit.js",
+            "bytes": 8553,
+            "transfer": 8853,
+            "ms": 28.700000017881393
+          },
+          {
+            "name": "/js/trace.js",
+            "bytes": 7900,
+            "transfer": 8200,
+            "ms": 29.400000005960464
+          },
+          {
+            "name": "/js/patch-review.js",
+            "bytes": 6634,
+            "transfer": 6934,
+            "ms": 29.600000023841858
+          },
+          {
+            "name": "/js/visualizer.js",
+            "bytes": 6706,
+            "transfer": 7006,
+            "ms": 30.100000023841858
+          },
+          {
+            "name": "/js/dep-graph.js",
+            "bytes": 10579,
+            "transfer": 10879,
+            "ms": 30.400000005960464
+          },
+          {
+            "name": "/js/diagnostics.js",
+            "bytes": 15125,
+            "transfer": 15425,
+            "ms": 30.700000017881393
+          },
+          {
+            "name": "/js/global-settings.js",
+            "bytes": 1486,
+            "transfer": 1786,
+            "ms": 33
+          },
+          {
+            "name": "/js/gear-menu.js",
+            "bytes": 18804,
+            "transfer": 19104,
+            "ms": 34.099999994039536
+          },
+          {
+            "name": "/js/workbench.js",
+            "bytes": 79367,
+            "transfer": 79667,
+            "ms": 33.599999994039536
+          },
+          {
+            "name": "/js/assets-center.js",
+            "bytes": 85173,
+            "transfer": 85473,
+            "ms": 34.19999998807907
+          },
+          {
+            "name": "/app.js",
+            "bytes": 292527,
+            "transfer": 292827,
+            "ms": 32.5
+          },
+          {
+            "name": "/api/bootstrap",
+            "bytes": 48,
+            "transfer": 348,
+            "ms": 4.600000023841858
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.js",
+            "bytes": 3470122,
+            "transfer": 3470422,
+            "ms": 21.69999998807907
+          },
+          {
+            "name": "/api/auth/auto",
+            "bytes": 104,
+            "transfer": 404,
+            "ms": 41.599999994039536
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.css",
+            "bytes": 115432,
+            "transfer": 115732,
+            "ms": 36.79999998211861
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.nls.js",
+            "bytes": 96189,
+            "transfer": 96489,
+            "ms": 23.100000023841858
+          },
+          {
+            "name": "/api/health",
+            "bytes": 364,
+            "transfer": 664,
+            "ms": 17
+          },
+          {
+            "name": "/api/skills/all",
+            "bytes": 12988,
+            "transfer": 13288,
+            "ms": 17
+          },
+          {
+            "name": "/api/plans",
+            "bytes": 37,
+            "transfer": 337,
+            "ms": 17.099999994039536
+          },
+          {
+            "name": "/api/orch/history",
+            "bytes": 21,
+            "transfer": 321,
+            "ms": 16.5
+          },
+          {
+            "name": "/api/orch/history",
+            "bytes": 21,
+            "transfer": 321,
+            "ms": 42
+          },
+          {
+            "name": "/vendor/monaco/vs/basic-languages/markdown/markdown.js",
+            "bytes": 4629,
+            "transfer": 4929,
+            "ms": 37.80000001192093
+          },
+          {
+            "name": "/api/graph",
+            "bytes": 38,
+            "transfer": 338,
+            "ms": 5.299999982118607
+          },
+          {
+            "name": "/vendor/monaco/worker.js",
+            "bytes": 459,
+            "transfer": 759,
+            "ms": -10.200000017881393
+          }
+        ],
+        "dom": 1468,
+        "heap": 23100000,
+        "longtasks": [
+          {
+            "start": 86.7999999821186,
+            "ms": 94
+          },
+          {
+            "start": 227.69999998807907,
+            "ms": 97
+          },
+          {
+            "start": 342.5,
+            "ms": 98
+          }
+        ]
+      }
+    },
+    {
+      "readyMs": 181.87940000000026,
+      "hello": [
+        {
+          "bytes": 8043,
+          "files": 5
+        }
+      ],
+      "browser": {
+        "navigation": {
+          "name": "http://127.0.0.1:6214/",
+          "entryType": "navigation",
+          "startTime": 0,
+          "duration": 156.69999998807907,
+          "navigationId": 8830,
+          "initiatorType": "navigation",
+          "deliveryType": "",
+          "nextHopProtocol": "http/1.1",
+          "renderBlockingStatus": "non-blocking",
+          "contentType": "text/html",
+          "contentEncoding": "",
+          "workerStart": 0,
+          "workerRouterEvaluationStart": 0,
+          "workerCacheLookupStart": 0,
+          "workerMatchedSourceType": "",
+          "workerFinalSourceType": "",
+          "redirectStart": 0,
+          "redirectEnd": 0,
+          "fetchStart": 0.09999999403953552,
+          "domainLookupStart": 0.09999999403953552,
+          "domainLookupEnd": 0.09999999403953552,
+          "connectStart": 0.09999999403953552,
+          "secureConnectionStart": 0,
+          "connectEnd": 0.09999999403953552,
+          "requestStart": 2,
+          "responseStart": 4.299999982118607,
+          "firstInterimResponseStart": 0,
+          "finalResponseHeadersStart": 4.299999982118607,
+          "responseEnd": 4.5999999940395355,
+          "transferSize": 48166,
+          "encodedBodySize": 47866,
+          "decodedBodySize": 47866,
+          "responseStatus": 200,
+          "serverTiming": [],
+          "unloadEventStart": 6.299999982118607,
+          "unloadEventEnd": 6.299999982118607,
+          "domInteractive": 46.5,
+          "domContentLoadedEventStart": 46.5,
+          "domContentLoadedEventEnd": 46.5,
+          "domComplete": 156.69999998807907,
+          "loadEventStart": 156.69999998807907,
+          "loadEventEnd": 156.69999998807907,
+          "type": "navigate",
+          "redirectCount": 0,
+          "activationStart": 0,
+          "criticalCHRestart": 0,
+          "notRestoredReasons": null,
+          "confidence": {
+            "randomizedTriggerRate": 0.4994798,
+            "value": "low"
+          }
+        },
+        "paints": [
+          {
+            "name": "first-paint",
+            "ms": 188
+          },
+          {
+            "name": "first-contentful-paint",
+            "ms": 188
+          }
+        ],
+        "resources": [
+          {
+            "name": "/styles.css",
+            "bytes": 241874,
+            "transfer": 242174,
+            "ms": 12
+          },
+          {
+            "name": "/vendor/monaco/vs/loader.js",
+            "bytes": 30061,
+            "transfer": 30361,
+            "ms": 10.5
+          },
+          {
+            "name": "/icons.js",
+            "bytes": 15115,
+            "transfer": 15415,
+            "ms": 11.299999982118607
+          },
+          {
+            "name": "/i18n.js",
+            "bytes": 196146,
+            "transfer": 196446,
+            "ms": 12.299999982118607
+          },
+          {
+            "name": "/store.js",
+            "bytes": 1355,
+            "transfer": 1655,
+            "ms": 13.400000005960464
+          },
+          {
+            "name": "/js/core.js",
+            "bytes": 2060,
+            "transfer": 2360,
+            "ms": 12.5
+          },
+          {
+            "name": "/js/terminal-mod.js",
+            "bytes": 4751,
+            "transfer": 5051,
+            "ms": 13
+          },
+          {
+            "name": "/js/utils.js",
+            "bytes": 10633,
+            "transfer": 10933,
+            "ms": 12.599999994039536
+          },
+          {
+            "name": "/js/evolution-codex.js",
+            "bytes": 44757,
+            "transfer": 45057,
+            "ms": 14.699999988079071
+          },
+          {
+            "name": "/js/skill-market.js",
+            "bytes": 25061,
+            "transfer": 25361,
+            "ms": 15.5
+          },
+          {
+            "name": "/js/cmdk.js",
+            "bytes": 7831,
+            "transfer": 8131,
+            "ms": 15.900000005960464
+          },
+          {
+            "name": "/js/automations.js",
+            "bytes": 10698,
+            "transfer": 10998,
+            "ms": 16
+          },
+          {
+            "name": "/js/onboard.js",
+            "bytes": 2989,
+            "transfer": 3289,
+            "ms": 16.599999994039536
+          },
+          {
+            "name": "/js/settings.js",
+            "bytes": 16856,
+            "transfer": 17156,
+            "ms": 16.700000017881393
+          },
+          {
+            "name": "/js/processes.js",
+            "bytes": 5754,
+            "transfer": 6054,
+            "ms": 17.400000005960464
+          },
+          {
+            "name": "/js/lsp-client.js",
+            "bytes": 10915,
+            "transfer": 11215,
+            "ms": 18.100000023841858
+          },
+          {
+            "name": "/js/commit.js",
+            "bytes": 8553,
+            "transfer": 8853,
+            "ms": 18.900000005960464
+          },
+          {
+            "name": "/js/trace.js",
+            "bytes": 7900,
+            "transfer": 8200,
+            "ms": 18.899999976158142
+          },
+          {
+            "name": "/js/visualizer.js",
+            "bytes": 6706,
+            "transfer": 7006,
+            "ms": 19.19999998807907
+          },
+          {
+            "name": "/js/patch-review.js",
+            "bytes": 6634,
+            "transfer": 6934,
+            "ms": 19.899999976158142
+          },
+          {
+            "name": "/js/dep-graph.js",
+            "bytes": 10579,
+            "transfer": 10879,
+            "ms": 20.19999998807907
+          },
+          {
+            "name": "/js/diagnostics.js",
+            "bytes": 15125,
+            "transfer": 15425,
+            "ms": 20.299999982118607
+          },
+          {
+            "name": "/js/global-settings.js",
+            "bytes": 1486,
+            "transfer": 1786,
+            "ms": 21.599999994039536
+          },
+          {
+            "name": "/app.js",
+            "bytes": 292527,
+            "transfer": 292827,
+            "ms": 22.900000005960464
+          },
+          {
+            "name": "/js/workbench.js",
+            "bytes": 79367,
+            "transfer": 79667,
+            "ms": 22.5
+          },
+          {
+            "name": "/js/assets-center.js",
+            "bytes": 85173,
+            "transfer": 85473,
+            "ms": 23.099999994039536
+          },
+          {
+            "name": "/js/gear-menu.js",
+            "bytes": 18804,
+            "transfer": 19104,
+            "ms": 23.299999982118607
+          },
+          {
+            "name": "/api/bootstrap",
+            "bytes": 48,
+            "transfer": 348,
+            "ms": 3.2999999821186066
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.js",
+            "bytes": 3470122,
+            "transfer": 3470422,
+            "ms": 26.599999994039536
+          },
+          {
+            "name": "/api/auth/status",
+            "bytes": 62,
+            "transfer": 362,
+            "ms": 3.2999999821186066
+          },
+          {
+            "name": "/api/health",
+            "bytes": 364,
+            "transfer": 664,
+            "ms": 8.799999982118607
+          },
+          {
+            "name": "/api/skills/all",
+            "bytes": 12988,
+            "transfer": 13288,
+            "ms": 9.099999994039536
+          },
+          {
+            "name": "/api/plans",
+            "bytes": 37,
+            "transfer": 337,
+            "ms": 9.200000017881393
+          },
+          {
+            "name": "/api/orch/history",
+            "bytes": 21,
+            "transfer": 321,
+            "ms": 9.399999976158142
+          },
+          {
+            "name": "/api/plans",
+            "bytes": 37,
+            "transfer": 337,
+            "ms": 4.200000017881393
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.css",
+            "bytes": 115432,
+            "transfer": 115732,
+            "ms": 20.400000005960464
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.nls.js",
+            "bytes": 96189,
+            "transfer": 96489,
+            "ms": 18.5
+          },
+          {
+            "name": "/vendor/monaco/vs/basic-languages/markdown/markdown.js",
+            "bytes": 4629,
+            "transfer": 4929,
+            "ms": 9.5
+          },
+          {
+            "name": "/api/graph",
+            "bytes": 38,
+            "transfer": 338,
+            "ms": 3
+          },
+          {
+            "name": "/vendor/monaco/worker.js",
+            "bytes": 459,
+            "transfer": 759,
+            "ms": -3.5
+          }
+        ],
+        "dom": 1466,
+        "heap": 23100000,
+        "longtasks": []
+      }
+    },
+    {
+      "readyMs": 175.87180000000035,
+      "hello": [
+        {
+          "bytes": 8043,
+          "files": 5
+        }
+      ],
+      "browser": {
+        "navigation": {
+          "name": "http://127.0.0.1:6214/",
+          "entryType": "navigation",
+          "startTime": 0,
+          "duration": 151.5,
+          "navigationId": 1513,
+          "initiatorType": "navigation",
+          "deliveryType": "",
+          "nextHopProtocol": "http/1.1",
+          "renderBlockingStatus": "non-blocking",
+          "contentType": "text/html",
+          "contentEncoding": "",
+          "workerStart": 0,
+          "workerRouterEvaluationStart": 0,
+          "workerCacheLookupStart": 0,
+          "workerMatchedSourceType": "",
+          "workerFinalSourceType": "",
+          "redirectStart": 0,
+          "redirectEnd": 0,
+          "fetchStart": 0.09999999403953552,
+          "domainLookupStart": 0.09999999403953552,
+          "domainLookupEnd": 0.09999999403953552,
+          "connectStart": 0.09999999403953552,
+          "secureConnectionStart": 0,
+          "connectEnd": 0.09999999403953552,
+          "requestStart": 2.199999988079071,
+          "responseStart": 4.5,
+          "firstInterimResponseStart": 0,
+          "finalResponseHeadersStart": 4.5,
+          "responseEnd": 4.799999982118607,
+          "transferSize": 48166,
+          "encodedBodySize": 47866,
+          "decodedBodySize": 47866,
+          "responseStatus": 200,
+          "serverTiming": [],
+          "unloadEventStart": 6.5,
+          "unloadEventEnd": 6.5,
+          "domInteractive": 45.599999994039536,
+          "domContentLoadedEventStart": 45.599999994039536,
+          "domContentLoadedEventEnd": 45.69999998807907,
+          "domComplete": 151.5,
+          "loadEventStart": 151.5,
+          "loadEventEnd": 151.5,
+          "type": "navigate",
+          "redirectCount": 0,
+          "activationStart": 0,
+          "criticalCHRestart": 0,
+          "notRestoredReasons": null,
+          "confidence": {
+            "randomizedTriggerRate": 0.4994798,
+            "value": "high"
+          }
+        },
+        "paints": [
+          {
+            "name": "first-paint",
+            "ms": 180
+          },
+          {
+            "name": "first-contentful-paint",
+            "ms": 180
+          }
+        ],
+        "resources": [
+          {
+            "name": "/styles.css",
+            "bytes": 241874,
+            "transfer": 242174,
+            "ms": 11.799999982118607
+          },
+          {
+            "name": "/js/core.js",
+            "bytes": 2060,
+            "transfer": 2360,
+            "ms": 12.699999988079071
+          },
+          {
+            "name": "/icons.js",
+            "bytes": 15115,
+            "transfer": 15415,
+            "ms": 12.5
+          },
+          {
+            "name": "/js/utils.js",
+            "bytes": 10633,
+            "transfer": 10933,
+            "ms": 13.599999994039536
+          },
+          {
+            "name": "/vendor/monaco/vs/loader.js",
+            "bytes": 30061,
+            "transfer": 30361,
+            "ms": 13
+          },
+          {
+            "name": "/i18n.js",
+            "bytes": 196146,
+            "transfer": 196446,
+            "ms": 11.199999988079071
+          },
+          {
+            "name": "/js/terminal-mod.js",
+            "bytes": 4751,
+            "transfer": 5051,
+            "ms": 14.300000011920929
+          },
+          {
+            "name": "/store.js",
+            "bytes": 1355,
+            "transfer": 1655,
+            "ms": 14.599999994039536
+          },
+          {
+            "name": "/js/evolution-codex.js",
+            "bytes": 44757,
+            "transfer": 45057,
+            "ms": 15.400000005960464
+          },
+          {
+            "name": "/js/skill-market.js",
+            "bytes": 25061,
+            "transfer": 25361,
+            "ms": 15.400000005960464
+          },
+          {
+            "name": "/js/automations.js",
+            "bytes": 10698,
+            "transfer": 10998,
+            "ms": 16.5
+          },
+          {
+            "name": "/js/cmdk.js",
+            "bytes": 7831,
+            "transfer": 8131,
+            "ms": 16.5
+          },
+          {
+            "name": "/js/onboard.js",
+            "bytes": 2989,
+            "transfer": 3289,
+            "ms": 16.900000005960464
+          },
+          {
+            "name": "/js/processes.js",
+            "bytes": 5754,
+            "transfer": 6054,
+            "ms": 17.900000005960464
+          },
+          {
+            "name": "/js/settings.js",
+            "bytes": 16856,
+            "transfer": 17156,
+            "ms": 17.200000017881393
+          },
+          {
+            "name": "/js/lsp-client.js",
+            "bytes": 10915,
+            "transfer": 11215,
+            "ms": 18
+          },
+          {
+            "name": "/js/commit.js",
+            "bytes": 8553,
+            "transfer": 8853,
+            "ms": 18.5
+          },
+          {
+            "name": "/js/trace.js",
+            "bytes": 7900,
+            "transfer": 8200,
+            "ms": 19
+          },
+          {
+            "name": "/js/patch-review.js",
+            "bytes": 6634,
+            "transfer": 6934,
+            "ms": 19.099999994039536
+          },
+          {
+            "name": "/js/visualizer.js",
+            "bytes": 6706,
+            "transfer": 7006,
+            "ms": 19.5
+          },
+          {
+            "name": "/js/dep-graph.js",
+            "bytes": 10579,
+            "transfer": 10879,
+            "ms": 20.299999982118607
+          },
+          {
+            "name": "/js/diagnostics.js",
+            "bytes": 15125,
+            "transfer": 15425,
+            "ms": 20.5
+          },
+          {
+            "name": "/js/global-settings.js",
+            "bytes": 1486,
+            "transfer": 1786,
+            "ms": 21.099999994039536
+          },
+          {
+            "name": "/app.js",
+            "bytes": 292527,
+            "transfer": 292827,
+            "ms": 21.899999976158142
+          },
+          {
+            "name": "/js/gear-menu.js",
+            "bytes": 18804,
+            "transfer": 19104,
+            "ms": 23.099999994039536
+          },
+          {
+            "name": "/js/workbench.js",
+            "bytes": 79367,
+            "transfer": 79667,
+            "ms": 22.099999994039536
+          },
+          {
+            "name": "/js/assets-center.js",
+            "bytes": 85173,
+            "transfer": 85473,
+            "ms": 22.69999998807907
+          },
+          {
+            "name": "/api/bootstrap",
+            "bytes": 48,
+            "transfer": 348,
+            "ms": 2.9000000059604645
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.js",
+            "bytes": 3470122,
+            "transfer": 3470422,
+            "ms": 21.299999982118607
+          },
+          {
+            "name": "/api/auth/status",
+            "bytes": 62,
+            "transfer": 362,
+            "ms": 2.699999988079071
+          },
+          {
+            "name": "/api/health",
+            "bytes": 364,
+            "transfer": 664,
+            "ms": 7.4000000059604645
+          },
+          {
+            "name": "/api/skills/all",
+            "bytes": 12988,
+            "transfer": 13288,
+            "ms": 7.700000017881393
+          },
+          {
+            "name": "/api/plans",
+            "bytes": 37,
+            "transfer": 337,
+            "ms": 7.9000000059604645
+          },
+          {
+            "name": "/api/orch/history",
+            "bytes": 21,
+            "transfer": 321,
+            "ms": 8.199999988079071
+          },
+          {
+            "name": "/api/plans",
+            "bytes": 37,
+            "transfer": 337,
+            "ms": 4.199999988079071
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.css",
+            "bytes": 115432,
+            "transfer": 115732,
+            "ms": 18.799999982118607
+          },
+          {
+            "name": "/vendor/monaco/vs/editor/editor.main.nls.js",
+            "bytes": 96189,
+            "transfer": 96489,
+            "ms": 17.5
+          },
+          {
+            "name": "/vendor/monaco/vs/basic-languages/markdown/markdown.js",
+            "bytes": 4629,
+            "transfer": 4929,
+            "ms": 8.799999982118607
+          },
+          {
+            "name": "/api/graph",
+            "bytes": 38,
+            "transfer": 338,
+            "ms": 2.9000000059604645
+          },
+          {
+            "name": "/vendor/monaco/worker.js",
+            "bytes": 459,
+            "transfer": 759,
+            "ms": -4
+          }
+        ],
+        "dom": 1466,
+        "heap": 23100000,
+        "longtasks": []
+      }
+    }
+  ],
+  "serverReadyMs": 1171.3206,
+  "controls": [
+    {
+      "tag": "BUTTON",
+      "id": "btnOpenFolder",
+      "text": "ws",
+      "placeholder": null,
+      "label": null,
+      "title": "当前工作区: C:\\Users\\ANLAN0~1\\AppData\\Local\\Temp\\pc-audit-20261029-SGL2qi\\ws（点击打开其他文件夹）"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnModeEditor",
+      "text": "CODE",
+      "placeholder": null,
+      "label": null,
+      "title": "代码编辑器模式"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnModeAgents",
+      "text": "AGENT",
+      "placeholder": null,
+      "label": null,
+      "title": "AI 对话工作台模式"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnTheme",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "主题：青瓷 · 跟随系统 · 深浅两侧各记一套配色"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnSettings",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "设置（模型 / 外观 / Agent）"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnAgentSettings",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "Agent 设置"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnWorkflow",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "工作流"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnSediment",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "沉淀"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnReset",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "还原工作区"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnGoal",
+      "text": "Goal",
+      "placeholder": null,
+      "label": null,
+      "title": "Goal 模式：设定目标，Agent 持续执行直到完成"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnLangToggle",
+      "text": "EN",
+      "placeholder": null,
+      "label": null,
+      "title": "Switch language"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "资源管理器"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "搜索"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "源代码管理"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "Skills 市场"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "进化树"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "Agents 工作台窗口"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnGlobalSettings",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "全局设置"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnNewFile",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "新建文件"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnNewFolder",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "新建文件夹"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "bcPreview",
+      "text": "预览",
+      "placeholder": null,
+      "label": null,
+      "title": "切换 HTML / Markdown 实时预览"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "bcSave",
+      "text": "保存",
+      "placeholder": null,
+      "label": null,
+      "title": "保存 (Ctrl+S)"
+    },
+    {
+      "tag": "TEXTAREA",
+      "id": "",
+      "text": "",
+      "placeholder": null,
+      "label": "Editor content;Press Alt+F1 for Accessibility Options.",
+      "title": ""
+    },
+    {
+      "tag": "BUTTON",
+      "id": "bpToggle",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "折叠/展开面板"
+    },
+    {
+      "tag": "INPUT",
+      "id": "termInput",
+      "text": "",
+      "placeholder": "输入命令，如 node tests/run-tests.js",
+      "label": null,
+      "title": ""
+    },
+    {
+      "tag": "BUTTON",
+      "id": "termKill",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "中断当前命令 (Ctrl+C)"
+    },
+    {
+      "tag": "TEXTAREA",
+      "id": "chatInput",
+      "text": "",
+      "placeholder": "描述你要 Agent 完成的改动，Enter 发送 / Shift+Enter 换行；@ 引用文件，/ 唤起命令…",
+      "label": null,
+      "title": ""
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnAttach",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "添加附件（图片可直接粘贴 / 拖拽）"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnSkillPick",
+      "text": "Skill",
+      "placeholder": null,
+      "label": null,
+      "title": "引用一个 Skill 到本次对话"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnModelChip",
+      "text": "内置演示引擎",
+      "placeholder": null,
+      "label": null,
+      "title": "选择模型"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "btnSend",
+      "text": "",
+      "placeholder": null,
+      "label": null,
+      "title": "发送 (Enter)"
+    }
+  ],
+  "chatInputCount": 1,
+  "chat": {
+    "elapsedMs": 4708.3007,
+    "events": [
+      {
+        "type": "user.msg",
+        "ms": 15.581899999999678,
+        "bytes": 107
+      },
+      {
+        "type": "agent.state",
+        "ms": 16.21250000000009,
+        "bytes": 82
+      },
+      {
+        "type": "think.start",
+        "ms": 18.86740000000009,
+        "bytes": 50
+      },
+      {
+        "type": "think.delta",
+        "ms": 19.192599999999857,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 19.53710000000001,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 19.80529999999999,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 20.143099999999777,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 20.548699999999826,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 20.776100000000042,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 31.84479999999985,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 46.72569999999996,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 62.63119999999981,
+        "bytes": 57
+      },
+      {
+        "type": "think.delta",
+        "ms": 78.41129999999976,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 94.3447000000001,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 110.28780000000006,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 125.4668999999999,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 141.4387999999999,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 156.1824999999999,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 171.82330000000002,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 187.66550000000007,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 206.61419999999998,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 219.73450000000003,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 235.86049999999977,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 251.43179999999984,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 266.7743999999998,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 282.5457000000001,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 297.933,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 313.96900000000005,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 329.6994999999997,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 345.1999999999998,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 362.3510000000001,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 375.49800000000005,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 391.7356999999997,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 408.07109999999966,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 422.48889999999983,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 438.1709999999998,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 455.92800000000034,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 469.6028000000001,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 485.62480000000005,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 500.94199999999955,
+        "bytes": 59
+      },
+      {
+        "type": "think.end",
+        "ms": 517.0210999999995,
+        "bytes": 38
+      },
+      {
+        "type": "msg.start",
+        "ms": 517.9470999999999,
+        "bytes": 38
+      },
+      {
+        "type": "msg.delta",
+        "ms": 517.9629,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 532.2489,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 547.2748999999999,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 562.9870999999998,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 577.9650999999999,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 594.2415999999998,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 595.8768999999998,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 596.9177999999997,
+        "bytes": 57
+      },
+      {
+        "type": "system.perf",
+        "ms": 597.8533999999995,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 597.8685,
+        "bytes": 57
+      },
+      {
+        "type": "msg.end",
+        "ms": 608.7647999999995,
+        "bytes": 36
+      },
+      {
+        "type": "tool.start",
+        "ms": 616.7270000000003,
+        "bytes": 106
+      },
+      {
+        "type": "context.usage",
+        "ms": 622.1564999999996,
+        "bytes": 61
+      },
+      {
+        "type": "tool.body",
+        "ms": 622.5389,
+        "bytes": 188
+      },
+      {
+        "type": "tool.end",
+        "ms": 630.5054999999998,
+        "bytes": 93
+      },
+      {
+        "type": "tool.start",
+        "ms": 631.5365999999999,
+        "bytes": 108
+      },
+      {
+        "type": "tool.body",
+        "ms": 639.8928000000001,
+        "bytes": 48
+      },
+      {
+        "type": "tool.end",
+        "ms": 640.8214000000003,
+        "bytes": 93
+      },
+      {
+        "type": "editor.open",
+        "ms": 656.5540999999998,
+        "bytes": 53
+      },
+      {
+        "type": "tool.start",
+        "ms": 659.8287999999998,
+        "bytes": 115
+      },
+      {
+        "type": "tool.end",
+        "ms": 664.4396999999994,
+        "bytes": 93
+      },
+      {
+        "type": "agent.state",
+        "ms": 664.5310999999997,
+        "bytes": 82
+      },
+      {
+        "type": "think.start",
+        "ms": 665.2085999999995,
+        "bytes": 50
+      },
+      {
+        "type": "think.delta",
+        "ms": 665.6007999999997,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 665.7936999999997,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 665.9136999999996,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 666.0427999999997,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 666.1736999999998,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 669.4004,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 673.8935999999999,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 676.1146000000003,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 681.5543999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 682.3979999999997,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 686.1111999999998,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 687.0684999999999,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 687.9250999999999,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 688.8106000000002,
+        "bytes": 57
+      },
+      {
+        "type": "think.delta",
+        "ms": 702.3650999999995,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 706.1730000000002,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 707.6429000000003,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 708.3187000000003,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 709.4716000000003,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 714.9990000000003,
+        "bytes": 59
+      },
+      {
+        "type": "think.delta",
+        "ms": 715.4622999999997,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 716.6092000000003,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 717.7570000000001,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 718.7584000000002,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 719.9608000000003,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 720.3273999999997,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 721.6469999999995,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 723.1237999999998,
+        "bytes": 61
+      },
+      {
+        "type": "think.delta",
+        "ms": 723.5958999999998,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 724.8200000000002,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 728.9133999999999,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 729.1694000000002,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 729.3057000000003,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 729.6401000000001,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 732.9617999999996,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 734.0165000000002,
+        "bytes": 61
+      },
+      {
+        "type": "think.delta",
+        "ms": 750.1102999999998,
+        "bytes": 61
+      },
+      {
+        "type": "think.delta",
+        "ms": 765.7062000000001,
+        "bytes": 59
+      },
+      {
+        "type": "think.delta",
+        "ms": 781.1415000000002,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 797.3443999999995,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 813.2464999999997,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 830.4654999999998,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 830.8609000000001,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 846.7013000000002,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 862.2921000000001,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 862.315,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 875.9905000000003,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 891.9128999999998,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 907.0516000000002,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 922.8601999999996,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 938.7660000000001,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 954.6388999999995,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 970.8696999999997,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 986.6801,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 999.0170999999996,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 999.8749999999995,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1000.4371999999998,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1002.0477999999998,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 1018.0116000000003,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 1033.5526999999997,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1048.5447,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1064.3695000000002,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 1080.1027,
+        "bytes": 59
+      },
+      {
+        "type": "think.delta",
+        "ms": 1096.3004999999998,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 1096.319,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 1113.2158999999997,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 1129.9323,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 1144.9936000000002,
+        "bytes": 61
+      },
+      {
+        "type": "think.delta",
+        "ms": 1161.2334999999998,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 1175.3465,
+        "bytes": 60
+      },
+      {
+        "type": "think.delta",
+        "ms": 1191.6519999999996,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1206.2805999999996,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1222.0925000000002,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1238.4666999999995,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1254.0831000000003,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1271.3674999999998,
+        "bytes": 54
+      },
+      {
+        "type": "think.delta",
+        "ms": 1286.2112000000002,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 1302.3547999999996,
+        "bytes": 56
+      },
+      {
+        "type": "think.end",
+        "ms": 1319.0957000000003,
+        "bytes": 38
+      },
+      {
+        "type": "msg.start",
+        "ms": 1319.5877999999998,
+        "bytes": 38
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1319.6136000000001,
+        "bytes": 53
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1333.3678999999997,
+        "bytes": 55
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1349.2269000000001,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1365.4514999999997,
+        "bytes": 55
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1381.5344,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1381.5492,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1397.4647,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1397.4765000000002,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1412.5014999999999,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1428.8430000000003,
+        "bytes": 53
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1444.9018,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1461.6117,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1477.7033999999999,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1491.5952000000002,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1506.9764,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1522.6574999999998,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1537.8138999999996,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1553.3238999999999,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1569.1528999999996,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1584.4470999999999,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1600.4411999999998,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1616.2257999999997,
+        "bytes": 53
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1631.3438,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1647.3721,
+        "bytes": 55
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1663.4113000000002,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1678.6366999999996,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1694.4944,
+        "bytes": 55
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1711.8025000000002,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1725.2768,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1740.5011,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1756.2085999999995,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1772.7909999999997,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1788.3583000000003,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1803.9056999999998,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1819.8897000000002,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1835.6950999999995,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1851.7336,
+        "bytes": 53
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1867.4651,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1883.0264999999995,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1898.5913999999998,
+        "bytes": 51
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1914.0147000000002,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1930.5000999999997,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1946.1432,
+        "bytes": 57
+      },
+      {
+        "type": "msg.delta",
+        "ms": 1961.4004,
+        "bytes": 54
+      },
+      {
+        "type": "msg.end",
+        "ms": 1977.0319999999997,
+        "bytes": 36
+      },
+      {
+        "type": "tool.start",
+        "ms": 1980.3545,
+        "bytes": 144
+      },
+      {
+        "type": "context.usage",
+        "ms": 1982.0512999999996,
+        "bytes": 61
+      },
+      {
+        "type": "tool.body",
+        "ms": 2000.1137999999996,
+        "bytes": 308
+      },
+      {
+        "type": "tool.end",
+        "ms": 2001.8233999999998,
+        "bytes": 94
+      },
+      {
+        "type": "editor.open",
+        "ms": 2002.8947999999996,
+        "bytes": 53
+      },
+      {
+        "type": "tool.start",
+        "ms": 2004.2839,
+        "bytes": 135
+      },
+      {
+        "type": "file.changed",
+        "ms": 2007.2728999999995,
+        "bytes": 1612
+      },
+      {
+        "type": "tool.body",
+        "ms": 2025.4627999999998,
+        "bytes": 281
+      },
+      {
+        "type": "tool.end",
+        "ms": 2026.4500000000003,
+        "bytes": 95
+      },
+      {
+        "type": "tool.start",
+        "ms": 2028.2033999999999,
+        "bytes": 139
+      },
+      {
+        "type": "file.changed",
+        "ms": 2029.1901999999995,
+        "bytes": 640
+      },
+      {
+        "type": "tool.body",
+        "ms": 2036.591,
+        "bytes": 107
+      },
+      {
+        "type": "tool.end",
+        "ms": 2037.2409999999995,
+        "bytes": 96
+      },
+      {
+        "type": "agent.state",
+        "ms": 2048.154,
+        "bytes": 85
+      },
+      {
+        "type": "msg.start",
+        "ms": 2048.9152,
+        "bytes": 39
+      },
+      {
+        "type": "msg.delta",
+        "ms": 2048.9271999999996,
+        "bytes": 58
+      },
+      {
+        "type": "file.changed",
+        "ms": 2049.7607999999996,
+        "bytes": 1110
+      },
+      {
+        "type": "changes",
+        "ms": 2051.4724,
+        "bytes": 553
+      },
+      {
+        "type": "msg.delta",
+        "ms": 2055.047,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 2056.3290999999995,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 2071.1658999999995,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 2087.3828,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 2103.1536,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 2119.4860000000003,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 2134.8574000000003,
+        "bytes": 55
+      },
+      {
+        "type": "msg.end",
+        "ms": 2150.9806000000003,
+        "bytes": 37
+      },
+      {
+        "type": "tool.start",
+        "ms": 2153.056,
+        "bytes": 125
+      },
+      {
+        "type": "term.cmd",
+        "ms": 2153.9887000000003,
+        "bytes": 68
+      },
+      {
+        "type": "context.usage",
+        "ms": 2202.6401,
+        "bytes": 61
+      },
+      {
+        "type": "term.line",
+        "ms": 2263.8096,
+        "bytes": 131
+      },
+      {
+        "type": "term.line",
+        "ms": 2263.8208,
+        "bytes": 96
+      },
+      {
+        "type": "term.line",
+        "ms": 2263.8376000000003,
+        "bytes": 168
+      },
+      {
+        "type": "term.line",
+        "ms": 2263.8428,
+        "bytes": 90
+      },
+      {
+        "type": "term.line",
+        "ms": 2264.0717,
+        "bytes": 97
+      },
+      {
+        "type": "term.line",
+        "ms": 2264.1573999999996,
+        "bytes": 69
+      },
+      {
+        "type": "term.exit",
+        "ms": 2271.0332999999996,
+        "bytes": 36
+      },
+      {
+        "type": "tool.body",
+        "ms": 2271.0524,
+        "bytes": 363
+      },
+      {
+        "type": "tool.end",
+        "ms": 2282.6348999999996,
+        "bytes": 110
+      },
+      {
+        "type": "think.start",
+        "ms": 2287.3259999999996,
+        "bytes": 51
+      },
+      {
+        "type": "think.delta",
+        "ms": 2287.525,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2287.7408,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2288.0718,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2293.0533,
+        "bytes": 59
+      },
+      {
+        "type": "think.delta",
+        "ms": 2309.3222,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2325.6253999999994,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2341.0968,
+        "bytes": 59
+      },
+      {
+        "type": "think.delta",
+        "ms": 2356.5075,
+        "bytes": 57
+      },
+      {
+        "type": "think.delta",
+        "ms": 2372.6627999999996,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 2388.6064,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2404.3624999999997,
+        "bytes": 59
+      },
+      {
+        "type": "think.delta",
+        "ms": 2419.7769999999996,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2435.5579999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2451.5038,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2467.4521,
+        "bytes": 59
+      },
+      {
+        "type": "think.delta",
+        "ms": 2483.5156999999995,
+        "bytes": 61
+      },
+      {
+        "type": "think.delta",
+        "ms": 2499.3311,
+        "bytes": 56
+      },
+      {
+        "type": "think.delta",
+        "ms": 2515.4599999999996,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2531.3914,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2547.2800999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2563.0391999999997,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2578.3936,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2594.3578999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2608.4504999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2623.2175,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2638.2945999999997,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2654.0961999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2669.6778,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2685.4808,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2701.6820000000002,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2717.5561000000002,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 2733.8061999999995,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2749.1059,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2764.7836999999995,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2780.7939,
+        "bytes": 59
+      },
+      {
+        "type": "think.delta",
+        "ms": 2795.9401999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2812.3792,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2826.7683999999995,
+        "bytes": 62
+      },
+      {
+        "type": "think.delta",
+        "ms": 2842.0039999999995,
+        "bytes": 61
+      },
+      {
+        "type": "think.delta",
+        "ms": 2857.8995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2873.3142999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2888.7717,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2904.7518999999998,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2920.0237999999995,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2934.7888,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2950.1566,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2966.0632,
+        "bytes": 55
+      },
+      {
+        "type": "think.delta",
+        "ms": 2981.8219999999997,
+        "bytes": 58
+      },
+      {
+        "type": "think.delta",
+        "ms": 2981.8509,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 2997.8260999999998,
+        "bytes": 63
+      },
+      {
+        "type": "think.delta",
+        "ms": 3014.0596,
+        "bytes": 63
+      },
+      {
+        "type": "think.end",
+        "ms": 3029.604,
+        "bytes": 39
+      },
+      {
+        "type": "msg.start",
+        "ms": 3029.8245,
+        "bytes": 39
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3029.8416999999995,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3045.0030999999994,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3060.6443999999997,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3077.2922000000003,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3091.6276999999995,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3107.6020000000003,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3123.7337999999995,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3138.6461999999997,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3153.9859,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3169.623,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3185.6265,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3201.0498999999995,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3216.5514,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3231.7503,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3247.3896,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3263.3879,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3263.3963,
+        "bytes": 58
+      },
+      {
+        "type": "msg.end",
+        "ms": 3279.0497,
+        "bytes": 37
+      },
+      {
+        "type": "agent.state",
+        "ms": 3279.0727,
+        "bytes": 82
+      },
+      {
+        "type": "tool.start",
+        "ms": 3282.8143999999998,
+        "bytes": 133
+      },
+      {
+        "type": "context.usage",
+        "ms": 3283.0079,
+        "bytes": 61
+      },
+      {
+        "type": "tool.body",
+        "ms": 3286.0935999999997,
+        "bytes": 205
+      },
+      {
+        "type": "tool.end",
+        "ms": 3288.7701,
+        "bytes": 95
+      },
+      {
+        "type": "agent.state",
+        "ms": 3288.9066,
+        "bytes": 82
+      },
+      {
+        "type": "tool.start",
+        "ms": 3289.7004,
+        "bytes": 137
+      },
+      {
+        "type": "term.cmd",
+        "ms": 3289.7138,
+        "bytes": 68
+      },
+      {
+        "type": "file.changed",
+        "ms": 3330.1034999999997,
+        "bytes": 664
+      },
+      {
+        "type": "term.line",
+        "ms": 3386.7877999999996,
+        "bytes": 131
+      },
+      {
+        "type": "term.line",
+        "ms": 3386.8254,
+        "bytes": 96
+      },
+      {
+        "type": "term.line",
+        "ms": 3386.838,
+        "bytes": 121
+      },
+      {
+        "type": "term.line",
+        "ms": 3386.8407999999995,
+        "bytes": 90
+      },
+      {
+        "type": "term.line",
+        "ms": 3387.1571,
+        "bytes": 97
+      },
+      {
+        "type": "term.line",
+        "ms": 3387.1743,
+        "bytes": 68
+      },
+      {
+        "type": "term.exit",
+        "ms": 3395.2314,
+        "bytes": 36
+      },
+      {
+        "type": "tool.body",
+        "ms": 3395.2530999999994,
+        "bytes": 317
+      },
+      {
+        "type": "tool.end",
+        "ms": 3396.0469,
+        "bytes": 99
+      },
+      {
+        "type": "changes",
+        "ms": 3400.8443999999995,
+        "bytes": 553
+      },
+      {
+        "type": "msg.start",
+        "ms": 3401.4188,
+        "bytes": 39
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3401.4320000000002,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3404.1501999999996,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3419.3394999999996,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3434.3250000000003,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3449.9248000000002,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3465.457,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3481.2517999999995,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3496.972,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3512.2774999999997,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3528.3470999999995,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3543.3623000000002,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3559.1108,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3575.1733,
+        "bytes": 53
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3591.2387999999996,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3605.9373,
+        "bytes": 58
+      },
+      {
+        "type": "system.perf",
+        "ms": 3605.9547,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3622.0514,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3637.7099000000003,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3653.1594,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3668.1870999999996,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3684.1351,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3699.5982,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3715.0857,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3730.9757999999997,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3746.033,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3761.3437,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3778.4109000000003,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3795.3021000000003,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3808.882,
+        "bytes": 53
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3824.3091,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3839.2737,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3854.2657999999997,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3869.4912,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3885.5008999999995,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3885.5075999999995,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3900.8691000000003,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3916.4383999999995,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3916.4453,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3932.1205999999997,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3947.8610999999996,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3963.0228999999995,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3978.0251999999996,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 3994.4176,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4010.7292999999995,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4026.2324999999996,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4041.1110000000003,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4056.6901000000003,
+        "bytes": 53
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4072.0036999999998,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4087.6762000000003,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4103.656800000001,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4119.2646,
+        "bytes": 55
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4134.2793,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4150.034299999999,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4165.603300000001,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4180.800499999999,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4196.3802,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4211.7822,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4228.249599999999,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4244.0008,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4258.293299999999,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4274.544900000001,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4290.261199999999,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4305.4521,
+        "bytes": 54
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4320.735000000001,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4336.4123,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4352.215200000001,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4368.2719,
+        "bytes": 58
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4383.749400000001,
+        "bytes": 56
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4399.9023,
+        "bytes": 52
+      },
+      {
+        "type": "msg.delta",
+        "ms": 4415.327799999999,
+        "bytes": 53
+      },
+      {
+        "type": "msg.end",
+        "ms": 4431.1289,
+        "bytes": 37
+      },
+      {
+        "type": "agent.state",
+        "ms": 4433.9342,
+        "bytes": 71
+      },
+      {
+        "type": "agent.done",
+        "ms": 4435.781499999999,
+        "bytes": 56
+      },
+      {
+        "type": "changes",
+        "ms": 4436.7335,
+        "bytes": 552
+      },
+      {
+        "type": "context.usage",
+        "ms": 4436.801799999999,
+        "bytes": 61
+      }
+    ],
+    "text": "步骤\n9\n/9\n1 步失败\n修复待办筛选并增加优先级排序\nR1\n已思考 · 用户的需求：修复待办筛选并增加优先级排序 我需要先了解这个项目： 1. 读 README.m…（1s） · 1 步 · 1s\n\n好的，我来处理这个任务。先读取项目文件，了解代码结构。\n\nR1\n读取文件 README.md · 4 步 · 1s\n\n定位到 bug 了。 filterTodos 里 active / done 两个分支的条件写反了。我的计划：\n\n修复条件反转 bug\n新增 sortByPriority 并接入筛选流程\n补充测试用例\n在终端自主运行测试验证\nR2\n编辑文件 src/todo.js — 修复筛选 bug + 接入排序 · 3 步 · 1s\n\n代码写好了。现在我调用终端真实运行测试来验证：\n\nR3\n运行终端 node tests/run-tests.js · 2 步 · 1s\n\n测试帮我抓到一个问题：排序方向写成了升序，应该是 b - a 的降序。马上修复并重新验证。\n\nR4\n编辑文件 src/utils.js — 修正排序方向 · 2 步 · 1s\n\n任务完成。 全部测试通过（真实执行，非模拟）。\n\n做了什么：\n\n修复了 filterTodos 中 active/done 条件反转的 bug\n新增 sortByPriority，筛选结果按 high > normal > low 排序\n补充了排序回归测试\n期间测试抓到一个排序方向错误，已自主修复并复测通过\n\n共改动 3 个文件，点击下方任意文件可查看 Diff：\n\n复制\n重新生成\n分支",
+    "dom": 368
+  },
+  "layouts": [
+    {
+      "theme": "dark",
+      "width": 1440,
+      "bodyWidth": 1440,
+      "viewport": 1440,
+      "input": {
+        "x": 1093,
+        "right": 1428,
+        "width": 335,
+        "scroll": 334,
+        "client": 333
+      },
+      "unnamedButtons": []
+    },
+    {
+      "theme": "dark",
+      "width": 1100,
+      "bodyWidth": 1100,
+      "viewport": 1100,
+      "input": {
+        "x": 753,
+        "right": 1088,
+        "width": 335,
+        "scroll": 334,
+        "client": 333
+      },
+      "unnamedButtons": []
+    },
+    {
+      "theme": "dark",
+      "width": 900,
+      "bodyWidth": 900,
+      "viewport": 900,
+      "input": {
+        "x": 553,
+        "right": 888,
+        "width": 335,
+        "scroll": 334,
+        "client": 333
+      },
+      "unnamedButtons": []
+    },
+    {
+      "theme": "light",
+      "width": 1440,
+      "bodyWidth": 1440,
+      "viewport": 1440,
+      "input": {
+        "x": 1093,
+        "right": 1428,
+        "width": 335,
+        "scroll": 334,
+        "client": 333
+      },
+      "unnamedButtons": []
+    },
+    {
+      "theme": "light",
+      "width": 1100,
+      "bodyWidth": 1100,
+      "viewport": 1100,
+      "input": {
+        "x": 753,
+        "right": 1088,
+        "width": 335,
+        "scroll": 334,
+        "client": 333
+      },
+      "unnamedButtons": []
+    },
+    {
+      "theme": "light",
+      "width": 900,
+      "bodyWidth": 900,
+      "viewport": 900,
+      "input": {
+        "x": 553,
+        "right": 888,
+        "width": 335,
+        "scroll": 334,
+        "client": 333
+      },
+      "unnamedButtons": []
+    }
+  ],
+  "palette_dark": "graphite",
+  "palette_light": "celadon",
+  "healthMs": [
+    0.4555999999993219,
+    0.46750000000065484,
+    0.4922000000005937,
+    0.49429999999847496,
+    0.49949999999989814,
+    0.5142000000014377,
+    0.5184000000008382,
+    0.518500000000131,
+    0.5342999999993481,
+    0.5520999999989726,
+    0.5610000000015134,
+    0.5663999999997031,
+    0.5688999999983935,
+    0.5738000000001193,
+    0.5846999999994296,
+    0.5907999999999447,
+    0.606499999999869,
+    0.6273000000001048,
+    0.6334000000006199,
+    0.6597000000001572,
+    0.6708999999991647,
+    0.6916999999994005,
+    0.7296999999998661,
+    0.7320999999992637,
+    0.775100000000748,
+    0.8804000000000087,
+    1.1916000000001077,
+    1.2008999999998196,
+    1.751299999999901,
+    4.875599999999395
+  ],
+  "finalEvents": {
+    "hello": 3,
+    "context.usage": 8,
+    "user.msg": 1,
+    "agent.state": 6,
+    "think.start": 3,
+    "think.delta": 166,
+    "think.end": 3,
+    "msg.start": 5,
+    "msg.delta": 147,
+    "system.perf": 4,
+    "msg.end": 5,
+    "tool.start": 9,
+    "tool.body": 8,
+    "tool.end": 9,
+    "editor.open": 2,
+    "file.changed": 4,
+    "changes": 3,
+    "term.cmd": 2,
+    "term.line": 12,
+    "term.exit": 2,
+    "agent.done": 1
+  }
+}

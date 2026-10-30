@@ -1,0 +1,86 @@
+{
+  "date": "2026-10-29T04:41:55.285Z",
+  "checks": [
+    {
+      "name": "cli-nested-search",
+      "expected": 2,
+      "actual": 1,
+      "files": [
+        "root.txt"
+      ]
+    },
+    {
+      "name": "cli-absolute-parent-traversal",
+      "expectedRejected": true,
+      "readOutside": true,
+      "error": ""
+    },
+    {
+      "name": "server-dangling-symlink",
+      "skipped": true,
+      "reason": "EPERM"
+    },
+    {
+      "name": "conversation-flush-queue-order",
+      "flushReturnsPromise": false,
+      "afterFlushLatest": true,
+      "afterQueue": {
+        "version": "old"
+      },
+      "expectedLatestPreserved": true
+    },
+    {
+      "name": "sse-clean-eof-without-finish",
+      "resolved": true,
+      "finish": null,
+      "toolCalls": 1
+    },
+    {
+      "name": "sse-complete-control",
+      "resolved": true,
+      "finish": "tool_calls",
+      "toolCalls": 1
+    },
+    {
+      "name": "other-loopback-origin-auth",
+      "expectedDenied": true,
+      "tokenReadable": true,
+      "autoStatus": 200,
+      "protectedStatus": 200
+    },
+    {
+      "name": "slash-enter",
+      "expectedChatFrames": 0,
+      "actualChatFrames": [
+        {
+          "type": "chat",
+          "text": "/review"
+        }
+      ],
+      "inputAfter": "请对当前打开的文件进行代码审查，指出潜在问题、改进建议和最佳实践。"
+    },
+    {
+      "name": "ime-composing-key-event",
+      "synthetic": true,
+      "expectedChatFrames": 0,
+      "actualChatFrames": [
+        {
+          "type": "chat",
+          "text": "输入法候选确认"
+        }
+      ],
+      "inputAfter": ""
+    },
+    {
+      "name": "offline-draft",
+      "readyState": 3,
+      "expectedPreserved": true,
+      "inputAfter": "",
+      "chatFrames": 0
+    },
+    {
+      "name": "browser-errors",
+      "errors": []
+    }
+  ]
+}

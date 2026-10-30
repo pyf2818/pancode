@@ -1,0 +1,101 @@
+[
+  {
+    "fixtureFiles": 150,
+    "fileBytes": 8032,
+    "bootMs": 927.4645,
+    "pageReadyMs": 707.5133999999998,
+    "hellos": [
+      {
+        "bytes": 2423414,
+        "files": 150,
+        "t": 545.9843000000001
+      }
+    ],
+    "shownFiles": 150,
+    "dom": 2265,
+    "heap": 27600000,
+    "longtasks": [
+      59,
+      121,
+      89,
+      58
+    ],
+    "paints": [
+      {
+        "name": "first-paint",
+        "ms": 264
+      },
+      {
+        "name": "first-contentful-paint",
+        "ms": 264
+      }
+    ],
+    "errors": []
+  },
+  {
+    "fixtureFiles": 500,
+    "fileBytes": 8032,
+    "bootMs": 1250.5373,
+    "pageReadyMs": 940.6890999999996,
+    "hellos": [
+      {
+        "bytes": 8074513,
+        "files": 500,
+        "t": 893.7257
+      }
+    ],
+    "shownFiles": 500,
+    "dom": 4015,
+    "heap": 37300000,
+    "longtasks": [
+      85,
+      79,
+      144,
+      85
+    ],
+    "paints": [
+      {
+        "name": "first-paint",
+        "ms": 160
+      },
+      {
+        "name": "first-contentful-paint",
+        "ms": 160
+      }
+    ],
+    "errors": []
+  },
+  {
+    "fixtureFiles": 1500,
+    "fileBytes": 8032,
+    "bootMs": 1032.4309999999996,
+    "pageReadyMs": 939.3757000000005,
+    "hellos": [
+      {
+        "bytes": 8074515,
+        "files": 500,
+        "t": 848.4513000000006
+      }
+    ],
+    "shownFiles": 500,
+    "dom": 4017,
+    "heap": 35100000,
+    "longtasks": [
+      81,
+      78,
+      145,
+      84
+    ],
+    "paints": [
+      {
+        "name": "first-paint",
+        "ms": 144
+      },
+      {
+        "name": "first-contentful-paint",
+        "ms": 144
+      }
+    ],
+    "errors": []
+  }
+]
