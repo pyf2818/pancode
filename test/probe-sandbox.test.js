@@ -64,9 +64,24 @@ describe("scripts/ 顶层探针都必须走沙箱数据根", () => {
   });
 
   it("test:verify 链首尾夹着数据根指纹（中间谁偷写就红在链尾）", () => {
-    const chain = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).scripts["test:verify"];
-    expect(chain.startsWith("node scripts/_verify_dataroot.js mark &&")).toBe(true);
-    expect(chain.endsWith("node scripts/_verify_dataroot.js check")).toBe(true);
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8"));
+    const chain = pkg.scripts["test:verify"];
+    /* 2026-10-30 分层改造：链不再是 package.json 里那一长串 &&，
+       首尾夹指纹这件事搬进了运行器 scripts/verify-layers.js。
+       判据跟着换位置，但量的还是同一件事 —— mark 必须在跑探针之前、check 必须在之后，
+       并且跑完还要真的把 check 执行一次（只拍不核等于没守）。 */
+    expect(chain, "test:verify 现在应当就是分层运行器").toBe("node scripts/verify-layers.js");
+    const runner = fs.readFileSync(path.join(REPO, "scripts", "verify-layers.js"), "utf8");
+    const atMark = runner.indexOf('runStep(S("_verify_dataroot"), ["mark"])');
+    const atLoop = runner.indexOf("for (const layer of chosen)");
+    const atCheck = runner.indexOf('runStep(S("_verify_dataroot"), ["check"])');
+    expect(atMark, "运行器里没有 mark 这一步").toBeGreaterThan(-1);
+    expect(atLoop, "运行器里没有跑探针的主循环").toBeGreaterThan(-1);
+    expect(atCheck, "运行器收尾没有 check —— 探针写完没人核对").toBeGreaterThan(-1);
+    expect(atMark).toBeLessThan(atLoop);
+    expect(atCheck).toBeGreaterThan(atLoop);
+    /* check 失败必须把退出码带出去，否则"核对红了但整链绿"就是自欺 */
+    expect(runner.slice(atCheck, atCheck + 400)).toMatch(/bad\+\+|process\.exit\(1\)/);
   });
 
   it("W 轮一次性探针不再躺在 scripts 顶层（它们全都直连真实数据根）", () => {

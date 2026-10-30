@@ -9,23 +9,28 @@ on:
 # 为什么现在只跑 windows-latest：
 #  ① 此前 43 次运行全红，根因是仓库一直没有 package-lock.json —— npm ci 第一步就阵亡，
 #    任何测试从未真正执行过。先让链路在"与开发者本机一致的环境"里稳定绿起来，再扩矩阵。
-#  ② test:verify 里的 55 个探针（agent-browser / 端口 / Windows 路径折叠）只在 Windows 上验证过；
+#  ② test:verify 现在是分层运行器（scripts/verify-layers.js）：L1 快速契约 / L2 隔离集成 / L3 浏览器交互，
+#    默认链合计 70 步、70 支互不重复的探针（L1 20 + L2 24 + L3 26；步数按运行器自己的层表算出来，
+#    不是手数 —— 之前这里写 66/21 是分层扩容后没跟着改），全部只在 Windows 上验证过；
 #    ubuntu 需要单独过一遍再放开（届时把 strategy.matrix 加回来即可）。
+#    L4 发行验收（5 步，要装出来的安装包 + 真 Electron）和 L5 真实模型评测（1 步，要真 Key）
+#    不在 CI 默认链上，本地用 npm run verify:release / verify:model 单独按；
+#    哪一层跳了、为什么跳，运行器每次都打出来。
 #  ③ node-version 必须与 package.json 的 engines(>=24) 一致：vitest 5 要求 ^22.12||^24||>=26，
 #    agent-browser 要求 >=24 —— 留在 20 上 npm ci 只是 EBADENGINE 警告，跑到 test:unit 才炸，
 #    表现为"CI 红在装包之后的那一步"，查起来要绕一圈。改 Node 版本时两处一起改。
-# 浏览器要显式装，不是"取消跳过"就会来：test:verify 的 55 支探针实测有 19 支直接 chromium.launch()
-# （_verify_codegraph 是链上第 3 支，最先炸），而 playwright 这个包压根没有 install 脚本 ——
+# 浏览器要显式装，不是"取消跳过"就会来：L3 的 25 支探针几乎每支都 chromium.launch()
+# （_verify_codegraph 是最先炸的那一支），而 playwright 这个包压根没有 install 脚本 ——
 # 删掉 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD 也一个字节都不会下（npm ci 的日志里没有任何 Downloading），
 # 只有 `npx playwright install chromium` 会把 Chrome for Testing + headless shell 放到位。
 # 这一条赌的是 cdn.playwright.dev：它挂了 CI 就红，红得明明白白，不会伪装成"探针过了"。
-# Electron 仍跳过下载：这条链不起桌面壳（_verify_desktop 与 verify:ui 在本地 verify:all 里跑）。
+# Electron 仍跳过下载：这条链不起桌面壳（L4 的 _verify_desktop / verify:ui / _verify_perf 在本地跑）。
 # 另外 npm 11 的 install-scripts 门禁默认拦下未列入 allowScripts 的 postinstall
 # （这轮报出来三个：agent-browser / electron / electron-winstaller），
 # 所以 _verify_browser 在 runner 上连二进制都装不出来 —— 交互桌面之外还差这一层。
 # 例外两支需要真机桌面，探针自己认这个条件并如实打 SKIP 后 exit 0：
 #   _verify_computer（UIA worker + 屏幕截图）、_verify_browser（agent-browser 驱动本机 Chrome/Edge）。
-# 所以 CI 那一步的口径是 53 支跑到底 + 2 支 SKIP，不是"55 支全过"。
+# 所以 CI 那一步的口径是"L1+L2+L3 共 66 步，其中 2 步在 runner 上如实 SKIP"，不是"全过"。
 env:
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
 
@@ -33,9 +38,14 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # Actions 按 commit 钉住（F20-6：固定构建依赖与 Actions 来源）。
+      # 标签是可移动的引用，钉到 SHA 之后"这次 CI 用的是哪一版 checkout"才是确定的。
+      # 两个 SHA 是 2026-10-30 用 `gh api repos/<org>/<repo>/git/ref/tags/v4` 取的实际值：
+      #   actions/checkout v4 = 11d5960…，actions/setup-node v4 = 49933ea…
+      # 升级时两个地方一起改（注释里的标签留着，方便看这块钉的是哪条线）。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -46,13 +56,16 @@ jobs:
       - name: Install Playwright Chromium (verify 链里 19 支探针要真开浏览器；playwright 包没有 install 脚本，npm ci 不会代劳)
         run: npx playwright install chromium
 
-      - name: Lint (server + test + public + scripts)
+      - name: Lint (全仓真实执行面：server + test + public + scripts + cli + electron + contracts)
         run: npm run lint
+
+      - name: Lint 契约层（协议/权限/存储边界文件，warn 也算红）
+        run: npm run lint:strict
 
       - name: Unit tests (vitest)
         run: npm run test:unit
 
-      - name: Verify scripts (53 支真探针跑到底：渲染 / 仓库地图 / 工具 / Agent 流 / 并行 / 界面几何…，首尾各跑一次数据根守门；_verify_computer、_verify_browser 需真机桌面，runner 上如实 SKIP)
+      - name: Verify L1+L2+L3（分层运行器：快速契约 / 隔离集成 / 浏览器交互；首尾各核一次真数据根指纹）
         run: npm run test:verify
 
       - name: Smoke test (Agent 闭环端到端, 演示引擎无需 Key)

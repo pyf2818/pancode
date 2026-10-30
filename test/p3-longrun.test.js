@@ -235,7 +235,12 @@ describe("托盘跳会话这条链：三处字面量必须一模一样", () => {
 
   it("探针脚本挂进了回归链（新加的验收层不挂进去等于没有）", () => {
     const pkg = JSON.parse(read("package.json"));
-    expect(pkg.scripts["test:verify"]).toContain("_verify_trayjump.js");
-    expect(pkg.scripts["verify:all"]).toContain("_verify_desktop.js");
+    /* 分层之后 test:verify 指向运行器，探针清单在 scripts/verify-layers.js 里 ——
+       判据跟着搬，但要的仍是同一件事：这两支必须真挂在某一层上，有人按。 */
+    expect(pkg.scripts["test:verify"]).toBe("node scripts/verify-layers.js");
+    expect(pkg.scripts["verify:all"]).toContain("--layer=all");
+    const layers = read("scripts/verify-layers.js");
+    expect(layers, "_verify_trayjump 没挂进任何一层").toContain('S("_verify_trayjump")');
+    expect(layers, "_verify_desktop 没挂进任何一层").toContain('S("_verify_desktop")');
   });
 });
