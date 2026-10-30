@@ -250,6 +250,42 @@ function req(method, urlPath, body, token) {
     ok("常驻 pane 数量有界（不是切多少个就留多少个）", round.keys <= 8, "常驻 " + round.keys + " 个");
     ok("被挤掉的会话切回来仍有正文（从快照 hydrate，不是空白）", round.backOk === true, J(round));
 
+    section("⑦ 历史快照里的 widget 代码块：恢复时升级成卡片");
+    /* 修复前落下的快照长什么样：Worker 那条路把闭合的 widget 块画成了 <pre class="widget">。
+       快照内容用真 Worker 现生成，不手抄形状——手抄的形状可能早就跟产品对不上了。 */
+    const hyd = await page.evaluate(async () => {
+      const SVG = "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><rect width='24' height='24' fill='#0af'/></svg>";
+      const src = "架构图：\n\n```widget\n" + SVG + "\n```\n\n" +
+        "```js\nconst a = 1;\n```\n\n" +
+        "```svg\n<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>\n```\n\n" +
+        "```svg\n<svg xmlns='http://www.w3.org/2000/svg'><rect/>\n```";
+      const w = new Worker("/js/md-worker.js");
+      const html = await new Promise((res, rej) => {
+        w.onmessage = (e) => res(e.data.html);
+        w.onerror = (e) => rej(new Error("md-worker 起不来：" + (e && e.message)));
+        w.postMessage({ id: 1, src: src });
+      });
+      w.terminate();
+      const id = "hydw-" + Date.now();
+      saveConvDom(id, '<div class="msg-row ans-row"><div class="msg msg-ai">' + html + "</div></div>");
+      hydratePane(id, loadConvDom(id));
+      const p = convPanes[id];
+      const out = {
+        degradedPre: (html.match(/pre class="widget"/g) || []).length,
+        widget: p.querySelectorAll(".msg-widget").length,
+        iframes: p.querySelectorAll("iframe").length,
+        pre: p.querySelectorAll("pre").length,
+        jsKept: !!p.querySelector("pre.js"),
+        svgIncompleteKept: p.querySelectorAll("pre.svg").length,
+      };
+      deleteConvDom(id);
+      dropConvCtx(id);
+      return out;
+    });
+    ok("前提：快照里的 widget 确实是降级成代码块存下来的（阳性对照）", hyd.degradedPre === 1, J(hyd));
+    ok("恢复后 widget 与完整 SVG 都按原文重建成了卡片（iframe 也在）", hyd.widget === 2 && hyd.iframes >= 2, J(hyd));
+    ok("不该动的保持原样：普通代码块和没画完的 SVG 仍是代码", hyd.jsKept && hyd.svgIncompleteKept === 1 && hyd.pre === 2, J(hyd));
+
     ok("全程页面没有报错", pageErr.length === 0, pageErr.slice(0, 3).join(" | "));
   } catch (e) {
     ok("探针整条链路没抛错", false, (e && e.stack ? e.stack : String(e)).slice(0, 400));

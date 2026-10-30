@@ -174,7 +174,11 @@ function mountPane(id) {
 /* 从 localStorage 快照重建 pane（页面刷新后首次打开该会话时调用） */
 function hydratePane(id, html) {
   const ctx = ensureConvCtx(id);
-  if (!ctx.pane.childNodes.length && html) ctx.pane.innerHTML = html;
+  if (!ctx.pane.childNodes.length && html) {
+    ctx.pane.innerHTML = html;
+    /* 修复前落下的快照可能是"widget 块只画成代码"的降级形态，恢复时按原文重建卡片 */
+    if (typeof upgradeWidgetCodeBlocks === "function") upgradeWidgetCodeBlocks(ctx.pane);
+  }
   sweepEmptyRoundChildren(ctx.pane);
   return ctx.pane;
 }
@@ -3328,8 +3332,11 @@ function handleEventInner(ev) {
       /* F16：已经按稳定块画过的那一块，收尾只是"把最后一段挪进稳定区、清掉尾巴"，
          成本是剩下那一截，不是整篇再灌一遍（500KB 那 202ms 长任务就是这么省掉的）。
          尾巴里剩下的未闭合内容也在这里定稿，所以终稿与流式过程用的是同一套切分口径。 */
-      if (b._tailEl) { _mdPaintBlock(b, true); settle(); break; }
-      const finish = (html) => { b.el.innerHTML = html; settle(); };
+      /* widget 块可能在首帧就被 Worker 画成了代码（那时 _paintedSrc 已盖到整段前缀），
+         后续帧只补增量，收尾若走增量路径就永远不会升级成卡片。
+         含闭合 widget/svg/diagram 的回复一律走主线程整篇终稿（与 W9 的取舍一致：宁可慢一次）。 */
+      if (b._tailEl && !_hasWidgetFence(b.buf)) { _mdPaintBlock(b, true); settle(); break; }
+      const finish = (html) => { b.el.innerHTML = html; b._tailEl = null; b._paintedSrc = b.buf; settle(); };
       if (b.buf) renderChatMDFinal(b.buf, finish);
       else finish("");
       break;

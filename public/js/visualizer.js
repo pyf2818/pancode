@@ -55,6 +55,31 @@ function renderWidgetCard(body, lang) {
     '<iframe class="wg-frame" sandbox="allow-scripts" srcdoc="' + srcdoc + '" style="height:80px"></iframe></div>';
 }
 
+/* 历史快照里的 widget/svg/diagram 代码块升级为卡片。
+   旧快照可能是 Worker 流式渲染留下的代码块（W5 的预期形态），也可能是修复前终稿降级留下的；
+   原文就在 pre.textContent 里，足够重建。未闭合的 SVG 不升级——半截图比代码块更难读。 */
+function upgradeWidgetCodeBlocks(root) {
+  if (!root || !root.querySelectorAll) return 0;
+  let n = 0;
+  root.querySelectorAll(".code-block").forEach((box) => {
+    const langEl = box.querySelector(".code-lang");
+    const pre = box.querySelector("pre");
+    if (!langEl || !pre) return;
+    const lang = String(langEl.textContent || "").trim().toLowerCase();
+    if (!/^(widget|svg|diagram)$/.test(lang)) return;
+    const body = pre.textContent || "";
+    if (!body.trim()) return;
+    if (/<svg[\s>]/i.test(body) && !/<\/svg>\s*$/i.test(body)) return;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = renderWidgetCard(body, lang);
+    const card = tmp.firstElementChild;
+    if (!card) return;
+    box.replaceWith(card);
+    n++;
+  });
+  return n;
+}
+
 /* 高度自适应：iframe 桥回报高度 → 调整（封顶 480px，超出内部滚动） */
 window.addEventListener("message", (e) => {
   const d = e.data;

@@ -90,6 +90,19 @@ const scripts = {
     await sleep(200);
     chunk(res, {}, "stop"); endOk(res);
   },
+  /* 用户实际遇到的那种：widget 块在**第一个 delta** 里就闭合了。
+     首帧恒为 Worker 整篇画（那时还没有稳定前缀可切，_paintedSrc 盖住整段），
+     Worker 里没有 renderWidgetCard，这一帧就把卡片画成了代码块；
+     后续帧只补增量，收尾若也走增量路径，那块代码就永远留在屏幕上。 */
+  async widgetEarly(res) {
+    chunk(res, { content: "架构图如下：\n\n```widget\n" + WIDGET_SVG + "\n```\n" });
+    await sleep(500);
+    /* 第二口**以空行开头**：切分点才会越过这块 widget，稳定前缀把它包进去，
+       后续帧就只补增量 —— 收尾若也走增量，首帧画成的代码块永远留在原地。 */
+    chunk(res, { content: "\n补一句收尾说明，让 msg.end 落在增量路径上。" });
+    await sleep(200);
+    chunk(res, {}, "stop"); endOk(res);
+  },
   /* 代码块从未闭合到闭合：中间停 600ms 给页面采样 */
   async fence(res) {
     chunk(res, { content: "```js\nconst a = 1;\n" });
@@ -121,6 +134,7 @@ function lastUserText(body) {
 function route(text) {
   if (/HEAVY/.test(text)) return ["heavy", null];
   if (/FGONESHOT/.test(text)) return ["oneshot", null];
+  if (/WIDGETEARLY/.test(text)) return ["widgetEarly", null];
   if (/WIDGETPROBE/.test(text)) return ["widget", null];
   if (/FENCEPROBE/.test(text)) return ["fence", null];
   const m = text.match(/KB(\d+)/);
@@ -366,6 +380,39 @@ function boot() {
     }));
     ok("widget 卡片渲染出来了（终稿走的是主线程那条能画卡片的路）", atEnd.widget && !atEnd.codeFence, J(atEnd));
     ok("终稿站住了：稍后飞回来的那一帧没有把它盖回普通代码块", afterLate.widget && !afterLate.codeFence, J(afterLate));
+
+    /* ================= ③′ widget 出现在第一帧 ================= */
+    section("③′ widget 在第一个 delta 里就闭合：首帧 Worker 画成代码后，收尾必须升级成卡片");
+    /* 新开一条会话：判据要按 pane 数卡片，混进 ③ 那张卡就分不清是谁的 */
+    const WE = await page.evaluate(() => { newConversation(); return convId; });
+    await askIn(WE, "WIDGETEARLY 第一个 delta 就带一个闭合的 widget 块");
+    await waitEnd(WE, 60000);
+    const weMid = await page.evaluate((c) => {
+      const p = (typeof convPanes !== "undefined" && convPanes[c]) || null;
+      return {
+        widget: p ? p.querySelectorAll(".msg-widget").length : -1,
+        iframes: p ? p.querySelectorAll("iframe").length : -1,
+        pre: p ? p.querySelectorAll("pre").length : -1,
+        fenceShown: p ? /```widget/.test(p.textContent) : true,
+        text: p ? p.textContent.slice(0, 80) : "",
+      };
+    }, WE);
+    await wait(800);   // 飞行中的增量帧若还没作废，这段时间足够它落地
+    const weFinal = await page.evaluate((c) => {
+      const p = (typeof convPanes !== "undefined" && convPanes[c]) || null;
+      return {
+        widget: p ? p.querySelectorAll(".msg-widget").length : -1,
+        iframes: p ? p.querySelectorAll("iframe").length : -1,
+        pre: p ? p.querySelectorAll("pre").length : -1,
+        fenceShown: p ? /```widget/.test(p.textContent) : true,
+        hasTail: p ? p.querySelectorAll(".md-tail").length : -1,
+      };
+    }, WE);
+    ok("首帧画成代码之后，终稿把它升级成了卡片（旧代码：收尾走增量路径，代码块原地不动）",
+      weMid.widget === 1 && weMid.iframes >= 1 && weMid.pre === 0, J(weMid));
+    ok("界面不留源码、不留流式尾巴（终稿是整篇主线程重画的）",
+      !weFinal.fenceShown && weFinal.pre === 0 && weFinal.hasTail === 0, J(weFinal));
+    await page.evaluate((c) => { openConv(c); }, FG);
 
     /* ================= ④ 代码块从未闭合到闭合 ================= */
     section("④ 代码块未闭合：每一帧都得是一个正常代码块，不许出现游离的 ```");
