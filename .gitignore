@@ -58,3 +58,9 @@ _srv*.err
 # CodeArts Work local data
 .opencode/
 release*/
+
+# 根目录的本地模型探针残渣（一个请求体 + 一份抓下来的 SSE 流）。
+# 不是产物也不是源码，留着会让 `node scripts/dist.js` 的"发行构建要求工作树干净"一直红。
+# 文件本身不动不删，只是不再计入工作树状态。
+/_o_long.txt
+/_tb_long.json
