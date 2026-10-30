@@ -48,14 +48,60 @@ function isIgnored(name) {
   return IGNORE.has(name) || (name.startsWith(".") && name !== ".gitignore" && name !== ".env.example");
 }
 
+const within = (child, parent) => child === parent || child.startsWith(parent + path.sep);
+
+/* 工作区根的 realpath：两侧都过一遍 realpath，才不会因为大小写盘符、
+   8.3 短名、目录 junction 这些"同一个目录两种写法"把合法路径判成越界。 */
+function realRootOf(root) {
+  try { return fs.realpathSync(root); } catch (e) { return root; }
+}
+
+/* 从 abs 往下找到"真实存在的最深一段"取 realpath，缺失的尾巴单独带回来。
+   直接 realpathSync(abs) 对新建文件必然 ENOENT —— 那正是"新文件"和
+   "指向不存在目标的悬空链接"要区分开的地方，不能一律宽松放行。 */
+function realpathNearest(abs) {
+  let cur = abs;
+  const missing = [];
+  for (;;) {
+    try { return { real: fs.realpathSync(cur), missing }; } catch (e) {}
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    missing.unshift(path.basename(cur));
+    cur = parent;
+  }
+}
+
+function escapeError(rel) {
+  return new Error("路径越界: " + rel + " 不在工作区内");
+}
+
 function safePath(root, rel) {
-  /* 防目录逃逸：确保解析后的路径在 root 内 */
-  const abs = path.isAbsolute(rel) ? rel : path.resolve(root, rel);
+  /* 防目录逃逸。两道判据，缺一不可：
+     1) 字符串层：先 path.resolve 规范化再比。原先绝对路径分支直接用 rel 原样，
+        于是 <root>\..\outside.txt 这种"绝对但带父目录片段"的写法能过 startsWith
+        （审查项 F05 实测：读到过界文件）。resolve 会把 .. 折掉，绝对/相对统一走同一条。
+     2) 落点层：符号链接让字符串判据形同虚设 —— root/link.txt -> ../outside.txt
+        字符串在界内，open() 却跟着链走。所以对已存在部分取 realpath 再判一次。 */
   const normalizedRoot = path.resolve(root);
-  if (abs !== normalizedRoot && !abs.startsWith(normalizedRoot + path.sep)) {
-    throw new Error("路径越界: " + rel + " 不在工作区内");
+  const abs = path.resolve(normalizedRoot, rel == null ? "." : String(rel));
+  if (!within(abs, normalizedRoot)) throw escapeError(rel);
+  const rr = realRootOf(normalizedRoot);
+  const probe = realpathNearest(abs);
+  if (probe) {
+    const realAbs = probe.missing.length ? path.resolve(probe.real, ...probe.missing) : probe.real;
+    if (!within(realAbs, rr)) throw escapeError(rel);
   }
   return abs;
+}
+
+/* 写/删之前单独看叶子自己：悬空符号链接（指向不存在目标的链）在上面那道
+   realpath 判据里会退到父目录、被判为"界内"，随后 writeFileSync 顺着链
+   在界外把文件创建出来。lstat 不跟链，正好用来把这一类挑出来拒绝掉。
+   注意这只覆盖"叶子本身是链"；父目录是链已由 realpath 那道判据管住。 */
+function assertWritableLeaf(abs, rel) {
+  let st;
+  try { st = fs.lstatSync(abs); } catch (e) { return; }   // 不存在 = 新建，没有链可跟
+  if (st.isSymbolicLink()) throw new Error("路径越界: " + rel + " 是符号链接，CLI 不顺着链写/删");
 }
 
 function langOf(p) {
@@ -136,6 +182,7 @@ class FileStore {
 
   write(relPath, content) {
     const abs = safePath(this.root, relPath);
+    assertWritableLeaf(abs, relPath);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, content, "utf8");
     return { path: relPath, bytes: Buffer.byteLength(content) };
@@ -143,6 +190,7 @@ class FileStore {
 
   delete(relPath) {
     const abs = safePath(this.root, relPath);
+    assertWritableLeaf(abs, relPath);
     if (!fs.existsSync(abs)) throw new Error("文件不存在: " + relPath);
     fs.unlinkSync(abs);
     return { path: relPath };
@@ -158,11 +206,19 @@ class FileStore {
       : null;
     const needle = regex ? null : query.toLowerCase();
 
-    function walk(dir, depth) {
+    /* 必须是箭头函数：原先是普通函数 + walk.call(this, abs, 0)，
+       顶层这一调用把 this 传进去了，递归那句 walk(full, depth + 1) 却没有 ——
+       子目录里 path.relative(this.root, full) 抛 TypeError，又被下面那个空 catch 吞掉，
+       表现是"根目录的命中能出、子目录的命中全丢"（审查项 F11 实测：2 处命中只回 1 处）。 */
+    const walk = (dir, depth) => {
       if (depth > 8 || results.length >= maxResults) return;
       let entries;
       try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
       for (const e of entries) {
+        /* 上限要在每一轮开头就判：只在函数入口判一次的话，从子目录带着一身命中
+           return 回来后，本层还会继续把剩下的文件扫下去 —— maxResults 就成了
+           "大概这么多"而不是"最多这么多"。 */
+        if (results.length >= maxResults) return;
         if (isIgnored(e.name)) continue;
         const full = path.join(dir, e.name);
         if (e.isDirectory()) {
@@ -186,8 +242,8 @@ class FileStore {
           } catch (e) { /* skip */ }
         }
       }
-    }
-    walk.call(this, abs, 0);
+    };
+    walk(abs, 0);
     return results;
   }
 }

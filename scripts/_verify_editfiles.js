@@ -98,7 +98,7 @@ function startGateway() {
           { path: "a.txt", old_string: "A1", new_string: "A1-should-never-land" },
           { path: "ef-deny.txt", old_string: "P", new_string: "Q" },
         ] });
-        if (scene === "撤销") return toolCall("undo", {});
+        if (scene === "撤销" || scene === "跨会话撤销") return toolCall("undo", {});
         send({ choices: [{ index: 0, delta: { content: "没有匹配的场景：" + scene } }] });
         send({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
         rs.write("data: [DONE]\n\n"); rs.end();
@@ -108,11 +108,13 @@ function startGateway() {
   });
 }
 
-/* 每个场景用独立会话：共享一台引擎、但历史互不串，
+/* 每个场景默认用独立会话：共享一台引擎、但历史互不串，
    这样"这一轮工具到底跑没跑"能从 tool.end 事件上直接读出来，而不是靠推断。
-   （_undoStack 是引擎级的，所以"撤销"场景换会话照样撤得动上一批改的——这正是要验的语义。） */
-async function runScene(conn, scene, ms) {
-  const conv = "ef-" + scene + "-" + Date.now();
+   撤销场景要能钉在**改动发生的那条会话里**（审查项 F07：跨会话不替你撤销别人的改动），
+   所以第 4 个参数允许调用方指定会话——⑤ 用它验"同一会话一次撤整批"，
+   ⑥ 故意不指定，用它验"换一条会话就撤不动、并且要说清楚"。 */
+async function runScene(conn, scene, ms, fixedConv) {
+  const conv = fixedConv || "ef-" + scene + "-" + Date.now();
   const before = conn.events.length;
   conn.send({ type: "chat", text: "【场景" + scene + "】请按这个场景调用工具", convId: conv });
   let done = null;
@@ -236,20 +238,40 @@ function ranTool(r, label) {
     ok("两处改动都在，且是同一份内容（不是后一次覆盖前一次）",
       read("d.txt") === "D1-first\nD2-second\n", JSON.stringify(read("d.txt")));
 
-    section("⑤ 一批改动一个检查点：/undo 一次撤掉整批");
+    section("⑤ 一批改动一个检查点：同一条会话里 /undo 一次撤掉整批");
     fs.writeFileSync(F("a.txt"), "A1\nA2\n", "utf8");
     fs.writeFileSync(F("b.txt"), "B1\nB2\n", "utf8");
     fs.writeFileSync(F("d.txt"), "D1\nD2\n", "utf8");
-    await runScene(conn, "成功");
+    /* 检查点是按会话认主人的（F07）：这条判据要测的是"一次调用=一个检查点=一次撤干净"，
+       所以改和撤必须在同一条会话里。上一版让撤换了条会话，
+       测的其实是"跨会话敢不敢替你动别人的改动"——那是另一件事，见 ⑥。 */
+    const conv5 = "ef-undo-" + Date.now();
+    await runScene(conn, "成功", null, conv5);
     ok("先确认这一批改上了盘", /A1-edited/.test(read("a.txt")) && /B1-edited/.test(read("b.txt")),
       JSON.stringify([read("a.txt"), read("b.txt")]));
-    const r5 = await runScene(conn, "撤销");
+    const r5 = await runScene(conn, "撤销", null, conv5);
     ok("undo 工具真跑到了（不是「这一轮没做事」）",
       r5.done !== null && r5.tools.length >= 1, JSON.stringify(r5.tools.map((t) => t.label)));
     await wait(400);
     ok("一次 /undo 把整批两个文件都还原（不是只撤最后一个）",
       read("a.txt") === "A1\nA2\n" && read("b.txt") === "B1\nB2\n",
       JSON.stringify([read("a.txt"), read("b.txt")]));
+
+    section("⑥ F07：换一条会话点撤销，不该替你撤掉别人的改动");
+    fs.writeFileSync(F("a.txt"), "A1\nA2\n", "utf8");
+    fs.writeFileSync(F("b.txt"), "B1\nB2\n", "utf8");
+    await runScene(conn, "成功", null, "ef-owner-" + Date.now());
+    ok("改动这条会话把两批改上了盘", /A1-edited/.test(read("a.txt")) && /B1-edited/.test(read("b.txt")),
+      JSON.stringify([read("a.txt"), read("b.txt")]));
+    const r6 = await runScene(conn, "跨会话撤销");     // 会话名不带 fixedConv = 另起一条
+    ok("撤销工具真跑到了（否则下面的「没还原」是假绿）",
+      r6.done !== null && r6.tools.length >= 1, JSON.stringify(r6.tools.map((t) => t.label)));
+    await wait(400);
+    ok("别的会话没有被这次撤销动到", /A1-edited/.test(read("a.txt")) && /B1-edited/.test(read("b.txt")),
+      JSON.stringify([read("a.txt"), read("b.txt")]));
+    ok("回执说的是「属于另一个会话」而不是含糊的「撤销失败」",
+      r6.tools.some((t) => /另一个会话/.test((t.label || "") + " " + (t.body || ""))),
+      JSON.stringify(r6.tools.map((t) => (t.label || "") + "|" + String(t.body || "").slice(0, 60))).slice(0, 260));
   } finally {
     try { ws.close(); } catch (x) {}
     child.kill();

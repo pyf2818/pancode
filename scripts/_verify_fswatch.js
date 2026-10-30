@@ -82,8 +82,13 @@ async function waitServer(ms) {
   })();
   section("① 前提：这一路真的连上了，而且手里有一份全量");
   ok("收到 hello（没有它下面全是空转）", !!hello, childLog.slice(-400));
-  const N = hello ? Object.keys(hello.files).length : 0;
-  ok("hello 带的是全量 41 个文件（阳性对照：判\"只发 1 个\"之前先确认 41 个进得来）", N === 41, "实际 " + N + " 个");
+  /* F15 之后 hello 的"全量"落在 tree.entries（目录列全），正文只在 files 里带给变更集。
+     这条阳性对照的用途没变：判"增量只发 1 个"之前，先确认 41 个真的进得来。 */
+  const N = hello && hello.tree ? (hello.tree.entries || []).length : 0;
+  ok("hello 的目录列全 41 个文件（阳性对照：判\"只发 1 个\"之前先确认 41 个进得来）", N === 41, "实际 " + N + " 个");
+  ok("hello 不再把 41 个正文一起发出去（F15：正文只跟变更集走）",
+    !!hello && Object.keys(hello.files || {}).length <= 5,
+    "带正文的条目数 " + (hello ? Object.keys(hello.files || {}).length : "-") + "（全是新建文件，本应没几个改动）");
 
   /* 每次外部改盘后取"下一条 fs.sync"，并把游标推进，避免同一条被两节重复计数 */
   let cursor = 0;
@@ -96,6 +101,9 @@ async function waitServer(ms) {
     return null;
   }
   const keysOf = (ev) => Object.keys((ev && ev.files) || {});
+  /* 全量分支现在发的是目录（tree.entries）+ 变更集正文（files）。
+     "界面上看得见/看不见这个文件"看的是目录，不是正文。 */
+  const listOf = (ev) => ((ev && ev.tree && ev.tree.entries) || []).map((e) => e.path);
   const isFull = (ev) => !!ev && ev.incremental !== true;
 
   section("② 改一个既有文件的内容：只读它那一个");
@@ -112,12 +120,14 @@ async function waitServer(ms) {
   const s2 = await nextSync(6000);
   ok("新建文件后收到 fs.sync", !!s2, childLog.slice(-300));
   ok("新建走的是全量", !!s2 && isFull(s2), J({ inc: s2 && s2.incremental, n: keysOf(s2).length }));
-  ok("全量里看得见这个新文件", !!s2 && !!s2.files["src/brand-new.js"], "路径数 " + keysOf(s2).length);
+  ok("全量目录里看得见这个新文件", !!s2 && listOf(s2).includes("src/brand-new.js"), "路径数 " + listOf(s2).length);
 
   fs.unlinkSync(path.join(WS, "src", "brand-new.js"));
   const s3 = await nextSync(6000);
   ok("删除后收到 fs.sync 且是全量", !!s3 && isFull(s3), J({ inc: s3 && s3.incremental, n: keysOf(s3).length }));
-  ok("全量里这个文件真的没了（幽灵文件就是这么防住的）", !!s3 && !s3.files["src/brand-new.js"], keysOf(s3).filter((p) => p.includes("brand")).join(","));
+  ok("全量目录里这个文件真的没了（幽灵文件就是这么防住的）",
+    !!s3 && !listOf(s3).includes("src/brand-new.js") && (s3.removed || []).indexOf("src/brand-new.js") !== -1,
+    "目录里还剩：" + listOf(s3).filter((p) => p.includes("brand")).join(",") + " / removed=" + J(s3 && s3.removed));
 
   section("④ 删完之后仍要恢复增量，而不是一路全量下去");
   fs.writeFileSync(path.join(WS, "src", "f21.js"), "export const n21 = 2121;\n", "utf8");
@@ -128,8 +138,8 @@ async function waitServer(ms) {
   section("⑤ 总账：整轮只在该全量的时候全量");
   const all = evs.filter((e) => e.type === "fs.sync");
   const fulls = all.filter(isFull);
-  ok("新建那条全量读的是 42 个文件（41 + 新增那个）", !!s2 && keysOf(s2).length === 42, "实际 " + keysOf(s2).length);
-  ok("删除那条全量读的是 41 个", !!s3 && keysOf(s3).length === 41, "实际 " + keysOf(s3).length);
+  ok("新建那条全量列的是 42 个文件（41 + 新增那个）", !!s2 && listOf(s2).length === 42, "实际 " + listOf(s2).length);
+  ok("删除那条全量列的是 41 个", !!s3 && listOf(s3).length === 41, "实际 " + listOf(s3).length);
   ok("全量恰好 2 次（只有新建与删除；两次内容改动都没走全量）", fulls.length === 2,
     "实际 " + fulls.length + " 次：" + all.map((e) => (isFull(e) ? "全" + keysOf(e).length : "增" + keysOf(e).length)).join(","));
   ok("事件条数在防抖能接受的范围内（4～6 条，多出来的是同一次写被拆成两拍）",

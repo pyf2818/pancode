@@ -34,7 +34,21 @@ async function atomicWrite(p, data) {
       try {
         fs.renameSync(tmp, p);
       } catch (e) {
-        fs.writeFileSync(p, data, "utf8");   // 降级：直接覆盖写（牺牲原子性保成功）
+        /* rename 失败时原先是直接 writeFileSync 覆盖目标 —— 那等于把"原子替换"换成
+           "就地截断重写"：直写本身再失败一次（还是那把句柄锁），盘上就留下半截 JSON，
+           比一个都没写成更糟（审查项 F02）。
+           现在先把旧内容另存一份，直写失败就还原回去：目标文件要么是完整的新的一份、
+           要么是完整的旧的一份，不会是哪都不是的半截。 */
+        const bak = p + "." + process.pid + ".bak";
+        let hadPrev = false;
+        try { fs.copyFileSync(p, bak); hadPrev = true; } catch (e2) { /* 目标本就不存在：新写失败也没旧内容可毁 */ }
+        try {
+          fs.writeFileSync(p, data, "utf8");
+        } catch (e3) {
+          if (hadPrev) { try { fs.copyFileSync(bak, p); } catch (e4) {} }
+          throw e3;
+        }
+        if (hadPrev) { try { fs.unlinkSync(bak); } catch (e5) {} }
       }
       try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e2) {}  // 尽力清理临时文件
       return true;
@@ -66,12 +80,16 @@ function enqueueWrite(p, fn) {
    拿 mtime 猜不如直接问队列（见 server/config.js 的注释）。 */
 function hasPending(p) { try { return queues.has(qkey(p)); } catch (e) { return false; } }
 
-/* 便捷方法：序列化 → 串行 → 原子落盘（resolve 后可读己之写） */
+/* 便捷方法：序列化 → 串行 → 原子落盘（resolve 后可读己之写）。
+   resolve 的值就是落盘成败（true/false），调用方要"确定写下去了"时 await 它即可；
+   序列化失败同样 resolve(false)，不抛 —— 这条链上到处是 fire-and-forget 的调用点，
+   改成抛错会让一堆 unhandledRejection 冒出来，而真正的失败信号本来就该由
+   需要它的人去 await（如退出刷盘）。 */
 function saveJson(p, obj) {
   let data;
   try { data = JSON.stringify(obj, null, 2); }
-  catch (e) { log.tag("safe-write").error("序列化失败: " + p, e); return Promise.resolve(); }
-  return enqueueWrite(p, async () => { await atomicWrite(p, data); });
+  catch (e) { log.tag("safe-write").error("序列化失败: " + p, e); return Promise.resolve(false); }
+  return enqueueWrite(p, async () => await atomicWrite(p, data));
 }
 
 /* ============================================================

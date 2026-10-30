@@ -67,13 +67,11 @@ function touchPersist() {
   _sessTimer = setTimeout(() => { _sessTimer = null; writeSessions().catch(() => {}); }, 500);
   if (_sessTimer.unref) _sessTimer.unref();
 }
-/* 进程退出前的同步兜底：不等异步队列，直接把当前会话写下去 */
+/* 进程退出前刷盘：走与 touchPersist 同一条"按路径串行"的写入序列，并返回可等待的 Promise。
+   原先这里直接 writeFileSync 绕开队列 —— 和会话存档是同一个毛病（审查项 F02）：
+   队列里那份更早入队的旧快照会排在后面落盘，把刚写下去的最新登录态盖回旧的。 */
 function flushSessions() {
-  try {
-    fs.mkdirSync(path.dirname(SESS_FILE), { recursive: true });
-    fs.writeFileSync(SESS_FILE, JSON.stringify(snapshot(), null, 2), "utf8");
-    return true;
-  } catch (e) { return false; }
+  return safeWrite.saveJson(SESS_FILE, snapshot());
 }
 function loadSessions() {
   const disk = readJson(SESS_FILE);

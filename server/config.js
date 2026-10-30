@@ -328,6 +328,13 @@ function saveLlmProfiles(cfg, list) {
   writeJsonSafe(CONFIG_PATH, onDisk);
   return out;
 }
+/* 凭据归属的判据：一条 Key 属于哪个来源，看它现在正被发给谁。
+   运行时里 cfg.llm.apiKey 与 cfg.llm.baseURL 是配成一对在用的，所以
+   "当前 Key 能不能归给另一条配置"就问一句：两条的 origin 是不是同一个。 */
+function originOf(u) {
+  try { const x = new URL(String(u || "")); return (x.protocol + "//" + x.host).toLowerCase(); } catch (e) { return ""; }
+}
+
 /* 把当前运行时参数存成一份新配置（或按 id 覆盖已有的一份）；apiKey 只在显式给了的时候写 .env */
 function upsertLlmProfile(cfg, body) {
   const list = (cfg.llmProfiles || []).slice();
@@ -345,8 +352,14 @@ function upsertLlmProfile(cfg, body) {
   const i = list.findIndex((p) => p.id === id);
   if (i >= 0) list[i] = patch; else list.push(patch);
   saveLlmProfiles(cfg, list);
-  // 没显式给 Key 时，把当前运行时那份 Key 一起归到这条配置名下：切回来才不用重新粘贴
-  const key = (typeof body.apiKey === "string" && body.apiKey.trim()) ? body.apiKey.trim() : (cfg.llm.apiKey || "");
+  /* 旧写法是"没显式给 Key 就把当前运行时那份 Key 归到这条配置名下"。
+     那等于允许一次改地址就顺走一次凭据：把 baseURL 填成别家（或被指到本地代理），
+     保存后那条配置身上就挂着原服务商的 Key，切过去即用 —— 审查项 F12 的凭据错配。
+     现在只在**同一个 origin** 上继承（"同一家换个模型"这个真实场景），跨 origin 一律不带 Key。 */
+  const explicit = (typeof body.apiKey === "string" && body.apiKey.trim()) ? body.apiKey.trim() : "";
+  const runtimeKey = cfg.llm.apiKey || "";
+  const sameOrigin = originOf(runtimeKey ? cfg.llm.baseURL : "") === originOf(patch.baseURL);
+  const key = explicit || (runtimeKey && sameOrigin ? runtimeKey : "");
   if (key) setEnvVar(profileKeyVar(id), key);
   return profilePublic(patch);
 }
@@ -355,7 +368,12 @@ function applyLlmProfile(cfg, id) {
   if (!p) return null;
   saveLlm(cfg, { baseURL: p.baseURL, model: p.model, contextWindow: p.contextWindow, maxToolRounds: p.maxToolRounds, maxOutputTokens: p.maxOutputTokens });
   const key = process.env[profileKeyVar(p.id)] || "";
-  if (key) { cfg.llm.apiKey = key; setEnvVar("OPENAI_API_KEY", key); }
+  /* 这条配置自己没有 Key 时，必须把运行时那一份清掉。
+     旧实现是 `if (key) { ... }` —— 没 Key 就什么都不做，于是上一个服务商的 Key
+     原样留在 cfg.llm.apiKey 与 .env 里，下一次请求带着它发向这条配置的新地址。
+     "换来源就换一个 Key，没给就是没有"，不是"没给就沿用上一个"。 */
+  cfg.llm.apiKey = key;
+  setEnvVar("OPENAI_API_KEY", key);
   return { ok: true, profile: profilePublic(p), hasKey: !!key };
 }
 function removeLlmProfile(cfg, id) {

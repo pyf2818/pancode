@@ -171,11 +171,26 @@ class FileStore {
     let cur = abs;
     while (cur && cur !== path.dirname(cur)) {
       let real = null;
-      try { real = fs.realpathSync(cur); } catch (e) { cur = path.dirname(cur); continue; }
+      try { real = fs.realpathSync(cur); } catch (e) {
+        /* realpath 失败有两种，一视同仁地往上退一层正好放过最危险的那种：
+           叶子是一个**指向不存在目标的悬空软链**。链本身在（lstat 看得见），目标读不出来
+           所以 realpath 抛错；退到父目录后被判"在界内"，随后 writeFileSync 顺着链
+           把文件创建到界外（审查项 F06）。
+           分得清才拦得准：叶子自己就是链 → 证明不了落点在界内 → 拒；
+           叶子只是还不存在（新建文件）→ 继续向祖先求证，这是正常路径。 */
+        if (cur === abs && this._isLink(abs)) return true;
+        cur = path.dirname(cur);
+        continue;
+      }
       const r = process.platform === "win32" ? real.toLowerCase() : real;
       return r !== rootReal && !r.startsWith(rootReal + path.sep);
     }
     return false;
+  }
+
+  /* lstat 不跟链，所以能看见 stat 看不见的东西：叶子本身是不是一个符号链接 */
+  _isLink(p) {
+    try { return fs.lstatSync(p).isSymbolicLink(); } catch (e) { return false; }
   }
 
   rel(abs) { return path.relative(this.dir, abs).replace(/\\/g, "/"); }
@@ -209,13 +224,18 @@ class FileStore {
        · 收集阶段设硬上限 MAX_SCAN，避免超大仓库把遍历拖死；
        · 排序键 = (价值层级, 路径字典序) —— 同层内字典序保证可复现；
        · 返回仍是排序后的相对路径数组，truncated 语义不变。
+
+     F15 把「收集」抽成 _collectSorted()：list() 继续按老语义给路径数组（几十处调用点不变），
+     page() 在它之上给"带 size/mtime 的一页 + 真实总数 + 还有没有下一页"。
+     刻意**不缓存**收集结果：加了缓存就要管失效（谁写盘、谁改名、外部改动），
+     而一次遍历本来就和旧的 list() 同价 —— 省下来的是正文传输，不是这几毫秒。
      ============================================================ */
-  list(sub) {
+
+  /* 遍历整棵树（到 MAX_SCAN 为止），按 (价值层, 字典序) 排好序返回。
+     每项带 size/mtimeMs —— 这两个数 lstat 时顺手就有，不必再发一次 stat。 */
+  _collectSorted(sub) {
     const base = sub ? this.safePath(sub) : this.dir;
-    const out = [];
-    this.truncated = false;
-    /* 收集阶段的硬上限：仓库大到几十万文件时不能全遍历。
-       超出即标记 truncated —— 与旧语义一致（"有内容没列全"）。 */
+    const rows = [];
     const MAX_SCAN = 20000;
     let scanned = 0;
     let overflow = false;
@@ -225,7 +245,7 @@ class FileStore {
       let names;
       try { names = fs.readdirSync(dir); } catch (e) { return; }
       /* 目录项排序：收集顺序稳定，配合后面的字典序兜底，
-         保证同一工作区每次 list() 的候选集完全一致。 */
+         保证同一工作区每次遍历的候选集完全一致。 */
       names.sort();
       for (const name of names) {
         if (overflow) return;
@@ -239,21 +259,48 @@ class FileStore {
         if (st.isDirectory()) { walk(full, r); continue; }
         if (st.size > MAX_FILE) continue;
         if (++scanned > MAX_SCAN) { overflow = true; return; }
-        out.push(r);
+        rows.push({ rel: r, size: st.size, mtimeMs: st.mtimeMs });
       }
     };
     walk(base, sub || "");
 
-    /* 价值分层排序：0 源码/配置 → 1 文档 → 2 其余。
-       同层按路径字典序，取前 MAX_FILES。 */
-    out.sort((a, b) => {
-      const ca = classify(a), cb = classify(b);
+    rows.sort((a, b) => {
+      const ca = classify(a.rel), cb = classify(b.rel);
       if (ca !== cb) return ca - cb;
-      return a < b ? -1 : (a > b ? 1 : 0);
+      return a.rel < b.rel ? -1 : (a.rel > b.rel ? 1 : 0);
     });
-    if (out.length > MAX_FILES) { this.truncated = true; return out.slice(0, MAX_FILES).sort(); }
+    return { rows, overflow };
+  }
+
+  /* 一页目录元数据（F15 的首屏与"加载更多"都走这里）。
+     翻页用 **offset**，不用"上一条路径"当游标：这里的排序键是 (价值层, 字典序)，
+     拿字典序比较去找"比它大的第一条"会跨层错位——实测同一棵树翻到第二页会漏掉一个文件
+     （漏的那个恰好排在下一层的开头），而界面上完全看不出来。 */
+  page(opts) {
+    const o = opts || {};
+    const limit = Math.max(1, Math.min(1000, Number(o.limit) || MAX_FILES));
+    const { rows, overflow } = this._collectSorted(o.sub);
+    const idx = Math.max(0, Number(o.offset) || 0);
+    const slice = rows.slice(idx, idx + limit);
+    return {
+      /* binary 要嗅内容（未知扩展名才嗅），所以只算这一页，不算全树 */
+      entries: slice.map((r) => ({ path: r.rel, size: r.size, mtimeMs: r.mtimeMs, binary: this.isBinary(r.rel) })),
+      total: rows.length,
+      offset: idx,
+      nextOffset: idx + slice.length,
+      listed: slice.length,
+      more: idx + limit < rows.length,
+      truncated: idx + slice.length < rows.length || !!overflow,
+      scanOverflow: !!overflow,
+    };
+  }
+
+  list(sub) {
+    const { rows, overflow } = this._collectSorted(sub);
+    this.truncated = false;
+    if (rows.length > MAX_FILES) { this.truncated = true; return rows.slice(0, MAX_FILES).map((r) => r.rel).sort(); }
     if (overflow) this.truncated = true;
-    return out.sort();
+    return rows.map((r) => r.rel).sort();
   }
 
   /* 我们拒绝触碰的路径（含软链逃逸）一律按"不存在"回答，而不是把异常抛给调用方 */
