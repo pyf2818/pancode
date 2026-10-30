@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 
 const ASSETS = path.resolve(__dirname, "..", "assets");
+const ROOT = path.resolve(__dirname, "..");
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
 
 /* 把 PNG 条目打包成 .ico（ICONDIR + ICONDIRENTRY[] + PNG 数据） */
@@ -73,7 +74,11 @@ function buildIco(entries) {
 
   const ico = buildIco(entries);
   fs.writeFileSync(path.join(ASSETS, "icon.ico"), ico);
-  console.log("rendered -> assets/icon-1024.png + assets/icon.ico", `(${(ico.length / 1024).toFixed(0)} KB)`);
+  /* favicon 不另画一份：直接把 assets/icon.svg 原样拷到 public/favicon.svg。
+     网页标签页与应用图标必须是同一份源文件，否则就会出现"桌面是新品牌、标签页还是那枚手写旧图"。
+     字节级相同也让 _verify_icons.js 能用一条 sha256 判据钉住"改了 SVG 却忘了重跑渲染"。 */
+  fs.writeFileSync(path.join(ROOT, "public", "favicon.svg"), raw, "utf8");
+  console.log("rendered -> assets/icon-1024.png + assets/icon.ico + public/favicon.svg", `(${(ico.length / 1024).toFixed(0)} KB)`);
 })().catch((e) => {
   console.error(e);
   process.exit(1);

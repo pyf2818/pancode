@@ -1,41 +1,33 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- pancode 应用图标 · 正式版（B 渐变实底 + 反白「P + >」）
+       上一版（清雅薄荷）是浅底 + 细渐变描边：16px 上平均亮度差只有 19.5/255，
+       落在浅色任务栏上整块融掉，看着像占位图。这一版把底色换成饱和渐变、
+       图形反白并把笔画加到 112/1024，深浅两种任务栏两侧可辨都 ≥76%。
+       改这枚 SVG 之后必须跑：node scripts/render-icon.js && node scripts/_verify_icons.js -->
   <defs>
-    <linearGradient id="bgA" x1="0.08" y1="0" x2="0.92" y2="1">
-      <stop offset="0" stop-color="#FCFEFD"/>
-      <stop offset="0.42" stop-color="#EEF8F5"/>
-      <stop offset="1" stop-color="#DFEDF3"/>
+    <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="180" y1="120" x2="860" y2="920">
+      <stop offset="0" stop-color="#3ED0AE"/>
+      <stop offset="0.5" stop-color="#2FA6D6"/>
+      <stop offset="1" stop-color="#3B63C9"/>
     </linearGradient>
-    <linearGradient id="markA" x1="0.15" y1="0.02" x2="0.85" y2="1">
-      <stop offset="0" stop-color="#37C4A6"/>
-      <stop offset="0.5" stop-color="#3FA3DB"/>
-      <stop offset="1" stop-color="#6A7CD3"/>
-    </linearGradient>
-    <linearGradient id="glossA" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
-      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
-    <!-- 底座边缘：浅色图标在浅色任务栏上会"融掉"，必须有明确的边界 -->
-    <linearGradient id="rimA" x1="0" y1="0" x2="0.3" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-      <stop offset="0.45" stop-color="#C3DCE2" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#8FB0BE" stop-opacity="0.95"/>
+    <linearGradient id="sheen" gradientUnits="userSpaceOnUse" x1="0" y1="56" x2="0" y2="560">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
   </defs>
 
-  <rect x="52" y="52" width="920" height="920" rx="216" fill="url(#bgA)"/>
-  <rect x="52" y="52" width="920" height="920" rx="216" fill="url(#glossA)" opacity="0.5"/>
-  <rect x="54" y="54" width="916" height="916" rx="214" fill="none" stroke="url(#rimA)" stroke-width="8"/>
+  <rect x="56" y="56" width="912" height="912" rx="212" fill="url(#tile)"/>
+  <rect x="56" y="56" width="912" height="912" rx="212" fill="url(#sheen)"/>
+  <!-- 深色外圈：浅色任务栏与白色桌面上给一块明确边界 -->
+  <rect x="60" y="60" width="904" height="904" rx="208" fill="none" stroke="#0B2230" stroke-opacity="0.28" stroke-width="8"/>
 
-  <!-- P：竖笔与碗部共用起点，碗部弧线不被竖笔穿出（上一版像 R） -->
-  <path d="M 376 720 L 376 318" fill="none" stroke="url(#markA)" stroke-width="46" stroke-linecap="round"/>
-  <path d="M 376 318 C 508 300 700 342 700 456 C 700 570 508 610 376 592"
-        fill="none" stroke="url(#markA)" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
-
-  <!-- 代码箭头：右下，小而含蓄 -->
-  <path d="M 604 660 L 680 714 L 604 768"
-        fill="none" stroke="url(#markA)" stroke-width="38"
-        stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
-
-  <!-- 一点光标 -->
-  <circle cx="758" cy="714" r="19" fill="url(#markA)" opacity="0.7"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="112" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 372 764 L 372 296"/>
+    <path d="M 372 296 C 556 272 720 322 720 428 C 720 534 556 580 372 560"/>
+  </g>
+  <!-- 箭头与碗部收口之间留出可见的缝（外沿到外沿 ≥20px/1024）：压着收口会被读成字母 R -->
+  <path d="M 664 676 L 748 736 L 664 796" fill="none" stroke="#FFFFFF" stroke-width="84"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 光标条贴着箭头出口，16px 上与箭头并成一笔，不会散成一个噪点 -->
+  <rect x="786" y="704" width="40" height="76" rx="20" fill="#FFFFFF"/>
 </svg>

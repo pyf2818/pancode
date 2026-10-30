@@ -1,0 +1,33 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- pancode 应用图标 · 正式版（B 渐变实底 + 反白「P + >」）
+       上一版（清雅薄荷）是浅底 + 细渐变描边：16px 上平均亮度差只有 19.5/255，
+       落在浅色任务栏上整块融掉，看着像占位图。这一版把底色换成饱和渐变、
+       图形反白并把笔画加到 112/1024，深浅两种任务栏两侧可辨都 ≥76%。
+       改这枚 SVG 之后必须跑：node scripts/render-icon.js && node scripts/_verify_icons.js -->
+  <defs>
+    <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="180" y1="120" x2="860" y2="920">
+      <stop offset="0" stop-color="#3ED0AE"/>
+      <stop offset="0.5" stop-color="#2FA6D6"/>
+      <stop offset="1" stop-color="#3B63C9"/>
+    </linearGradient>
+    <linearGradient id="sheen" gradientUnits="userSpaceOnUse" x1="0" y1="56" x2="0" y2="560">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="56" y="56" width="912" height="912" rx="212" fill="url(#tile)"/>
+  <rect x="56" y="56" width="912" height="912" rx="212" fill="url(#sheen)"/>
+  <!-- 深色外圈：浅色任务栏与白色桌面上给一块明确边界 -->
+  <rect x="60" y="60" width="904" height="904" rx="208" fill="none" stroke="#0B2230" stroke-opacity="0.28" stroke-width="8"/>
+
+  <g fill="none" stroke="#FFFFFF" stroke-width="112" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 372 764 L 372 296"/>
+    <path d="M 372 296 C 556 272 720 322 720 428 C 720 534 556 580 372 560"/>
+  </g>
+  <!-- 箭头与碗部收口之间留出可见的缝（外沿到外沿 ≥20px/1024）：压着收口会被读成字母 R -->
+  <path d="M 664 676 L 748 736 L 664 796" fill="none" stroke="#FFFFFF" stroke-width="84"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 光标条贴着箭头出口，16px 上与箭头并成一笔，不会散成一个噪点 -->
+  <rect x="786" y="704" width="40" height="76" rx="20" fill="#FFFFFF"/>
+</svg>
