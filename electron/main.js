@@ -11,6 +11,7 @@ const path = require("path");
 const taskWatch = require("./task-watch");
 const closePolicy = require("./close-policy");
 const frameTrust = require("./frame-trust");
+const shellPaths = require("./shell-paths");
 
 /* 桌面版默认独立端口，避免与网页版(8766)冲突 */
 const PORT = Number(process.env.PORT || 8767);
@@ -231,6 +232,26 @@ async function createWindow() {
       if (!fromAppFrame(e)) return false;
       return !!(win && !win.isDestroyed() && win.isMaximized());
     });
+    /* 产物卡片 / 文件树右键「在文件夹中显示」「打开文件夹」。
+       渲染端只递工作区相对路径，绝对路径和 .. 逃逸在这里驳回；
+       真实路径再过一次软链检查，别让工作区里一个指向外面的链把文件管理器带出去。 */
+    ipcMain.handle("pc-shell:reveal", (e, rel) => {
+      if (!fromAppFrame(e)) return { ok: false, error: "forbidden" };
+      const r = workspaceAbs(rel);
+      if (r.error) return { ok: false, error: r.error };
+      if (!fs.existsSync(r.abs)) return { ok: false, error: "文件不存在" };
+      shell.showItemInFolder(r.abs);
+      return { ok: true };
+    });
+    ipcMain.handle("pc-shell:open-folder", (e, rel) => {
+      if (!fromAppFrame(e)) return { ok: false, error: "forbidden" };
+      const r = workspaceAbs(rel);
+      if (r.error) return { ok: false, error: r.error };
+      let dir = r.abs;
+      try { if (!fs.statSync(dir).isDirectory()) dir = path.dirname(dir); }
+      catch (err) { return { ok: false, error: "路径不存在" }; }
+      return Promise.resolve(shell.openPath(dir)).then((err) => (err ? { ok: false, error: String(err) } : { ok: true }));
+    });
   }
   const pushMax = () => {
     if (win && !win.isDestroyed()) win.webContents.send("pc-win:max", win.isMaximized());
@@ -296,9 +317,15 @@ async function createWindow() {
       if (!win || win.isDestroyed()) { console.log("[pc] IPC 往返失败：窗口没了"); return; }
       try {
         const has = await win.webContents.executeJavaScript(
-          "!!(window.pancodeWin && typeof window.pancodeWin.isMaximized === 'function')", true);
+          "!!(window.pancodeWin && typeof window.pancodeWin.isMaximized === 'function' && typeof window.pancodeWin.revealPath === 'function' && typeof window.pancodeWin.openFolder === 'function')", true);
         const max = has ? await win.webContents.executeJavaScript("window.pancodeWin.isMaximized()", true) : null;
-        console.log("[pc] IPC 往返 " + (has && typeof max === "boolean" ? "ok" : "失败") + " bridge=" + has + " isMax=" + max);
+        /* 本地位置桥要真的穿过 invoke + senderFrame 校验 + 主进程 handler：拿一个越界相对路径
+           走两个通道，期望 handler 明确回「路径越界」。只看到函数存在会把通道名写错/没注册漏过去。 */
+        const shellDeny = has ? await win.webContents.executeJavaScript(
+          "Promise.all([window.pancodeWin.revealPath('../__pancode_probe_escape__'), window.pancodeWin.openFolder('../__pancode_probe_escape__')])" +
+          ".then((rs) => rs.map((r) => (r && r.ok === false && /越界/.test(String(r.error || ''))) ? 'deny' : 'bad:' + JSON.stringify(r)).join(','))" +
+          ".catch((e) => 'ERR:' + e.message)", true) : "skip";
+        console.log("[pc] IPC 往返 " + (has && typeof max === "boolean" ? "ok" : "失败") + " bridge=" + has + " isMax=" + max + " shell=" + has + " shellDeny=" + shellDeny);
       } catch (e) {
         console.log("[pc] IPC 往返失败：" + (e && e.message ? e.message : e));
       }
@@ -539,6 +566,12 @@ function openWorkspaceDir() {
   Promise.resolve(shell.openPath(dir)).then((err) => {
     if (err) trayNote("打不开工作区文件夹", String(err).slice(0, 160));
   });
+}
+
+function workspaceAbs(rel) {
+  let root = "";
+  try { root = (backend && backend.workspaceDir && backend.workspaceDir()) || ""; } catch (e) { root = ""; }
+  return shellPaths.resolveInRoot(root, rel);
 }
 
 /* 内测阶段最缺的不是日志系统，是"用户怎么把现场交给我"。

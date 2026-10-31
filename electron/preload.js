@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld("pancodeWin", {
   toggleMax: () => ipcRenderer.send("pc-win:toggle-max"),
   close: () => ipcRenderer.send("pc-win:close"),
   isMaximized: () => ipcRenderer.invoke("pc-win:is-max"),
+  /* 产物卡片/文件树右键：在系统文件管理器里定位文件或打开目录。路径校验在主进程。 */
+  revealPath: (rel) => ipcRenderer.invoke("pc-shell:reveal", String(rel || "")),
+  openFolder: (rel) => ipcRenderer.invoke("pc-shell:open-folder", String(rel || "")),
   /* 主进程在最大化/还原时推一把，渲染端据此换绿色按钮的图标
      （不接住的话绿灯永远画"最大化"，用户点了还原也看不出来）。 */
   onMaxChange: (fn) => {

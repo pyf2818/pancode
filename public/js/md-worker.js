@@ -10,6 +10,18 @@
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+/* 与主线程同口径的围栏识别：行首可带空白，反引号可多于三个，闭合不少于开围栏。 */
+const FENCE_OPEN = /^[ \t\u00a0\u3000\u200b\ufeff]*(`{3,})(\w*)[ \t]*$/;
+const FENCE_CLOSE = /^[ \t\u00a0\u3000\u200b\ufeff]*(`{3,})[ \t]*$/;
+function fenceOpen(line) {
+  const m = String(line).match(FENCE_OPEN);
+  return m ? { ticks: m[1].length, lang: m[2] || "" } : null;
+}
+function fenceCloses(line, ticks) {
+  const m = String(line).match(FENCE_CLOSE);
+  return !!m && m[1].length >= ticks;
+}
+
 function renderChatMD(src) {
   if (!src) return "";
   const lines = String(src).replace(/\r\n/g, "\n").split("\n");
@@ -32,14 +44,16 @@ function renderChatMD(src) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    const fence = line.match(/^```(\w*)\s*$/);
+    /* 与主线程同口径：围栏前允许空格 / NBSP / 全角空格（模型输出常见）。
+       只认行首三反引号时，这类块会整段退化成普通段落。 */
+    const fence = fenceOpen(line);
     if (fence) {
       flushList();
-      const lang = fence[1] || "";
+      const lang = fence.lang;
       const code = [];
       i++;
       let closed = false;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
+      while (i < lines.length && !fenceCloses(lines[i], fence.ticks)) { code.push(lines[i]); i++; }
       if (i < lines.length) { closed = true; i++; }
       if (closed && /^(widget|svg|diagram)$/i.test(lang) && typeof renderWidgetCard === "function") {
         html += renderWidgetCard(code.join("\n"), lang);

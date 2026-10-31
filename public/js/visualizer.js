@@ -80,6 +80,51 @@ function upgradeWidgetCodeBlocks(root) {
   return n;
 }
 
+/* 旧快照里更早的一种降级形态：围栏前多了空格/NBSP/全角空格，旧解析器整段没认出来，
+   于是 ```widget 和 SVG 源码被当成普通段落存进了 DOM（没有 .code-block 可升级）。
+   这里按「围栏行 + 后续兄弟节点正文 + 收尾围栏行」还原原文再重建卡片；
+   只处理 widget/svg 且正文确实含标签的情况，避免把讲解围栏语法的段落也画成图。 */
+function upgradeLiteralWidgetFences(root) {
+  if (!root || !root.querySelectorAll) return 0;
+  const LEAD = "[ \\t\\u00a0\\u3000\\u200b\\ufeff]*";
+  const openRe = new RegExp("^" + LEAD + "(`{3,})" + LEAD + "(widget|svg|diagram)" + LEAD + "$", "i");
+  const closeRe = new RegExp("^" + LEAD + "(`{3,})" + LEAD + "$");
+  let n = 0;
+  root.querySelectorAll(".msg-ai").forEach((box) => {
+    const kids = Array.from(box.childNodes);
+    for (let i = 0; i < kids.length; i++) {
+      const node = kids[i];
+      if (!node || node.nodeType !== 1 || node.closest(".code-block") || node.closest(".msg-widget")) continue;
+      const m = String(node.textContent || "").trim().match(openRe);
+      if (!m) continue;
+      const ticks = m[1].length;
+      const lang = m[2].toLowerCase();
+      const body = [];
+      let j = i + 1, closed = false;
+      for (; j < kids.length; j++) {
+        const s = kids[j];
+        if (!s) continue;
+        const cm = String(s.textContent || "").trim().match(closeRe);
+        if (cm && cm[1].length >= ticks) { closed = true; break; }
+        if (s.nodeType === 1) body.push(s.textContent || "");
+      }
+      if (!closed) continue;
+      const bodyText = body.join("\n").trim();
+      if (!bodyText) continue;
+      if ((lang === "widget" || lang === "svg") && !/<[a-z][\w:-]*[\s/>]/i.test(bodyText)) continue;
+      const holder = document.createElement("div");
+      holder.innerHTML = renderWidgetCard(bodyText, lang);
+      const card = holder.firstElementChild;
+      if (!card) continue;
+      node.replaceWith(card);
+      for (let q = i + 1; q <= j; q++) { const x = kids[q]; if (x && x.parentNode) x.remove(); }
+      i = j;
+      n++;
+    }
+  });
+  return n;
+}
+
 /* 高度自适应：iframe 桥回报高度 → 调整（封顶 480px，超出内部滚动） */
 window.addEventListener("message", (e) => {
   const d = e.data;

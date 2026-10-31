@@ -1243,6 +1243,10 @@ body.pc-desktop .traffic{-webkit-app-region:no-drag}
 .sk-risk-p0{color:var(--err);border:1px solid var(--err)}
 .sk-risk-p1{color:var(--warn);border:1px solid var(--warn)}
 .af-new{font-size:10px;color:var(--ok);border:1px solid var(--ok);padding:0 5px;border-radius:8px;flex-shrink:0}
+.af-reveal{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;flex-shrink:0;
+  border:1px solid transparent;border-radius:5px;background:transparent;color:var(--text-dim);cursor:pointer}
+.af-reveal:hover{background:var(--bg);border-color:var(--border);color:var(--accent-hi)}
+.af-reveal .ico{width:13px;height:13px}
 .agcf-item{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;background:var(--bg3)}
 .agcf-head{display:flex;align-items:center;gap:8px;padding:8px 11px;cursor:pointer;font-size:12.5px;font-family:var(--mono)}
 .agcf-head:hover{background:var(--hover)}

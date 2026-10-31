@@ -168,6 +168,8 @@ async function boot(tag, port, cfgExtra, probeEnv, extraArgs) {
   ok("A：渲染进程沙箱默认是开的", await A.marker("[pc] 渲染进程沙箱=开", 8000, true), A.head.slice(0, 300));
   ok("A：沙箱开着时红绿灯 IPC 真的往返（不是被来源校验静默拒掉）",
     await A.marker("[pc] IPC 往返 ok bridge=true isMax=true", 20000, true), A.head.slice(-400));
+  ok("A：本地位置桥（revealPath / openFolder）真的穿过 IPC，越界路径被主进程驳回",
+    await A.marker("[pc] IPC 往返 ok bridge=true isMax=true shell=true shellDeny=deny,deny", 20000, true), A.head.slice(-400));
   /* 托盘图标：读不到图时主进程现在会大声记一行 error，成功也打一行心跳。
      3.2.x 的包里 `build.files` 白名单漏了 `assets/**`，托盘一直是个"点得到但看不见"的空图标，
      而日志里一个字都没有——用户看到的就是"托盘没图标"，排查全靠猜。 */

@@ -178,6 +178,8 @@ function hydratePane(id, html) {
     ctx.pane.innerHTML = html;
     /* 修复前落下的快照可能是"widget 块只画成代码"的降级形态，恢复时按原文重建卡片 */
     if (typeof upgradeWidgetCodeBlocks === "function") upgradeWidgetCodeBlocks(ctx.pane);
+    /* 更早的一种：围栏前有空白，旧解析器没认出来，整段存成了普通段落 */
+    if (typeof upgradeLiteralWidgetFences === "function") upgradeLiteralWidgetFences(ctx.pane);
   }
   sweepEmptyRoundChildren(ctx.pane);
   return ctx.pane;
@@ -380,10 +382,12 @@ function showCtxMenu(e, path, isDir) {
   const items = isDir
     ? [
         { key: "newFileHere", ic: "filePlus", fn: () => promptNewFile(path + "/") },
+        { key: "openFolder", ic: "folder", fn: () => revealLocalPath(path, true) },
         { key: "deleteDir", ic: "trash", danger: true, fn: () => { if (confirm(t("deleteDirConfirm") + " " + path + "？")) send({ type: "file.delete", path }); } },
       ]
     : [
         { key: "open", ic: "files", fn: () => openFile(path) },
+        { key: "revealInFolder", ic: "folder", fn: () => revealLocalPath(path, false) },
         { key: "rename", ic: "edit", fn: () => {
             const np = prompt(t("renamePrompt"), path);
             if (np && np !== path) send({ type: "file.rename", path, newPath: np });
@@ -1080,19 +1084,58 @@ const DOC_PREVIEW_CSS =
   "ul,ol{padding-left:2em}" +
   "a{color:#1a6fbf}";
 
+/* /api/raw 也在登录闸门后面，而 <img src> / <iframe src> 带不上 Authorization：
+   直接写 src 一律 401（预览区一片空白）。先 fetch 成 blob 再给 objectURL，
+   与截图卡片同一条路。同一时刻只保留一个预览 URL，切文件时释放。 */
+let _binBlobUrl = "";
+function dropBinBlobUrl() {
+  if (!_binBlobUrl) return;
+  try { URL.revokeObjectURL(_binBlobUrl); } catch (e) {}
+  _binBlobUrl = "";
+}
+function useBinBlobUrl(blob) {
+  dropBinBlobUrl();
+  _binBlobUrl = URL.createObjectURL(blob);
+  return _binBlobUrl;
+}
+async function rawBlob(path) {
+  const r = await fetch("/api/raw?path=" + encodeURIComponent(path));
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.blob();
+}
+
 function showBinPreview(path) {
   const host = $("binPreview"), body = $("binPreviewBody");
+  dropBinBlobUrl();
   $("editorRow").style.display = "none";
   host.style.display = "block";
   const ext = extOf(path);
   const f = state.files[path];
   const enc = encodeURIComponent(path);
   if (IMG_EXTS.has(ext)) {
-    body.innerHTML = '<div class="bp-img-wrap"><img src="/api/raw?path=' + enc + '&t=' + Date.now() + '" alt=""><div class="bp-meta">' + esc(path) + " · " + fmtSize(f.size) + "</div></div>";
+    body.innerHTML = '<div class="bp-img-wrap"><div class="bp-doc-loading">加载中…</div></div>';
+    rawBlob(path).then((blob) => {
+      if (state.activeFile !== path) return;
+      const url = useBinBlobUrl(blob);
+      body.innerHTML = '<div class="bp-img-wrap"><img alt=""><div class="bp-meta">' + esc(path) + " · " + fmtSize(f.size || blob.size) + "</div></div>";
+      body.querySelector("img").src = url;
+    }).catch((e) => {
+      if (state.activeFile !== path) return;
+      body.innerHTML = '<div class="bp-doc-loading">预览失败：' + esc(e.message) + "</div>";
+    });
     return;
   }
   if (ext === "pdf") {
-    body.innerHTML = '<iframe class="bp-pdf" src="/api/raw?path=' + enc + '"></iframe>';
+    body.innerHTML = '<div class="bp-doc-loading">加载中…</div>';
+    rawBlob(path).then((blob) => {
+      if (state.activeFile !== path) return;
+      const url = useBinBlobUrl(blob);
+      body.innerHTML = '<iframe class="bp-pdf"></iframe>';
+      body.querySelector("iframe").src = url;
+    }).catch((e) => {
+      if (state.activeFile !== path) return;
+      body.innerHTML = '<div class="bp-doc-loading">预览失败：' + esc(e.message) + "</div>";
+    });
     return;
   }
   if (ext === "docx") {
@@ -1122,6 +1165,7 @@ function showBinPreview(path) {
 }
 
 function hideBinPreview() {
+  dropBinBlobUrl();
   $("binPreview").style.display = "none";
   $("binPreviewBody").innerHTML = "";
   $("editorRow").style.display = "flex";
@@ -1148,7 +1192,7 @@ function isPreviewable(p) { return PREVIEW_EXTS.has(extOf(p)); }
    srcdoc 根本没机会赋值。用户看到的"预览面板一片空白、界面点不动"就是这个。
    语义按 CommonMark/GFM：井号后没空格就是普通文本，不猜它是标题。 */
 const MD_HEAD = /^(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
-const MD_FENCE = /^```/;
+const MD_FENCE = /^`{3,}/;
 const MD_HR = /^(?:-{3,}|\*{3,}|_{3,})$/;
 const MD_QUOTE = /^>[ \t]?(.*)$/;
 const MD_UL = /^[ \t]*[-*+][ \t]+(.*)$/;
@@ -1799,6 +1843,40 @@ if (typeof onLang === "function") onLang(() => {
 });
 
 /* ---------- W6 产物视图：卡片化交付物（点击复用 openFile 全预览链路） ---------- */
+/* 产物路径不一定在首屏目录页里（目录是分页的，产物可能在后面的页）。
+   openFile 只认 state.files[path]，缺项时点击是静默无反应——这里按产物类型补一条
+   最小元数据（二进制与否决定走哪条预览链），让点击始终有结果。 */
+const ARTIFACT_LANG = {
+  html: "html", htm: "html", md: "markdown", markdown: "markdown",
+  svg: "xml", json: "json", txt: "plaintext", csv: "plaintext",
+};
+function openArtifact(it) {
+  if (!it || !it.path) return;
+  if (!state.files[it.path]) {
+    const ext = extOf(it.path);
+    state.files[it.path] = {
+      path: it.path,
+      lang: ARTIFACT_LANG[ext] || "plaintext",
+      binary: /^(image|pdf|docx)$/.test(it.kind || ""),
+      size: Number(it.size) || 0,
+      isNew: !!it.isNew,
+    };
+  }
+  try { openFile(it.path); } catch (e) { toast(t("revealFailed") + "：" + (e && e.message || e)); return; }
+  /* 产物卡片点开是「看」：HTML / Markdown 有内置预览就顺手打开，不必再找预览按钮。 */
+  if ((it.kind === "html" || it.kind === "markdown") && !previewOn && isPreviewable(it.path)) {
+    try { togglePreview(true); } catch (e) {}
+  }
+}
+/* 在系统文件管理器里定位：桌面端走 IPC（主进程校验路径必须在工作区内），网页端没有这条通道。 */
+function revealLocalPath(rel, isDir) {
+  const api = window.pancodeWin;
+  const fn = isDir ? (api && api.openFolder) : (api && api.revealPath);
+  if (!fn) { toast(t("revealOnlyDesktop")); return; }
+  Promise.resolve(fn(rel)).then((r) => {
+    if (!r || !r.ok) toast(t("revealFailed") + "：" + ((r && r.error) || "未知错误"));
+  }).catch((e) => toast(t("revealFailed") + "：" + (e && e.message || e)));
+}
 function renderArtifacts() {
   const host = $("agArtifacts");
   if (!host) return;
@@ -1818,7 +1896,14 @@ function renderArtifacts() {
       + '<span class="af-name">' + esc(it.path.split("/").pop()) + '</span>'
       + '<span class="af-kind">' + esc(it.label) + '</span>'
       + (it.isNew ? '<span class="af-new">' + t("apRenderArtifactsH13") + '</span>' : "");
-    card.onclick = () => { try { openFile(it.path); } catch (e) {} };
+    const reveal = document.createElement("button");
+    reveal.type = "button";
+    reveal.className = "af-reveal";
+    reveal.title = t("revealInFolder");
+    reveal.innerHTML = ico("folder");
+    reveal.onclick = (e) => { e.stopPropagation(); revealLocalPath(it.path, false); };
+    card.appendChild(reveal);
+    card.onclick = () => openArtifact(it);
     host.appendChild(card);
   });
 }
@@ -2431,7 +2516,7 @@ function _mdSplit(src) {
   while (k >= 0) {
     const cut = k + 2;
     const head = src.slice(0, cut);
-    if (((head.match(/^```[^\n]*$/gm) || []).length & 1) === 0) return [head, src.slice(cut)];
+    if (((head.match(/^[ \t\u00a0\u3000\u200b\ufeff]*`{3,}/gm) || []).length & 1) === 0) return [head, src.slice(cut)];
     k = src.lastIndexOf("\n\n", k - 1);
   }
   return ["", src];
@@ -2494,8 +2579,27 @@ function _mdScroll(b) {
    例外：含闭合 widget/svg/diagram 代码块的回复必须留在主线程，
    因为 renderWidgetCard 只存在于主线程（md-worker.js:44 的 typeof 守卫会退化成普通代码块）。
    宁可这类回复慢一次，也不要"为了不卡而降级成代码块"。 */
+/* 围栏允许行首空白，也允许三反引号以上：模型常在 ``` 前多打一个空格/全角空格，
+   或用 ```` 包住自身含 ``` 的正文。旧写法只认恰好三个，这类输出整段退化成普通段落。
+   闭合围栏按 CommonMark：反引号不少于开围栏。 */
+const _FENCE_OPEN = /^[ \t\u00a0\u3000\u200b\ufeff]*(`{3,})(\w*)[ \t]*$/;
+const _FENCE_CLOSE = /^[ \t\u00a0\u3000\u200b\ufeff]*(`{3,})[ \t]*$/;
+function _fenceOpen(line) {
+  const m = String(line).match(_FENCE_OPEN);
+  return m ? { ticks: m[1].length, lang: m[2] || "" } : null;
+}
+function _fenceCloses(line, ticks) {
+  const m = String(line).match(_FENCE_CLOSE);
+  return !!m && m[1].length >= ticks;
+}
 function _hasWidgetFence(src) {
-  return /^```[ \t]*(widget|svg|diagram)[ \t]*$[\s\S]*?^```[ \t]*$/im.test(String(src || ""));
+  const lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const f = _fenceOpen(lines[i]);
+    if (!f || !/^(widget|svg|diagram)$/i.test(f.lang)) continue;
+    for (let j = i + 1; j < lines.length; j++) if (_fenceCloses(lines[j], f.ticks)) return true;
+  }
+  return false;
 }
 function renderChatMDFinal(src, done) {
   if (!src) return done("");
@@ -2526,14 +2630,14 @@ function renderChatMD(src) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    const fence = line.match(/^```(\w*)\s*$/);
+    const fence = _fenceOpen(line);
     if (fence) {
       flushList();
-      const lang = fence[1] || "";
+      const lang = fence.lang;
       const code = [];
       i++;
       let closed = false;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
+      while (i < lines.length && !_fenceCloses(lines[i], fence.ticks)) { code.push(lines[i]); i++; }
       if (i < lines.length) { closed = true; i++; }
       // W5：闭合的 widget/svg/diagram 代码块 → 沙箱内联可视化（未闭合时流式期先按代码预览显示）
       if (closed && /^(widget|svg|diagram)$/i.test(lang) && typeof renderWidgetCard === "function") {
