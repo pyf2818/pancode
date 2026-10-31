@@ -166,7 +166,15 @@ function findWindowLine(listText, pid) {
 
   if (target) {
     section("④ 读控件树");
-    r = await handlers.desktop_snapshot(A, { window_ref: target.ref, max_depth: 8, max_nodes: 120 });
+    /* 窗口刚能被枚举到的那一两秒里，WinForms 的 Button 在 UIA 里还报成 Pane（连 can=invoke 都没有），
+       实测机器忙（前面刚跑过截图）时要 1~3s 才落成 Button。靶窗存在≠控件树已稳定，
+       所以先有界地等它落定再断言 —— 断言的内容一个字没减（四种控件仍必须齐全）。 */
+    let tree = await handlers.desktop_snapshot(A, { window_ref: target.ref, max_depth: 8, max_nodes: 120 });
+    for (let i = 0; i < 12 && !/Button "打个标记/.test(tree); i++) {
+      await sleep(500);
+      tree = await handlers.desktop_snapshot(A, { window_ref: target.ref, max_depth: 8, max_nodes: 120 });
+    }
+    r = tree;
     ok("控件树读出来了", /控件树 \d+ 个/.test(r), (r.match(/控件树 (\d+) 个/) || [])[1] + " 个控件");
     const editRef = pickRef(r, 'Edit "单行');
     const docRef = pickRef(r, "Document");
